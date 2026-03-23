@@ -90,10 +90,10 @@ def format_user_agent(ua: str) -> str:
         return "FastAPI"
     if "python" in ua_lower and "requests" in ua_lower:
         return "Python/requests"
+    # OpenWebUI sends aiohttp with Mozilla/5.0 prefix
+    if ua.startswith("Mozilla/5.0") and "aiohttp" in ua_lower and "python" in ua_lower:
+        return "OpenWebUI"
     if "python" in ua_lower and "aiohttp" in ua_lower:
-        # Check if it's OpenWebUI (user-agent starts with Mozilla but contains open-webui)
-        if "open-webui" in ua_lower or "openwebui" in ua_lower:
-            return "OpenWebUI"
         return "Python/aiohttp"
     if "curl" in ua_lower:
         return "curl"
@@ -862,7 +862,9 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {format_user_agent(user_agent)})")
+    # Debug: show full UA for all requests temporarily
+    logger.debug(f"DEBUG UA: {user_agent}")
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️ {format_user_agent(user_agent)})")
 
     if model_name not in LOGICAL_MODELS:
         return JSONResponse(
@@ -965,7 +967,7 @@ async def messages(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {format_user_agent(user_agent)}) req_id={request_id}")
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️ {format_user_agent(user_agent)})")
 
     if model_name not in LOGICAL_MODELS:
         # Check if we can auto-switch to a loaded model
