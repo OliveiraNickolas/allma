@@ -73,6 +73,31 @@ class ColoredFormatter(logging.Formatter):
 
 # Global config
 ALLAMA_PORT = int(os.environ.get("ALLAMA_PORT", "9000"))
+
+
+def format_user_agent(ua: str) -> str:
+    """Simplify user agent for logging."""
+    if not ua or ua == "unknown":
+        return "unknown"
+    ua_lower = ua.lower()
+    if "claude" in ua_lower or "claude-code" in ua_lower:
+        return "Claude"
+    if "openwebui" in ua_lower:
+        return "OpenWebUI"
+    if "fastapi" in ua_lower or "uvicorn" in ua_lower:
+        return "FastAPI"
+    if "python" in ua_lower and "requests" in ua_lower:
+        return "Python/requests"
+    if "python" in ua_lower and "aiohttp" in ua_lower:
+        return "Python/aiohttp"
+    if "curl" in ua_lower:
+        return "curl"
+    if "wget" in ua_lower:
+        return "wget"
+    # Truncate longer agents
+    if len(ua) > 50:
+        return ua[:47] + "..."
+    return ua
 VLLM_BASE_PORT = int(os.environ.get("VLLM_BASE_PORT", "8000"))
 LLAMA_BASE_PORT = int(os.environ.get("LLAMA_BASE_PORT", "9001"))
 KEEP_ALIVE_SECONDS = int(os.environ.get("KEEP_ALIVE_SECONDS", "600"))
@@ -604,7 +629,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                 return port
 
     NEEDGB = get_model_vram_need(cfg, physicalname)
-    logger.info(f"{displayname} needs {NEEDGB:.1f}GB VRAM")
+    logger.info(f"🧮 {displayname} needs {NEEDGB:.1f}GB VRAM")
 
     # Tensor parallelism (TP) vai a disciplina da VRAM check
     tp_size = int(cfg.get("tensor_parallel", "1"))
@@ -620,7 +645,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         max_free_gb = max((g["free_gb"] for g in gpus), default=0.0)
         total_free_gb = sum(g["free_gb"] for g in gpus)  # FIX: agora é float, não generator
         logger.info(
-            f"VRAM max_single: {max_free_gb:.1f}GB / total: {total_free_gb:.1f}GB - "
+            f"📊 VRAM max_single: {max_free_gb:.1f}GB / total: {total_free_gb:.1f}GB - "
             f"Attempt {attempt + 1}/{maxretries} (need {NEEDGB:.1f}GB)"
         )
         # Compare with total VRAM for TP models, single GPU for non-TP models
@@ -828,7 +853,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {user_agent[:50]}) req_id={request_id}")
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {format_user_agent(user_agent)}) req_id={request_id}")
 
     if model_name not in LOGICAL_MODELS:
         return JSONResponse(
@@ -931,7 +956,7 @@ async def messages(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {user_agent[:50]}) req_id={request_id}")
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {format_user_agent(user_agent)}) req_id={request_id}")
 
     if model_name not in LOGICAL_MODELS:
         # Check if we can auto-switch to a loaded model
