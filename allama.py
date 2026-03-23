@@ -862,8 +862,6 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    # Debug: show full UA for all requests temporarily
-    logger.debug(f"DEBUG UA: {user_agent}")
     logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️ {format_user_agent(user_agent)})")
 
     if model_name not in LOGICAL_MODELS:
