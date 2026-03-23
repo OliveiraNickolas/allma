@@ -82,8 +82,8 @@ def format_user_agent(ua: str) -> str:
     ua_lower = ua.lower()
     if "claude" in ua_lower or "claude-code" in ua_lower:
         if "vscode" in ua_lower or "extension" in ua_lower:
-            return "Claude (VSCode)"
-        return "Claude (Terminal)"
+            return "Claude - VSCode"
+        return "Claude - Terminal"
     if "openwebui" in ua_lower:
         return "OpenWebUI"
     if "fastapi" in ua_lower or "uvicorn" in ua_lower:
@@ -1237,10 +1237,9 @@ def main():
             for name in list(active_servers.keys()):
                 server = active_servers.get(name)
                 if server and server.get("process"):
-                    try:
-                        server["process"].kill()
-                    except Exception:
-                        pass
+                    pid = server["process"].pid
+                    kill_process_tree(pid)  # Kill whole tree including vLLM workers
+                    logger.info(f"🔥 Killed process tree for {name} (PID {pid})")
         # Wait for health monitor thread to finish
         if _health_monitor_thread:
             _health_monitor_thread.join(timeout=5)
