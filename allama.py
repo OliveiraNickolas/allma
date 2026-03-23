@@ -40,8 +40,9 @@ class JSONFormatter(logging.Formatter):
         }
         if record.exc_info:
             log_entry["exc_info"] = self.formatException(record.exc_info)
-        if hasattr(record, "extra_data"):
-            log_entry["data"] = record.extra_data
+        extra_data = getattr(record, "extra_data", None)
+        if extra_data is not None:
+            log_entry["data"] = extra_data
         return json.dumps(log_entry)
 
 
@@ -667,7 +668,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         max_free_gb = max((g["free_gb"] for g in gpus), default=0.0)
         total_free_gb = sum(g["free_gb"] for g in gpus)  # FIX: agora é float, não generator
         logger.info(
-            f"📊 VRAM max_single: {max_free_gb:.1f}GB / total: {total_free_gb:.1f}GB - "
+            f"📊 VRAM max single: {max_free_gb:.1f}GB / total: {total_free_gb:.1f}GB - "
             f"Attempt {attempt + 1}/{maxretries} (need {NEEDGB:.1f}GB)"
         )
         # Compare with total VRAM for TP models, single GPU for non-TP models
@@ -871,7 +872,6 @@ app = FastAPI(title="Allama - LLM API", lifespan=lifespan)
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request, body: dict = Body(...)):
     model_name = body.get("model", "")
-    request_id = request.headers.get("x-request-id", "unknown")
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 

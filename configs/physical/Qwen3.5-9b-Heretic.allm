@@ -5,7 +5,7 @@ path = "/home/nick/AI/Models/Qwen3.5-9B-Heretic"
 tokenizer = "/home/nick/AI/Models/Qwen3.5-9B-Heretic"
 tensor_parallel = "1"
 gpu_memory_utilization = "0.90"
-max_model_len = "131072"
+max_model_len = "16384"
 max_num_seqs = "16"
 
 extra_args = [
