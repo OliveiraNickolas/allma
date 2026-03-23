@@ -91,6 +91,9 @@ def format_user_agent(ua: str) -> str:
     if "python" in ua_lower and "requests" in ua_lower:
         return "Python/requests"
     if "python" in ua_lower and "aiohttp" in ua_lower:
+        # Check if it's OpenWebUI (user-agent starts with Mozilla but contains open-webui)
+        if "open-webui" in ua_lower or "openwebui" in ua_lower:
+            return "OpenWebUI"
         return "Python/aiohttp"
     if "curl" in ua_lower:
         return "curl"
@@ -100,6 +103,9 @@ def format_user_agent(ua: str) -> str:
     if len(ua) > 50:
         return ua[:47] + "..."
     return ua
+
+
+# Global config
 VLLM_BASE_PORT = int(os.environ.get("VLLM_BASE_PORT", "8000"))
 LLAMA_BASE_PORT = int(os.environ.get("LLAMA_BASE_PORT", "9001"))
 KEEP_ALIVE_SECONDS = int(os.environ.get("KEEP_ALIVE_SECONDS", "600"))
@@ -856,7 +862,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {format_user_agent(user_agent)}) req_id={request_id}")
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {format_user_agent(user_agent)})")
 
     if model_name not in LOGICAL_MODELS:
         return JSONResponse(
