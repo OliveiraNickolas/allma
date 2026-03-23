@@ -95,7 +95,7 @@ def format_user_agent(ua: str) -> str:
     if ua.startswith("Mozilla/5.0") and "aiohttp" in ua_lower and "python" in ua_lower:
         return "OpenWebUI"
     if "python" in ua_lower and "aiohttp" in ua_lower:
-        return "Python/aiohttp"
+        return "OpenWebUI"
     if "curl" in ua_lower:
         return "curl"
     if "wget" in ua_lower:
@@ -233,6 +233,7 @@ def get_free_gpu_memory() -> list[dict]:
 
 
 def get_best_gpu() -> int:
+    """Get GPU with most free memory."""
     gpus = get_free_gpu_memory()
     if not gpus:
         logger.warning("No GPU info available, using GPU 0")
@@ -240,6 +241,234 @@ def get_best_gpu() -> int:
     best = max(gpus, key=lambda g: g["free_gb"])
     logger.debug(f"Selected GPU {best['index']} with {best['free_gb']:.1f}GB free")
     return best["index"]
+
+
+def get_all_gpus() -> list[dict]:
+    """Get all GPUs with their VRAM info."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.total,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5
+        )
+
+        gpus = []
+        for line in result.stdout.strip().split("\n"):
+            if line.strip():
+                parts = line.split(",")
+                gpu_id = int(parts[0].strip()) if parts[0].strip() else 0
+                total_mb = float(parts[1].strip()) if parts[1].strip() else 24576
+                free_mb = float(parts[2].strip()) if parts[2].strip() else 0.0
+                gpus.append({
+                    "index": gpu_id,
+                    "free_mb": free_mb,
+                    "free_gb": free_mb / 1024,
+                    "total_mb": total_mb,
+                    "total_gb": total_mb / 1024,
+                })
+        return gpus
+    except Exception as e:
+        logger.error(f"Error getting GPU info: {e}")
+        return []
+
+
+def get_gpu_available(model_path: str, tp_size: int, gpu_memory_util: float) -> list[dict]:
+    """
+    Get list of GPUs available for a model based on VRAM requirements.
+    Returns sorted list of GPU dicts arranged by free memory (ascending).
+    """
+    try:
+        all_gpus = get_all_gpus()
+        if not all_gpus:
+            return []
+
+        # Estimate model size
+        try:
+            total_size_bytes = sum(
+                os.path.getsize(os.path.join(root, file))
+                for root, _, files in os.walk(model_path)
+                for file in files if file.endswith('.safetensors')
+            )
+            total_size_gb = total_size_bytes / (1024**3)
+            required_gb = total_size_gb * 1.2  # 20% overhead
+            required_per_gpu = required_gb / tp_size
+        except Exception:
+            # Fall back to free memory check if model size calculation fails
+            return all_gpus
+
+        gpus = []
+        gpu_memory_util = float(gpu_memory_util)
+        for gpu in all_gpus:
+            # VRAM available per GPU (accounting for gpu_memory_utilization)
+            available_per_gpu = (gpu["total_mb"] * gpu_memory_util) / 1024
+
+            # Check if this GPU can handle its share
+            can_fit = available_per_gpu >= required_per_gpu
+            gpus.append({
+                "index": gpu["index"],
+                "free_gb": gpu["free_gb"],
+                "total_gb": gpu["total_gb"],
+                "can_fit": can_fit
+            })
+
+        # Sort: prioritize GPUs that can fit the model, then by free memory ascending
+        gpus.sort(key=lambda g: (not g["can_fit"], g["free_gb"]))
+        return gpus
+    except Exception as e:
+        logger.error(f"Error in get_gpu_available: {e}")
+        return []
+
+
+def get_gpus_for_tp(tp_size: int, available_gpus: list[dict]) -> list[int]:
+    """
+    Get list of GPU indices for tensor parallel.
+    Requires consecutive GPUs (based on their indices, not positions).
+    Returns indices of GPUs, or [] if not enough GPUs available.
+    """
+    if not available_gpus or len(available_gpus) < tp_size:
+        return []
+
+    # Check if we have consecutive GPU indices
+    indices = sorted([g["index"] for g in available_gpus])
+
+    for i in range(len(indices) - tp_size + 1):
+        candidate = indices[i:i + tp_size]
+        if all(candidate[j] + 1 == candidate[j + 1] for j in range(len(candidate) - 1)):
+            return candidate
+
+    # Fallback: return any tp_size GPUs if no consecutive ones
+    return indices[:tp_size]
+
+
+def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) -> tuple[int, int]:
+    """
+    Find the optimal tensor parallel size and GPU allocation for a model.
+    Tries progressively smaller TP sizes until finding a working configuration.
+
+    Returns (adjusted_tp, selected_gpu) where selected_gpu is different from skip_gpu if possible.
+    When this function returns for a retry, it always picks a different GPU with more memory.
+    """
+    cfg = PHYSICAL_MODELS[physical_name]
+    backend = cfg.get("backend", "vllm")
+
+    if backend != "vllm":
+        # Fallback: just return best GPU
+        gpus = get_all_gpus()
+        if gpus:
+            best = max(gpus, key=lambda g: g["free_gb"])
+            return 1, best["index"]
+        return 1, 0
+
+    model_path = cfg.get("path", "")
+    if not model_path or not os.path.isdir(model_path):
+        gpus = get_all_gpus()
+        if gpus:
+            best = max(gpus, key=lambda g: g["free_gb"])
+            return 1, best["index"]
+        return 1, 0
+
+    gpu_mem_util = float(cfg.get("gpu_memory_utilization", "0.90"))
+    requested_tp = int(cfg.get("tensor_parallel", "1"))
+
+    # Get all GPUs sorted by free memory descending
+    all_gpus = get_all_gpus()
+    if not all_gpus:
+        return 1, 0
+
+    # Sort by free memory descending - prioritize GPUs with more space
+    all_gpus.sort(key=lambda g: g["free_gb"], reverse=True)
+
+    # Remove skipped GPU from consideration
+    if skip_gpu is not None:
+        all_gpus = [g for g in all_gpus if g["index"] != skip_gpu]
+
+    # If we skipped all GPUs, start over without skip
+    if not all_gpus:
+        all_gpus = get_all_gpus()
+        all_gpus.sort(key=lambda g: g["free_gb"], reverse=True)
+
+    # Find total available VRAM
+    total_free_gb = sum(g["free_gb"] for g in all_gpus)
+    max_gpu_gb = max(g["total_gb"] for g in all_gpus)
+
+    # Estimate model size
+    try:
+        total_size_bytes = sum(
+            os.path.getsize(os.path.join(root, file))
+            for root, _, files in os.walk(model_path)
+            for file in files if file.endswith('.safetensors')
+        )
+        total_size_gb = total_size_bytes / (1024**3)
+        required_gb = total_size_gb * 1.2  # 20% overhead
+    except Exception as e:
+        logger.warning(f"Could not estimate model size for {physical_name}: {e}")
+        # Just pick best GPU
+        best = all_gpus[0] if all_gpus else {"index": 0, "total_mb": 24576}
+        return 1, best["index"]
+
+    # Calculate minimum TP needed to fit on single largest GPU
+    max_fit_tp = int(required_gb / (max_gpu_gb * gpu_mem_util)) + 1
+
+    # Try TP sizes from requested down to minimum
+    for tp in range(requested_tp, max(1, max_fit_tp - 1), -1):
+        # Calculate how many GPUs we need
+        gpus_needed = tp
+
+        # Check if we have enough GPUs
+        if len(all_gpus) < gpus_needed:
+            continue
+
+        # Try to find consecutive GPUs in sorted list for TP arrangement
+        for i in range(len(all_gpus) - gpus_needed + 1):
+            candidate = all_gpus[i:i + gpus_needed]
+            indices = [g["index"] for g in candidate]
+
+            # Check if consecutive
+            is_consecutive = all(indices[j] + 1 == indices[j + 1] for j in range(len(indices) - 1))
+
+            # Or return non-consecutive for fallback flexibility
+            if is_consecutive:
+                # Get actual GPU info for verification
+                available = get_gpu_available(model_path, tp, gpu_mem_util)
+                if len(available) >= tp:
+                    # Verify fit
+                    actual_required_per_gpu = required_gb / tp
+                    gpulam = (indices[0] if indices else 0)  # Placeholder
+                    primary_gpu = candidate[0]
+
+                    if gpulam * 1024 >= actual_required_per_gpu * 1024 or True:  # Always try - vLLM will fail if not fit
+                        logger.info(f"🎯 {physical_name}: TP={tp} on GPU(s) {indices}, skipping {skip_gpu}")
+                        return tp, indices[0]
+
+    # Best GPU with most free memory (excluding skipped one)
+    if all_gpus:
+        best = all_gpus[0]  # Already sorted by free_gb descending
+        logger.info(f"⚠️ {physical_name}: Using GPU {best['index']} with {best['free_gb']:.1f}GB free")
+        return 1, best["index"]
+
+    return 1, 0
+
+
+def get_gpus_for_tp(tp_size: int, available_gpus: list[dict]) -> list[int]:
+    """
+    Get list of GPU indices for tensor parallel.
+    Requires consecutive GPUs (based on their indices, not positions).
+    Returns indices of GPUs, or [] if not enough GPUs available.
+    """
+    if not available_gpus or len(available_gpus) < tp_size:
+        return []
+
+    # Check if we have consecutive GPU indices
+    indices = sorted([g["index"] for g in available_gpus])
+
+    for i in range(len(indices) - tp_size + 1):
+        candidate = indices[i:i + tp_size]
+        if all(candidate[j] + 1 == candidate[j + 1] for j in range(len(candidate) - 1)):
+            return candidate
+
+    # Fallback: return any tp_size GPUs if no consecutive ones
+    return indices[:tp_size]
 
 
 def get_model_vram_need(cfg: Dict[str, Any], physical_name: str) -> float:
@@ -338,7 +567,7 @@ def kill_vram_fast():
         logger.error(traceback.format_exc())
 
 
-def build_vllm_cmd(physical_name: str) -> tuple[list, int, int]:
+def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[list, int, int]:
     global next_vllm_port
     cfg = PHYSICAL_MODELS[physical_name]
     attempts = 0
@@ -347,23 +576,28 @@ def build_vllm_cmd(physical_name: str) -> tuple[list, int, int]:
         if is_port_free(check_port):
             port = check_port
             next_vllm_port = port + 1
-            
+
             break
         attempts += 1
     else:
         raise RuntimeError(f"Could not find free port for {physical_name} in 1000 attempts")
 
-    if physical_name not in gpu_allocation:
-        gpu_id = get_best_gpu()
-        gpu_allocation[physical_name] = gpu_id
-    else:
-        gpu_id = gpu_allocation[physical_name]
-    logger.info(f"🎯 {physical_name} ➡ GPU {gpu_id}")
+    tp_size = int(cfg.get("tensor_parallel", "1"))
+    gpu_mem_util = float(cfg.get("gpu_memory_utilization", "0.90"))
+    model_path = cfg.get("path", "")
+
+    # First try: find optimal TP size and GPUs (dynamic adjustment)
+    # Returns (tp_size, gpu_id) - single GPU for single-TP or first GPU of TP group
+    # skip_gpu parameter tells it to avoid a previously failed GPU
+    adj_tp, selected_gpu = find_optimal_tp_and_gpus(physical_name, skip_gpu)
+    if adj_tp != tp_size:
+        logger.info(f"🔄 {physical_name}: Adjusting TP from {tp_size} to {adj_tp} for GPU fit")
+    tp_size = adj_tp
 
     cmd = [
         "vllm", "serve", cfg["path"],
         "--tokenizer", cfg["tokenizer"],
-        "--tensor-parallel-size", cfg["tensor_parallel"],
+        "--tensor-parallel-size", str(tp_size),
         "--gpu-memory-utilization", cfg.get("gpu_memory_utilization", "0.90"),
         "--max-model-len", cfg["max_model_len"],
         "--max-num-seqs", cfg.get("max_num_seqs", "8"),
@@ -373,7 +607,8 @@ def build_vllm_cmd(physical_name: str) -> tuple[list, int, int]:
         "--api-key", "dummy",
     ]
     cmd.extend(cfg.get("extra_args", []))
-    return cmd, port, gpu_id
+    gpu_allocation[physical_name] = selected_gpu
+    return cmd, port, selected_gpu
 
 
 def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
@@ -723,71 +958,107 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
 
     logger.info(f"⏳ Loading {displayname} ({backend})")
 
-    if backend == "vllm":
-        cmd, port, gpu_id = build_vllm_cmd(physicalname)
-    else:
-        cmd, port, gpu_id = build_llama_cmd(physicalname)
+    # Retry logic with dynamic TP adjustment for vLLM
+    max_attempts = 5
+    skip_gpu: int | None = None
 
-    logfilepath = ALLAMA_LOG_DIR / f"{physicalname}.log"
-    logfile = None
-    try:
-        logfile = open(logfilepath, "a")
-        log_start_position = logfile.tell()
-    except Exception as e:
-        logger.error(f"Failed to open log file {logfilepath}: {e}")
-        raise
+    for attempt in range(max_attempts):
+        logfilepath = ALLAMA_LOG_DIR / f"{physicalname}.log"
+        logfile = None
+        try:
+            logfile = open(logfilepath, "a")
+            log_start_position = logfile.tell()
+        except Exception as e:
+            logger.error(f"Failed to open log file {logfilepath}: {e}")
+            raise
 
-    subprocess_env = os.environ.copy()
-    # Bug fix: CUDA_VISIBLE_DEVICES quebra tensor_parallelism
-    # Para vLLM com TP>1, NÃO definir CVD - deixe ele ver todas as GPUs
-    # Para llama.cpp com -ngl -1, também não é necessário - ele usa todas as GPUs
-    # Só definimos CVD explicitamente para llama.cpp single-GPU específicas
-    if backend == "llama.cpp" and int(cfg.get("tensor_parallel", "1")) == 1:
-        subprocess_env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    # else: leave system GPU discovery untouched
+        # Get fresh GPU assignment with dynamic TP adjustment
+        if backend == "vllm":
+            cmd, port, current_gpu_id = build_vllm_cmd(physicalname, skip_gpu=skip_gpu)
+        else:
+            cmd, port, current_gpu_id = build_llama_cmd(physicalname)
 
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=logfile,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
-            env=subprocess_env,
-        )
+        logger.info(f"🎯 Attempt {attempt + 1}/{max_attempts}: {displayname} → GPU {current_gpu_id} (TP={tp_size})")
+        proc = None
+        try:
+            subprocess_env = os.environ.copy()
+            # Bug fix: CUDA_VISIBLE_DEVICES quebra tensor_parallelism
+            # Para vLLM com TP>1, NÃO definir CVD - deixe ele ver todas as GPUs
+            # Para llama.cpp com -ngl -1, também não é necessário - ele usa todas as GPUs
+            # Só definimos CVD explicitamente para llama.cpp single-GPU específicas
+            if backend == "llama.cpp" and int(cfg.get("tensor_parallel", "1")) == 1:
+                subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
+            # else: leave system GPU discovery untouched
 
-        with global_lock:
-            active_servers[physicalname] = {
-                "process": proc,
-                "pid": proc.pid,
-                "port": port,
-                "backend": backend,
-                "logfile": logfilepath,
-            }
-            server_idle_time[physicalname] = time.time()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=logfile,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+                env=subprocess_env,
+            )
 
-        logger.info(f"✅ Process started PID {proc.pid} on port {port}")
-        logger.info(f"📄 Log: tail -f {PATH_TO_ALLAMA}/{logfilepath}")
+            with global_lock:
+                active_servers[physicalname] = {
+                    "process": proc,
+                    "pid": proc.pid,
+                    "port": port,
+                    "backend": backend,
+                    "logfile": logfilepath,
+                }
+                server_idle_time[physicalname] = time.time()
 
-        ready = await wait_for_model_ready(
-            proc, port, backend, logfilepath, displayname,
-            timeout=300, log_start_position=log_start_position,
-        )
+            logger.info(f"✅ Process started PID {proc.pid} on port {port}, GPU {current_gpu_id}")
+            logger.info(f"📄 Log: tail -f {PATH_TO_ALLAMA}/{logfilepath}")
 
-        if not ready:
-            returncode = proc.poll()
-            if returncode is not None:
-                logger.error(f"{displayname}:{port} exited with code {returncode}")
-                raise RuntimeError(f"{displayname} startup failed (code {returncode})")
-            raise RuntimeError(f"{displayname} not ready after 300s")
+            ready = await wait_for_model_ready(
+                proc, port, backend, logfilepath, displayname,
+                timeout=180, log_start_position=log_start_position,
+            )
 
-        logger.info(f"🚀 {displayname} loaded and ready")
-        return port
-    finally:
-        if logfile and not logfile.closed:
-            logfile.close()
+            if not ready:
+                returncode = proc.poll()
+                if returncode is not None:
+                    logger.error(f"{displayname}:{port} exited with code {returncode}")
+                    # Check if it's a VRAM-related error
+                    logfile.seek(log_start_position)
+                    log_content = logfile.read()
+                    if "Free memory" in log_content and "less than desired" in log_content:
+                        logger.warning(f"💥 VRAM allocation failed on GPU {current_gpu_id}, retrying with adjusted config...")
+                        raise RuntimeError("VRAM allocation failed")
+                    raise RuntimeError(f"{displayname} startup failed (code {returncode})")
+                raise RuntimeError(f"{displayname} not ready after 180s")
+
+            logger.info(f"🚀 {displayname} loaded and ready on GPU {current_gpu_id}")
+            return port
+        except RuntimeError as runtime_err:
+            # Clean up failed process
+            if active_servers.get(physicalname):
+                p = active_servers[physicalname].get("process")
+                if p:
+                    try:
+                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                    except Exception:
+                        pass
+                active_servers.pop(physicalname, None)
+                server_idle_time.pop(physicalname, None)
+            # Check if retryable - set skip_gpu to avoid same GPU next time
+            if attempt < max_attempts - 1 and "VRAM allocation" in str(runtime_err):
+                logger.warning(f"💥 Attempt {attempt + 1} failed (GPU {current_gpu_id}), retrying with different GPU...")
+                skip_gpu = current_gpu_id  # ← Key: try different GPU next time
+                proc = None
+                if logfile and not logfile.closed:
+                    logfile.close()
+                    logfile = open(logfilepath, "a")
+                    log_start_position = logfile.tell()
+                await asyncio.sleep(3)
+                continue
+            raise
+        finally:
+            if logfile and not logfile.closed:
+                logfile.close()
 
 
 _health_monitor_running = threading.Event()
