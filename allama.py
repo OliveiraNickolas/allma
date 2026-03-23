@@ -81,7 +81,9 @@ def format_user_agent(ua: str) -> str:
         return "unknown"
     ua_lower = ua.lower()
     if "claude" in ua_lower or "claude-code" in ua_lower:
-        return "Claude"
+        if "vscode" in ua_lower or "extension" in ua_lower:
+            return "Claude (VSCode)"
+        return "Claude (Terminal)"
     if "openwebui" in ua_lower:
         return "OpenWebUI"
     if "fastapi" in ua_lower or "uvicorn" in ua_lower:
