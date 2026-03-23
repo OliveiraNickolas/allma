@@ -392,7 +392,7 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
     total_free_gb = sum(g["free_gb"] for g in all_gpus)
     max_gpu_gb = max(g["total_gb"] for g in all_gpus)
 
-    # Estimate model size
+    # Estimate model size from .safetensors files
     try:
         total_size_bytes = sum(
             os.path.getsize(os.path.join(root, file))
@@ -400,54 +400,56 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
             for file in files if file.endswith('.safetensors')
         )
         total_size_gb = total_size_bytes / (1024**3)
-        required_gb = total_size_gb * 1.2  # 20% overhead
+        required_gb = total_size_gb * 1.2  # 20% overhead for KV cache, activations, etc.
     except Exception as e:
         logger.warning(f"Could not estimate model size for {physical_name}: {e}")
-        # Just pick best GPU
-        best = all_gpus[0] if all_gpus else {"index": 0, "total_mb": 24576}
-        return 1, best["index"]
+        best = all_gpus[0] if all_gpus else {"index": 0}
+        return requested_tp, best["index"]
 
-    # Calculate minimum TP needed to fit on single largest GPU
-    max_fit_tp = int(required_gb / (max_gpu_gb * gpu_mem_util)) + 1
+    # Calculate minimum TP needed so the model fits per GPU
+    usable_per_gpu_gb = max_gpu_gb * gpu_mem_util
+    import math
+    min_tp_needed = max(1, math.ceil(required_gb / usable_per_gpu_gb))
 
-    # Try TP sizes from requested down to minimum
-    for tp in range(requested_tp, max(1, max_fit_tp - 1), -1):
-        # Calculate how many GPUs we need
-        gpus_needed = tp
+    # Auto-upgrade: if model won't fit with requested TP, use the minimum required
+    effective_tp = max(requested_tp, min_tp_needed)
 
-        # Check if we have enough GPUs
-        if len(all_gpus) < gpus_needed:
-            continue
+    if effective_tp > requested_tp:
+        logger.info(
+            f"🔼 {physical_name}: Auto-upgrading TP {requested_tp}→{effective_tp} "
+            f"(model needs {required_gb:.1f}GB, single GPU has {usable_per_gpu_gb:.1f}GB usable)"
+        )
 
-        # Try to find consecutive GPUs in sorted list for TP arrangement
-        for i in range(len(all_gpus) - gpus_needed + 1):
-            candidate = all_gpus[i:i + gpus_needed]
-            indices = [g["index"] for g in candidate]
+    # Check we actually have enough GPUs
+    if len(all_gpus) < effective_tp:
+        logger.error(
+            f"❌ {physical_name}: Need TP={effective_tp} but only {len(all_gpus)} GPU(s) available. "
+            f"Model requires {required_gb:.1f}GB, system has {total_free_gb:.1f}GB free total."
+        )
+        # Return best effort
+        best = all_gpus[0] if all_gpus else {"index": 0}
+        return len(all_gpus), best["index"]
 
-            # Check if consecutive
-            is_consecutive = all(indices[j] + 1 == indices[j + 1] for j in range(len(indices) - 1))
+    # Sort GPUs by index to find consecutive groups (vLLM requires consecutive GPU indices for TP)
+    all_gpus_by_index = sorted(all_gpus, key=lambda g: g["index"])
 
-            # Or return non-consecutive for fallback flexibility
-            if is_consecutive:
-                # Get actual GPU info for verification
-                available = get_gpu_available(model_path, tp, gpu_mem_util)
-                if len(available) >= tp:
-                    # Verify fit
-                    actual_required_per_gpu = required_gb / tp
-                    gpulam = (indices[0] if indices else 0)  # Placeholder
-                    primary_gpu = candidate[0]
+    # Find a consecutive group of effective_tp GPUs
+    for i in range(len(all_gpus_by_index) - effective_tp + 1):
+        candidate = all_gpus_by_index[i:i + effective_tp]
+        indices = [g["index"] for g in candidate]
+        is_consecutive = all(indices[j] + 1 == indices[j + 1] for j in range(len(indices) - 1))
 
-                    if gpulam * 1024 >= actual_required_per_gpu * 1024 or True:  # Always try - vLLM will fail if not fit
-                        logger.info(f"🎯 {physical_name}: TP={tp} on GPU(s) {indices}, skipping {skip_gpu}")
-                        return tp, indices[0]
+        if is_consecutive:
+            # Skip group if it contains the failed GPU
+            if skip_gpu is not None and skip_gpu in indices:
+                continue
+            logger.info(f"🎯 {physical_name}: TP={effective_tp} on GPU(s) {indices}")
+            return effective_tp, indices[0]
 
-    # Best GPU with most free memory (excluding skipped one)
-    if all_gpus:
-        best = all_gpus[0]  # Already sorted by free_gb descending
-        logger.info(f"⚠️ {physical_name}: Using GPU {best['index']} with {best['free_gb']:.1f}GB free")
-        return 1, best["index"]
-
-    return 1, 0
+    # Fallback: no consecutive group found (shouldn't happen with 2 GPUs 0+1)
+    logger.warning(f"⚠️ {physical_name}: No consecutive GPU group found for TP={effective_tp}, using GPU 0")
+    best = all_gpus[0] if all_gpus else {"index": 0}
+    return effective_tp, best["index"]
 
 
 def get_gpus_for_tp(tp_size: int, available_gpus: list[dict]) -> list[int]:
@@ -966,7 +968,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         logfilepath = ALLAMA_LOG_DIR / f"{physicalname}.log"
         logfile = None
         try:
-            logfile = open(logfilepath, "a")
+            logfile = open(logfilepath, "a+")
             log_start_position = logfile.tell()
         except Exception as e:
             logger.error(f"Failed to open log file {logfilepath}: {e}")
@@ -990,13 +992,25 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         proc = None
         try:
             subprocess_env = os.environ.copy()
-            # Bug fix: CUDA_VISIBLE_DEVICES quebra tensor_parallelism
-            # Para vLLM com TP>1, NÃO definir CVD - deixe ele ver todas as GPUs
-            # Para llama.cpp com -ngl -1, também não é necessário - ele usa todas as GPUs
-            # Só definimos CVD explicitamente para llama.cpp single-GPU específicas
-            if backend == "llama.cpp" and int(cfg.get("tensor_parallel", "1")) == 1:
+            # CUDA_VISIBLE_DEVICES control:
+            # - vLLM TP=1: pin to selected GPU so it doesn't default to cuda:0
+            # - vLLM TP>1: set consecutive GPU range starting from selected GPU
+            #   (CVD com múltiplas GPUs não quebra TP - só CVD com 1 GPU para TP>1 é problemático)
+            # - llama.cpp TP=1: pin to selected GPU
+            # - llama.cpp TP>1 (ngl -1): deixar o driver escolher (usa todas as GPUs)
+            if backend == "vllm":
+                if tp_from_cmd <= 1:
+                    subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
+                    logger.info(f"🎮 vLLM TP=1 pinned to GPU {current_gpu_id} via CUDA_VISIBLE_DEVICES")
+                else:
+                    # Consecutive GPUs starting from current_gpu_id
+                    gpu_indices = ",".join(str(current_gpu_id + i) for i in range(tp_from_cmd))
+                    subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_indices
+                    logger.info(f"🎮 vLLM TP={tp_from_cmd} pinned to GPUs [{gpu_indices}] via CUDA_VISIBLE_DEVICES")
+            elif backend == "llama.cpp" and int(cfg.get("tensor_parallel", "1")) == 1:
                 subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
-            # else: leave system GPU discovery untouched
+                logger.info(f"🎮 llama.cpp TP=1 pinned to GPU {current_gpu_id} via CUDA_VISIBLE_DEVICES")
+            # llama.cpp TP>1: leave system GPU discovery untouched
 
             proc = subprocess.Popen(
                 cmd,
@@ -1059,7 +1073,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                 proc = None
                 if logfile and not logfile.closed:
                     logfile.close()
-                    logfile = open(logfilepath, "a")
+                    logfile = open(logfilepath, "a+")
                     log_start_position = logfile.tell()
                 await asyncio.sleep(3)
                 continue
@@ -1189,7 +1203,8 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         else:
             body.pop(key, None)
 
-    if "instruct" in model_name.lower():
+    # Models with thinking/reasoning capability need enable_thinking=False
+    if "instruct" in model_name.lower() or "heretic" in model_name.lower():
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
     logger.debug(f"{model_name} -> {physical_name}:{port} ({backend})")
