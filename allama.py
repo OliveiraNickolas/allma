@@ -978,7 +978,15 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         else:
             cmd, port, current_gpu_id = build_llama_cmd(physicalname)
 
-        logger.info(f"🎯 Attempt {attempt + 1}/{max_attempts}: {displayname} → GPU {current_gpu_id} (TP={tp_size})")
+        # Extract TP from command args for logging
+        tp_from_cmd = 1
+        try:
+            tp_idx = cmd.index("--tensor-parallel-size") + 1
+            if tp_idx < len(cmd):
+                tp_from_cmd = int(cmd[tp_idx])
+        except (ValueError, IndexError):
+            pass
+        logger.info(f"🎯 Attempt {attempt + 1}/{max_attempts}: {displayname} → GPU {current_gpu_id} (TP={tp_from_cmd})")
         proc = None
         try:
             subprocess_env = os.environ.copy()
