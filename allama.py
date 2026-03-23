@@ -316,7 +316,7 @@ def build_vllm_cmd(physical_name: str) -> tuple[list, int, int]:
         "vllm", "serve", cfg["path"],
         "--tokenizer", cfg["tokenizer"],
         "--tensor-parallel-size", cfg["tensor_parallel"],
-        "--gpu-memory-utilization", cfg.get("gpu-memory-utilization", "0.90"),
+        "--gpu-memory-utilization", cfg.get("gpu_memory_utilization", "0.90"),
         "--max-model-len", cfg["max_model_len"],
         "--max-num-seqs", cfg.get("max_num_seqs", "8"),
         "--generation-config", "vllm",
@@ -436,6 +436,31 @@ def shutdown_server(physicalname: str, reason: str = "user", fast: bool = False)
     gpus = get_free_gpu_memory()
     freegb = sum(g["free_gb"] for g in gpus)
     logger.info(f"{physicalname} unloaded. VRAM free: {freegb:.1f}GB")
+
+
+def list_gpu_processes(gpu_ids: Optional[list[int]] = None) -> list[Dict[str, Any]]:
+    """Lista processos usando VRAM em uma ou mais GPUs."""
+    result = []
+    cmd = ["nvidia-smi", "--query-compute-apps=pid,process_name,gpu_memory_usage", "--format=csv,noheader"]
+    if gpu_ids:
+        cmd = ["nvidia-smi", "-i", ",".join(map(str, gpu_ids))] + cmd[1:]
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+        for line in out.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3:
+                try:
+                    pid = int(parts[0])
+                    name = parts[1]
+                    mem_mb = int(parts[2].replace("MiB", "").strip())
+                    result.append({"pid": pid, "name": name, "memory_mb": mem_mb})
+                except (ValueError, IndexError):
+                    pass
+    except subprocess.SubprocessError:
+        pass
+    return result
 
 
 class LoadingSpinner:
@@ -584,7 +609,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
     # Tensor parallelism (TP) vai a disciplina da VRAM check
     tp_size = int(cfg.get("tensor_parallel", "1"))
     if tp_size > 1:
-        logger.info(f"🔄 Tensor parallel={tp_size} - usando VRAM total, não single GPU")
+        logger.info(f"🔄 Tensor parallel={tp_size} - using total VRAM, not single GPU")
 
     maxretries = 3  # Reduzido drasticamente - não tem sentido tentar 25x
     no_progress_count = 0
@@ -601,7 +626,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         # Compare with total VRAM for TP models, single GPU for non-TP models
         available_gb = total_free_gb if tp_size > 1 else max_free_gb
         if available_gb >= NEEDGB:
-            logger.info(f"✓ VRAM suficiente ({available_gb:.1f}GB)")
+            logger.info(f"✅ VRAM suficiente ({available_gb:.1f}GB)")
             break
 
         with global_lock:
@@ -619,6 +644,15 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         if new_total_gb <= last_total_gb + 0.5:  # Sem progresso significativo
             no_progress_count += 1
             if no_progress_count >= 2:
+                # Logging detalhado dos processos usando VRAM
+                gpu_procs = list_gpu_processes()
+                active_procs = [p for p in gpu_procs if p["memory_mb"] > 100]
+                if active_procs:
+                    logger.error("Processos usando VRAM:")
+                    for p in sorted(active_procs, key=lambda x: x["memory_mb"], reverse=True)[:5]:
+                        is_allama = any(p["pid"] == s["process"].pid for s in active_servers.values())
+                        marker = "ALLAMA" if is_allama else "externo"
+                        logger.error(f"  PID {p['pid']} ({p['name']}): {p['memory_mb']//1024:.0f}GB [{marker}]")
                 logger.error(
                     f"⚠️  Não foi possível liberar VRAM suficiente. "
                     f"Necessário: {NEEDGB:.1f}GB, disponível: {new_total_gb:.1f}GB."
@@ -687,7 +721,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
             server_idle_time[physicalname] = time.time()
 
         logger.info(f"Process started PID {proc.pid} on port {port}")
-        logger.info(f"Log: {logfilepath}")
+        logger.info(f"Log: tail -f {PATH_TO_ALLAMA}/{logfilepath}")
 
         ready = await wait_for_model_ready(
             proc, port, backend, logfilepath, displayname,
@@ -763,7 +797,7 @@ async def get_http_client():
         httpx_client = httpx.AsyncClient(
             timeout=600.0,
             headers={"Authorization": "Bearer dummy"},
-            connect_limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
     return httpx_client
 
