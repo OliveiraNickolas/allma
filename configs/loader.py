@@ -12,51 +12,48 @@ logger = logging.getLogger("Wrapper")
 
 
 def parse_all_file(content: str) -> Dict[str, Any]:
-    """
-    Parse a simple TOML-like .all config format.
-
-    Format example:
-        backend = "vllm"
-        path = "/path/to/model"
-        tensor_parallel = "2"
-
-        [sampling]
-        temperature = 0.7
-        top_p = 0.95
-    """
     result = {}
     current_section = None
 
     for line in content.split('\n'):
         line = line.strip()
 
-        # Skip empty lines and comments
         if not line or line.startswith('#'):
             continue
 
-        # Section header [section_name]
         if line.startswith('[') and line.endswith(']'):
             section_name = line[1:-1].strip()
             result[section_name] = {}
             current_section = result[section_name]
             continue
 
-        # Key = value
         if '=' in line:
             key, value = line.split('=', 1)
             key = key.strip()
-            value = value.strip().strip('"').strip("'")
+            value = value.strip()
 
-            # Type detection - keep everything as string for command compatibility
+            # Suporte a listas: ["a", "b", "c"]
+            if value.startswith('[') and value.endswith(']'):
+                import json
+                try:
+                    parsed = json.loads(value)
+                    if current_section is not None:
+                        current_section[key] = parsed
+                    else:
+                        result[key] = parsed
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse list value for key '{key}': {value}")
+                continue
+
+            # Remove aspas
+            value = value.strip('"').strip("'")
+
             if value.lower() == 'true':
                 value = True
             elif value.lower() == 'false':
                 value = False
             elif value.lower() in ('null', 'none', '~'):
                 value = None
-            else:
-                # Keep as string - command args need string values
-                pass
 
             if current_section is not None:
                 current_section[key] = value
@@ -64,7 +61,6 @@ def parse_all_file(content: str) -> Dict[str, Any]:
                 result[key] = value
 
     return result
-
 
 def load_models_from_configs(config_dir: str = "configs") -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """

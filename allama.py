@@ -15,9 +15,19 @@ from typing import Any, Dict, Optional
 import httpx
 import psutil
 import uvicorn
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+try:
+    from rich import box
+    from rich.align import Align
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
 
 class JSONFormatter(logging.Formatter):
     """Structured JSON logging for production-friendly logs."""
@@ -60,16 +70,6 @@ class ColoredFormatter(logging.Formatter):
         return f"{self.formatTime(record)} - {emoji} {level_style} - {record.getMessage()}"
 
 
-try:
-    from rich import box
-    from rich.align import Align
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.table import Table
-    from rich.text import Text
-    RICH_AVAILABLE = True
-except ImportError:
-    RICH_AVAILABLE = False
 
 # Global config
 ALLAMA_PORT = int(os.environ.get("ALLAMA_PORT", "9000"))
@@ -228,7 +228,7 @@ def kill_vram_fast():
     Kill ONLY processes managed by Allama (active_servers).
     Does NOT kill external vllm/llama processes - that was the bug.
     """
-    logger.info("Aggressive VRAM shutdown initiated...")
+    logger.info("🔨 Aggressive VRAM shutdown initiated...")
     pids_killed = []
 
     # First, get list of known PIDs from active_servers
@@ -299,7 +299,7 @@ def build_vllm_cmd(physical_name: str) -> tuple[list, int, int]:
         if is_port_free(check_port):
             port = check_port
             next_vllm_port = port + 1
-            logger.debug(f"{physical_name}: found free port {port} after {attempts} attempts")
+            
             break
         attempts += 1
     else:
@@ -310,7 +310,7 @@ def build_vllm_cmd(physical_name: str) -> tuple[list, int, int]:
         gpu_allocation[physical_name] = gpu_id
     else:
         gpu_id = gpu_allocation[physical_name]
-    logger.info(f"{physical_name} -> GPU {gpu_id}")
+    logger.info(f"🎯 {physical_name} -> GPU {gpu_id}")
 
     cmd = [
         "vllm", "serve", cfg["path"],
@@ -337,7 +337,7 @@ def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
         if is_port_free(check_port):
             port = check_port
             next_llama_port = port + 1
-            logger.debug(f"{physical_name}: found free port {port} after {attempts} attempts")
+            
             break
         attempts += 1
     else:
@@ -347,7 +347,7 @@ def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
     if gpu_id is None:
         gpu_id = get_best_gpu()
         gpu_allocation[physical_name] = gpu_id
-    logger.info(f"{physical_name} llama.cpp -> GPU {gpu_id}")
+    logger.info(f"🎯 {physical_name} -> GPU {gpu_id}")
 
     cmd = [
         LLAMA_CPP_PATH,
@@ -411,10 +411,10 @@ def shutdown_server(physicalname: str, reason: str = "user", fast: bool = False)
         port = server["port"]
         backend = server.get("backend", "unknown")
 
-    logger.info(f"Unload {physicalname}:{port} ({reason})")
+    logger.info(f"📤 Unload {physicalname}:{port} ({reason})")
 
     if proc and proc.poll() is None:
-        logger.info(f"Killing PID {pid} ({backend})")
+        logger.info(f"💀 Killing PID {pid} ({backend})")
         try:
             pgid = os.getpgid(pid)
             os.killpg(pgid, signal.SIGKILL)
@@ -435,7 +435,7 @@ def shutdown_server(physicalname: str, reason: str = "user", fast: bool = False)
 
     gpus = get_free_gpu_memory()
     freegb = sum(g["free_gb"] for g in gpus)
-    logger.info(f"{physicalname} unloaded. VRAM free: {freegb:.1f}GB")
+    logger.info(f"🗑️  {physicalname} unloaded. VRAM free: {freegb:.1f}GB")
 
 
 def list_gpu_processes(gpu_ids: Optional[list[int]] = None) -> list[Dict[str, Any]]:
@@ -600,7 +600,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
             if proc.poll() is None:
                 port = active_servers[physicalname]["port"]
                 server_idle_time[physicalname] = time.time()
-                logger.debug(f"Reusing {displayname}:{port}")
+                logger.debug(f"♻️  Reusing {displayname}:{port}")
                 return port
 
     NEEDGB = get_model_vram_need(cfg, physicalname)
@@ -609,7 +609,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
     # Tensor parallelism (TP) vai a disciplina da VRAM check
     tp_size = int(cfg.get("tensor_parallel", "1"))
     if tp_size > 1:
-        logger.info(f"🔄 Tensor parallel={tp_size} - using total VRAM, not single GPU")
+        logger.info(f"🔄 Tensor parallel={tp_size} - using total VRAM")
 
     maxretries = 3  # Reduzido drasticamente - não tem sentido tentar 25x
     no_progress_count = 0
@@ -626,14 +626,14 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         # Compare with total VRAM for TP models, single GPU for non-TP models
         available_gb = total_free_gb if tp_size > 1 else max_free_gb
         if available_gb >= NEEDGB:
-            logger.info(f"✅ VRAM suficiente ({available_gb:.1f}GB)")
+            logger.info(f"✅ VRAM sufficient ({available_gb:.1f}GB)")
             break
 
         with global_lock:
             names_to_unload = [n for n in active_servers if n != physicalname]
 
         for name in names_to_unload:
-            logger.info(f"Unload {name} (dynamic swap)")
+            logger.info(f"📤 Unloading {name} (dynamic swap)")
             shutdown_server(name, "swap-dynamic", fast=True)
             last_total_gb = total_free_gb
 
@@ -648,18 +648,18 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                 gpu_procs = list_gpu_processes()
                 active_procs = [p for p in gpu_procs if p["memory_mb"] > 100]
                 if active_procs:
-                    logger.error("Processos usando VRAM:")
+                    logger.error("🚨 Processes using VRAM:")
                     for p in sorted(active_procs, key=lambda x: x["memory_mb"], reverse=True)[:5]:
                         is_allama = any(p["pid"] == s["process"].pid for s in active_servers.values())
-                        marker = "ALLAMA" if is_allama else "externo"
+                        marker = "ALLAMA" if is_allama else "external"
                         logger.error(f"  PID {p['pid']} ({p['name']}): {p['memory_mb']//1024:.0f}GB [{marker}]")
                 logger.error(
-                    f"⚠️  Não foi possível liberar VRAM suficiente. "
-                    f"Necessário: {NEEDGB:.1f}GB, disponível: {new_total_gb:.1f}GB."
+                    f"⚠️  Failed to free enough VRAM. "
+                    f"Required: {NEEDGB:.1f}GB, available: {new_total_gb:.1f}GB."
                 )
                 raise RuntimeError(
-                    f"Não há VRAM suficiente para carregar {displayname}. "
-                    f"O modelo precisa de {NEEDGB:.1f}GB mas o sistema só tem {new_total_gb:.1f}GB livres."
+                    f"Not enough VRAM to load {displayname}. "
+                    f"Model needs {NEEDGB:.1f}GB but system only has {new_total_gb:.1f}GB free."
                 )
         last_total_gb = new_total_gb
         await asyncio.sleep(5)
@@ -673,7 +673,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
             f"continuando e esperando que o backend gerencie memória."
         )
 
-    logger.info(f"Loading {displayname} ({backend})")
+    logger.info(f"📥 Loading {displayname} ({backend})")
 
     if backend == "vllm":
         cmd, port, gpu_id = build_vllm_cmd(physicalname)
@@ -720,8 +720,8 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
             }
             server_idle_time[physicalname] = time.time()
 
-        logger.info(f"Process started PID {proc.pid} on port {port}")
-        logger.info(f"Log: tail -f {PATH_TO_ALLAMA}/{logfilepath}")
+        logger.info(f"✅ Process started PID {proc.pid} on port {port}")
+        logger.info(f"📄 Log: tail -f {PATH_TO_ALLAMA}/{logfilepath}")
 
         ready = await wait_for_model_ready(
             proc, port, backend, logfilepath, displayname,
@@ -735,7 +735,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                 raise RuntimeError(f"{displayname} startup failed (code {returncode})")
             raise RuntimeError(f"{displayname} not ready after 300s")
 
-        logger.info(f"{displayname} loaded and ready")
+        logger.info(f"🚀 {displayname} loaded and ready")
         return port
     finally:
         if logfile and not logfile.closed:
@@ -748,7 +748,7 @@ _health_monitor_thread: Optional[threading.Thread] = None
 
 def health_monitor():
     _health_monitor_running.set()
-    logger.info("Health monitor started")
+    logger.info("🏥 Health monitor started")
     try:
         while _health_monitor_running.is_set():
             try:
@@ -761,14 +761,14 @@ def health_monitor():
                         port = server["port"]
 
                         if proc.poll() is not None:
-                            logger.error(f"{physical_name}:{port} crashed")
+                            logger.error(f"💥 {physical_name}:{port} crashed")
                             active_servers.pop(physical_name, None)
                             server_idle_time.pop(physical_name, None)
                             continue
 
                         idle = now - server_idle_time.get(physical_name, 0)
                         if idle > KEEP_ALIVE_SECONDS:
-                            logger.info(f"{physical_name} idle {idle:.0f}s, unloading")
+                            logger.info(f"⏰ {physical_name} idle {idle:.0f}s, unloading")
                             to_unload.append(physical_name)
 
                 for physical_name in to_unload:
@@ -815,15 +815,21 @@ async def close_http_client():
 async def lifespan(app: FastAPI):
     """Lifespan handler for startup/shutdown events (modern FastAPI alternative to on_event)."""
     yield
-    logger.info("Shutting down Allama...")
+    logger.info("🛑 Shutting down Allama...")
     await close_http_client()
 
 app = FastAPI(title="Allama - LLM API", lifespan=lifespan)
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(body: dict = Body(...)):
+async def chat_completions(request: Request, body: dict = Body(...)):
     model_name = body.get("model", "")
+    request_id = request.headers.get("x-request-id", "unknown")
+    client_host = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {user_agent[:50]}) req_id={request_id}")
+
     if model_name not in LOGICAL_MODELS:
         return JSONResponse(
             status_code=404,
@@ -863,7 +869,7 @@ async def chat_completions(body: dict = Body(...)):
     logger.debug(f"{model_name} -> {physical_name}:{port} ({backend})")
 
     if "messages" not in body or not body["messages"]:
-        logger.warning("Empty messages request")
+        logger.warning("⚠️  Empty messages request")
         if body.get("stream", False):
             async def empty_stream():
                 yield "data: [DONE]\n\n"
@@ -919,10 +925,16 @@ async def chat_completions(body: dict = Body(...)):
 
 
 @app.post("/v1/messages")
-async def messages(body: dict = Body(...)):
+async def messages(request: Request, body: dict = Body(...)):
     model_name = body.get("model", "")
+    request_id = request.headers.get("x-request-id", "unknown")
+    client_host = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (agent: {user_agent[:50]}) req_id={request_id}")
 
     if model_name not in LOGICAL_MODELS:
+        # Check if we can auto-switch to a loaded model
         with global_lock:
             loaded_vllm = [
                 name
@@ -935,6 +947,8 @@ async def messages(body: dict = Body(...)):
                 (k for k, v in LOGICAL_MODELS.items() if v["physical"] == physical),
                 None,
             )
+            if model_name and model_name != body.get("model"):
+                logger.info(f"🔄 Auto-switch: {body.get('model')} -> {model_name} (using loaded {physical})")
         if not model_name or model_name not in LOGICAL_MODELS:
             return JSONResponse(
                 status_code=404,
@@ -951,6 +965,17 @@ async def messages(body: dict = Body(...)):
             content={"error": "Anthropic Messages API requires vllm backend"},
         )
 
+    # Check if model is being switched
+    current_loaded = None
+    with global_lock:
+        for name, srv in active_servers.items():
+            if srv.get("backend") == "vllm" and srv.get("process") and srv["process"].poll() is None:
+                current_loaded = name
+                break
+
+    if current_loaded and current_loaded != physical_name:
+        logger.info(f"🔄 Model switch: {current_loaded} -> {physical_name} ({model_name})")
+
     port = await ensure_physical_model(physical_name, model_name)
     server_idle_time[physical_name] = time.time()
 
@@ -958,7 +983,7 @@ async def messages(body: dict = Body(...)):
     max_output_cap = max_model_len // 4
     requested = body.get("max_tokens", max_output_cap)
     if requested > max_output_cap:
-        logger.info(f"max_tokens {requested} -> {max_output_cap}")
+        logger.info(f"⚠️  max_tokens {requested} -> {max_output_cap}")
         body["max_tokens"] = max_output_cap
 
     body["model"] = cfg["path"]
@@ -1177,7 +1202,7 @@ def main():
             time.sleep(0.5)
             os.kill(os.getpid(), signal.SIGKILL)
             return
-        logger.info("Shutdown requested...")
+        logger.info("🛑 Shutdown requested...")
         running = False
         # Signal health monitor to stop - use .clear() to break the is_set() loop
         _health_monitor_running.clear()
