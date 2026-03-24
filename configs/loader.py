@@ -4,7 +4,7 @@ Each physical and logical model has its own .all file.
 """
 import logging
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 logger = logging.getLogger("allama.config_loader")
 
@@ -73,7 +73,7 @@ def parse_all_file(content: str) -> Dict[str, Any]:
 
 def load_models_from_configs(
     config_dir: str = "configs"
-) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """
     Load all .all configuration files from a directory.
 

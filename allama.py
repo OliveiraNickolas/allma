@@ -29,6 +29,7 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
 
+
 class JSONFormatter(logging.Formatter):
     """Structured JSON logging for production-friendly logs."""
     def format(self, record: logging.LogRecord) -> str:
@@ -69,7 +70,6 @@ class ColoredFormatter(logging.Formatter):
         color = self.colors.get(record.levelname, "")
         level_style = f"{color}{record.levelname}{self.reset}"
         return f"{self.formatTime(record)} - {emoji} {level_style} - {record.getMessage()}"
-
 
 
 # ==============================================================================
@@ -192,8 +192,9 @@ gpu_allocation: Dict[str, int] = {}
 PHYSICAL_MODELS: Dict[str, Dict[str, Any]] = {}
 LOGICAL_MODELS: Dict[str, Dict[str, Any]] = {}
 
+
 # ==============================================================================
-# PORT ALLOCATION
+# SECTION: PORT ALLOCATION
 # ==============================================================================
 def get_next_vllm_port() -> int:
     """Get next available vLLM port."""
@@ -226,6 +227,9 @@ def load_models_from_configs() -> tuple[dict, dict]:
 PHYSICAL_MODELS, LOGICAL_MODELS = load_models_from_configs()
 
 
+# ==============================================================================
+# SECTION: UTILITY FUNCTIONS
+# ==============================================================================
 def is_port_free(port: int) -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -573,6 +577,9 @@ def kill_vram_fast():
         logger.error(traceback.format_exc())
 
 
+# ==============================================================================
+# SECTION: SERVER COMMANDS
+# ==============================================================================
 def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[list, int, int]:
     """Build vLLM command with GPU and tensor parallelism configuration."""
     cfg = PHYSICAL_MODELS[physical_name]
@@ -611,19 +618,16 @@ def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
     """Build llama.cpp command with GPU configuration."""
     cfg = PHYSICAL_MODELS[physical_name]
 
-    # Get next available port
     port = get_next_llama_port()
     while not is_port_free(port):
         port = get_next_llama_port()
 
-    # Select GPU
     gpu_id = gpu_allocation.get(physical_name)
     if gpu_id is None:
         gpu_id = get_best_gpu()
         gpu_allocation[physical_name] = gpu_id
     logger.info(f"🎯 {physical_name} -> GPU {gpu_id}")
 
-    # Build command
     cmd = [
         LLAMA_CPP_PATH,
         "-m", cfg["model"],
@@ -642,6 +646,9 @@ def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
     return cmd, port, gpu_id
 
 
+# ==============================================================================
+# SECTION: PROCESS MANAGEMENT
+# ==============================================================================
 def kill_process_tree(pid: int, timeout: int = 2) -> bool:
     try:
         try:
@@ -671,7 +678,7 @@ def kill_process_tree(pid: int, timeout: int = 2) -> bool:
 
 
 def shutdown_server(physicalname: str, reason: str = "user", fast: bool = False):
-    global active_servers, server_idle_time
+    global active_servers, server_idle_time  # noqa: F824
     proc = None
     port = None
     backend = None
@@ -738,6 +745,9 @@ def list_gpu_processes(gpu_ids: Optional[list[int]] = None) -> list[Dict[str, An
     return result
 
 
+# ==============================================================================
+# SECTION: LOADING UI
+# ==============================================================================
 class LoadingSpinner:
     def __init__(self, message: str = "Loading"):
         self.message = message
@@ -830,10 +840,10 @@ async def wait_for_model_ready(
                     for line in new_content.splitlines():
                         if line.strip():
                             logger.debug(f"[{displayname}] {line}")
-                        for signal in signals:
-                            if signal in line:
+                        for expected_signal in signals:
+                            if expected_signal in line:
                                 spinner.stop(success=True)
-                                logger.info(f"🎉 {displayname} ready: {signal}")
+                                logger.info(f"🎉 {displayname} ready: {expected_signal}")
                                 await asyncio.sleep(1)
                                 return True
             except Exception as e:
@@ -861,6 +871,9 @@ async def wait_for_model_ready(
         raise
 
 
+# ==============================================================================
+# SECTION: MODEL LOADING
+# ==============================================================================
 async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = None):
     if physicalname not in PHYSICAL_MODELS:
         raise RuntimeError(f"Model {physicalname} not configured")
@@ -1037,8 +1050,10 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                     # Check if it's a VRAM-related error
                     logfile.seek(log_start_position)
                     log_content = logfile.read()
-                    if "Free memory" in log_content and "less than desired" in log_content:
-                        logger.warning(f"💥 VRAM allocation failed on GPU {current_gpu_id}, retrying with adjusted config...")
+                    if "Free memory" in log_content and "less than desired" in log_content:  # noqa: E501
+                        logger.warning(
+                            f"💥 VRAM allocation failed on GPU {current_gpu_id}, retrying with adjusted config..."
+                        )
                         raise RuntimeError("VRAM allocation failed")
                     raise RuntimeError(f"{displayname} startup failed (code {returncode})")
                 raise RuntimeError(f"{displayname} not ready after 300s")
@@ -1073,6 +1088,9 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                 logfile.close()
 
 
+# ==============================================================================
+# SECTION: HEALTH MONITORING
+# ==============================================================================
 _health_monitor_running = threading.Event()
 _health_monitor_thread: Optional[threading.Thread] = None
 
@@ -1117,7 +1135,7 @@ def health_monitor():
 
 
 # ==============================================================================
-# HTTP CLIENT POOL
+# SECTION: HTTP CLIENT
 # ==============================================================================
 httpx_client: Optional[httpx.AsyncClient] = None
 
@@ -1141,7 +1159,7 @@ async def close_http_client():
 
 
 # ==============================================================================
-# API
+# SECTION: FASTAPI APPLICATION
 # ==============================================================================
 async def lifespan(app: FastAPI):
     """Lifespan handler for startup/shutdown events (modern FastAPI alternative to on_event)."""
@@ -1278,11 +1296,10 @@ async def chat_completions(request: Request, body: dict = Body(...)):
 @app.post("/v1/messages")
 async def messages(request: Request, body: dict = Body(...)):
     model_name = body.get("model", "")
-    request_id = request.headers.get("x-request-id", "unknown")
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
-    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})")
+    logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})")  # noqa: E501
 
     if model_name not in LOGICAL_MODELS:
         # Check if we can auto-switch to a loaded model
@@ -1542,7 +1559,7 @@ else:
 
 
 def main():
-    global running, _health_monitor_thread
+    global running, _health_monitor_thread  # noqa: F824
 
     def signal_handler(sig: int, frame: Any) -> None:
         global running
@@ -1581,4 +1598,6 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
+
     main()
