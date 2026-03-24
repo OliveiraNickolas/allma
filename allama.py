@@ -72,7 +72,9 @@ class ColoredFormatter(logging.Formatter):
 
 
 
-# Global config
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
 ALLAMA_PORT = int(os.environ.get("ALLAMA_PORT", "9000"))
 
 
@@ -119,7 +121,9 @@ def format_user_agent(ua: str) -> str:
     return ua
 
 
-# Global config
+# ==============================================================================
+# CONFIGURATION (environment variables override defaults)
+# ==============================================================================
 VLLM_BASE_PORT = int(os.environ.get("VLLM_BASE_PORT", "8000"))
 LLAMA_BASE_PORT = int(os.environ.get("LLAMA_BASE_PORT", "9001"))
 KEEP_ALIVE_SECONDS = int(os.environ.get("KEEP_ALIVE_SECONDS", "600"))
@@ -127,13 +131,16 @@ HEALTH_CHECK_INTERVAL = int(os.environ.get("HEALTH_CHECK_INTERVAL", "60"))
 GPU_MEMORY_THRESHOLD_GB = float(os.environ.get("GPU_MEMORY_THRESHOLD_GB", "1.0"))
 AUTO_SWAP_ENABLED = os.environ.get("AUTO_SWAP_ENABLED", "true").lower() == "true"
 SWAP_IDLE_THRESHOLD = int(os.environ.get("SWAP_IDLE_THRESHOLD", "300"))
+MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", "15"))
+
+# Paths (relative to script location)
+SCRIPT_DIR = Path(__file__).parent
 ALLAMA_LOG_DIR = Path(os.environ.get("ALLAMA_LOG_DIR", "./logs"))
 CONFIG_DIR = Path(os.environ.get("ALLAMA_CONFIG_DIR", "./configs"))
-PATH_TO_ALLAMA = os.environ.get("PATH_TO_ALLAMA", "/home/nick/AI/vllm/allama")
+PATH_TO_ALLAMA = os.environ.get("PATH_TO_ALLAMA", str(SCRIPT_DIR.parent))
 LLAMA_CPP_PATH = os.environ.get(
-    "LLAMA_CPP_PATH", "/home/nick/AI/llama.cpp/build/bin/llama-server"
+    "LLAMA_CPP_PATH", str(SCRIPT_DIR.parent.parent / "llama.cpp" / "build" / "bin" / "llama-server")
 )
-MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", "15"))
 
 # Logging setup
 ALLAMA_LOG_DIR.mkdir(exist_ok=True)
@@ -184,6 +191,24 @@ gpu_allocation: Dict[str, int] = {}
 # Model configurations
 PHYSICAL_MODELS: Dict[str, Dict[str, Any]] = {}
 LOGICAL_MODELS: Dict[str, Dict[str, Any]] = {}
+
+# ==============================================================================
+# PORT ALLOCATION
+# ==============================================================================
+def get_next_vllm_port() -> int:
+    """Get next available vLLM port."""
+    global next_vllm_port
+    port = next_vllm_port
+    next_vllm_port += 1
+    return port
+
+
+def get_next_llama_port() -> int:
+    """Get next available llama port."""
+    global next_llama_port
+    port = next_llama_port
+    next_llama_port += 1
+    return port
 
 
 def load_models_from_configs() -> tuple[dict, dict]:
@@ -452,27 +477,6 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
     return effective_tp, best["index"]
 
 
-def get_gpus_for_tp(tp_size: int, available_gpus: list[dict]) -> list[int]:
-    """
-    Get list of GPU indices for tensor parallel.
-    Requires consecutive GPUs (based on their indices, not positions).
-    Returns indices of GPUs, or [] if not enough GPUs available.
-    """
-    if not available_gpus or len(available_gpus) < tp_size:
-        return []
-
-    # Check if we have consecutive GPU indices
-    indices = sorted([g["index"] for g in available_gpus])
-
-    for i in range(len(indices) - tp_size + 1):
-        candidate = indices[i:i + tp_size]
-        if all(candidate[j] + 1 == candidate[j + 1] for j in range(len(candidate) - 1)):
-            return candidate
-
-    # Fallback: return any tp_size GPUs if no consecutive ones
-    return indices[:tp_size]
-
-
 def get_model_vram_need(cfg: Dict[str, Any], physical_name: str) -> float:
     backend = cfg.get("backend", "vllm")
     try:
@@ -570,32 +574,22 @@ def kill_vram_fast():
 
 
 def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[list, int, int]:
-    global next_vllm_port
+    """Build vLLM command with GPU and tensor parallelism configuration."""
     cfg = PHYSICAL_MODELS[physical_name]
-    attempts = 0
-    while attempts < 1000:
-        check_port = VLLM_BASE_PORT + (next_vllm_port + attempts) % (65535 - VLLM_BASE_PORT)
-        if is_port_free(check_port):
-            port = check_port
-            next_vllm_port = port + 1
 
-            break
-        attempts += 1
-    else:
-        raise RuntimeError(f"Could not find free port for {physical_name} in 1000 attempts")
+    # Get next available port
+    port = get_next_vllm_port()
+    while not is_port_free(port):
+        port = get_next_vllm_port()
 
+    # Find optimal TP size and GPU allocation
     tp_size = int(cfg.get("tensor_parallel", "1"))
-    gpu_mem_util = float(cfg.get("gpu_memory_utilization", "0.90"))
-    model_path = cfg.get("path", "")
-
-    # First try: find optimal TP size and GPUs (dynamic adjustment)
-    # Returns (tp_size, gpu_id) - single GPU for single-TP or first GPU of TP group
-    # skip_gpu parameter tells it to avoid a previously failed GPU
     adj_tp, selected_gpu = find_optimal_tp_and_gpus(physical_name, skip_gpu)
     if adj_tp != tp_size:
         logger.info(f"🔄 {physical_name}: Adjusting TP from {tp_size} to {adj_tp} for GPU fit")
     tp_size = adj_tp
 
+    # Build command
     cmd = [
         "vllm", "serve", cfg["path"],
         "--tokenizer", cfg["tokenizer"],
@@ -614,26 +608,22 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[lis
 
 
 def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
-    global next_llama_port
+    """Build llama.cpp command with GPU configuration."""
     cfg = PHYSICAL_MODELS[physical_name]
-    attempts = 0
-    while attempts < 1000:
-        check_port = LLAMA_BASE_PORT + (next_llama_port + attempts) % (65535 - LLAMA_BASE_PORT)
-        if is_port_free(check_port):
-            port = check_port
-            next_llama_port = port + 1
-            
-            break
-        attempts += 1
-    else:
-        raise RuntimeError(f"Could not find free port for {physical_name} in 1000 attempts")
 
+    # Get next available port
+    port = get_next_llama_port()
+    while not is_port_free(port):
+        port = get_next_llama_port()
+
+    # Select GPU
     gpu_id = gpu_allocation.get(physical_name)
     if gpu_id is None:
         gpu_id = get_best_gpu()
         gpu_allocation[physical_name] = gpu_id
-    logger.info(f"🎯 {physical_name} ➡ GPU {gpu_id}")
+    logger.info(f"🎯 {physical_name} -> GPU {gpu_id}")
 
+    # Build command
     cmd = [
         LLAMA_CPP_PATH,
         "-m", cfg["model"],

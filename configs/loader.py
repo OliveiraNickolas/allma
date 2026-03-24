@@ -1,15 +1,16 @@
 """
-Config loader for Allama .all configuration files.
+Config loader for Allama configuration files.
 Each physical and logical model has its own .all file.
 """
 import logging
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
-logger = logging.getLogger("Wrapper")
+logger = logging.getLogger("allama.config_loader")
 
 
 def parse_all_file(content: str) -> Dict[str, Any]:
+    """Parse a single config file content."""
     import json
     result = {}
     current_section = None
@@ -23,7 +24,7 @@ def parse_all_file(content: str) -> Dict[str, Any]:
         if not line or line.startswith('#'):
             continue
 
-        # Section header [section_name] — but NOT a list value
+        # Section header [section_name]
         if line.startswith('[') and line.endswith(']') and '=' not in line:
             section_name = line[1:-1].strip()
             result[section_name] = {}
@@ -35,9 +36,8 @@ def parse_all_file(content: str) -> Dict[str, Any]:
             key = key.strip()
             value = value.strip()
 
-            # Suporte a listas multi-linha: value starts with '[' but may not end with ']' yet
+            # Multi-line list support
             if value.startswith('['):
-                # Accumulate lines until we close the bracket
                 accumulated = value
                 while not accumulated.rstrip().endswith(']') and i < len(lines):
                     accumulated += ' ' + lines[i].strip()
@@ -52,9 +52,10 @@ def parse_all_file(content: str) -> Dict[str, Any]:
                     logger.warning(f"Failed to parse list value for key '{key}': {accumulated}")
                 continue
 
-            # Remove aspas
+            # Remove quotes
             value = value.strip('"').strip("'")
 
+            # Type coercion
             if value.lower() == 'true':
                 value = True
             elif value.lower() == 'false':
@@ -69,7 +70,10 @@ def parse_all_file(content: str) -> Dict[str, Any]:
 
     return result
 
-def load_models_from_configs(config_dir: str = "configs") -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+
+def load_models_from_configs(
+    config_dir: str = "configs"
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """
     Load all .all configuration files from a directory.
 
@@ -89,58 +93,58 @@ def load_models_from_configs(config_dir: str = "configs") -> tuple[Dict[str, Dic
     config_path = Path(config_dir)
 
     if not config_path.exists():
-        logger.warning(f"Config directory not found: {config_dir} Using empty configs.")
+        logger.warning(f"Config directory not found: {config_dir}")
         return {}, {}
 
     physical_models: Dict[str, Dict[str, Any]] = {}
     logical_models: Dict[str, Dict[str, Any]] = {}
 
-    # Explicitly load from physical and logical subdirectories
+    # Load from physical subdirectory
     physical_dir = config_path / "physical"
-    logical_dir = config_path / "logical"
-
     if physical_dir.exists():
-        for all_file in physical_dir.glob("*.allm"):
-            try:
-                logger.debug(f"Loading physical config: {all_file.name}")
-                content = all_file.read_text(encoding='utf-8')
-                config = parse_all_file(content)
+        for cfg_file in physical_dir.glob("*"):
+            if cfg_file.is_file() and cfg_file.suffix in (".all", ".allm"):
+                try:
+                    logger.debug(f"Loading physical config: {cfg_file.name}")
+                    content = cfg_file.read_text(encoding='utf-8')
+                    config = parse_all_file(content)
 
-                # Determine if physical or logical model
-                if "backend" in config:
-                    # Physical model - use filename as key (without .all extension)
-                    model_name = all_file.stem
-                    physical_models[model_name] = config
-                    logger.debug(f"  Loaded physical model: {model_name}")
-                else:
-                    logger.warning(f"  Skipped {all_file.name}: no 'backend' field")
+                    if "backend" in config:
+                        model_name = cfg_file.stem
+                        physical_models[model_name] = config
+                        logger.debug(f"  Loaded physical model: {model_name}")
+                    else:
+                        logger.warning(f"  Skipped {cfg_file.name}: no 'backend' field")
 
-            except Exception as e:
-                logger.error(f"Failed to load {all_file.name}: {e}")
+                except Exception as e:
+                    logger.error(f"Failed to load {cfg_file.name}: {e}")
 
+    # Load from logical subdirectory
+    logical_dir = config_path / "logical"
     if logical_dir.exists():
-        for all_file in logical_dir.glob("*.allm"):
-            try:
-                logger.debug(f"Loading logical config: {all_file.name}")
-                content = all_file.read_text(encoding='utf-8')
-                config = parse_all_file(content)
+        for cfg_file in logical_dir.glob("*"):
+            if cfg_file.is_file() and cfg_file.suffix in (".all", ".allm"):
+                try:
+                    logger.debug(f"Loading logical config: {cfg_file.name}")
+                    content = cfg_file.read_text(encoding='utf-8')
+                    config = parse_all_file(content)
 
-                # Determine if physical or logical model
-                if "physical" in config:
-                    # Logical model
-                    model_name = all_file.stem
-                    physical_ref = config["physical"]
+                    if "physical" in config:
+                        model_name = cfg_file.stem
+                        physical_ref = config["physical"]
 
-                    # Check if reference is valid (optional - just warn)
-                    if physical_ref not in physical_models:
-                        logger.warning(f"  Logical model '{model_name}' references unknown physical model '{physical_ref}'")
+                        if physical_ref not in physical_models:
+                            logger.warning(
+                                f"Logical model '{model_name}' references unknown "
+                                f"physical model '{physical_ref}'"
+                            )
 
-                    logical_models[model_name] = config
-                    logger.debug(f"  Loaded logical model: {model_name} -> {physical_ref}")
-                else:
-                    logger.warning(f"  Skipped {all_file.name}: no 'physical' field")
+                        logical_models[model_name] = config
+                        logger.debug(f"  Loaded logical model: {model_name} -> {physical_ref}")
+                    else:
+                        logger.warning(f"  Skipped {cfg_file.name}: no 'physical' field")
 
-            except Exception as e:
-                logger.error(f"Failed to load {all_file.name}: {e}")
+                except Exception as e:
+                    logger.error(f"Failed to load {cfg_file.name}: {e}")
 
     return physical_models, logical_models
