@@ -1,0 +1,11 @@
+# Physical model: Qwen3.5-9b (vLLM backend)
+
+backend = "vllm"
+path = "/home/nick/AI/Models/Qwen3.5-9b"
+tokenizer = "/home/nick/AI/Models/Qwen3.5-9b"
+tensor_parallel = "1"
+gpu_memory_utilization = "0.90"
+max_model_len = "260000"
+max_num_seqs = "8"
+
+extra_args = ["--reasoning-parser", "qwen3", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]

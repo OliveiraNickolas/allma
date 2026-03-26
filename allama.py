@@ -184,6 +184,7 @@ server_idle_time: Dict[str, float] = {}
 next_vllm_port = VLLM_BASE_PORT
 next_llama_port = LLAMA_BASE_PORT
 global_lock = threading.Lock()
+loading_models = set()  # Track models currently loading to prevent duplicate loads
 running = True
 ALLAMA_PID = os.getpid()
 gpu_allocation: Dict[str, int] = {}
@@ -273,8 +274,15 @@ def get_best_gpu() -> int:
 
 
 def get_all_gpus() -> list[dict]:
-    """Get all GPUs with their VRAM info."""
+    """Get all GPUs with their VRAM info, respecting ALLAMA_VISIBLE_DEVICES env var."""
     import subprocess
+
+    # Check if user wants to restrict visible GPUs
+    visible_devices = os.environ.get("ALLAMA_VISIBLE_DEVICES", None)
+    visible_gpus = None
+    if visible_devices:
+        visible_gpus = set(int(x.strip()) for x in visible_devices.split(","))
+        logger.debug(f"🔒 ALLAMA_VISIBLE_DEVICES={visible_devices}, restricting to GPUs: {visible_gpus}")
 
     try:
         result = subprocess.run(
@@ -289,13 +297,17 @@ def get_all_gpus() -> list[dict]:
                 gpu_id = int(parts[0].strip()) if parts[0].strip() else 0
                 total_mb = float(parts[1].strip()) if parts[1].strip() else 24576
                 free_mb = float(parts[2].strip()) if parts[2].strip() else 0.0
-                gpus.append({
-                    "index": gpu_id,
-                    "free_mb": free_mb,
-                    "free_gb": free_mb / 1024,
-                    "total_mb": total_mb,
-                    "total_gb": total_mb / 1024,
-                })
+                # Filter if ALLAMA_VISIBLE_DEVICES is set
+                if visible_gpus is None or gpu_id in visible_gpus:
+                    gpus.append({
+                        "index": gpu_id,
+                        "free_mb": free_mb,
+                        "free_gb": free_mb / 1024,
+                        "total_mb": total_mb,
+                        "total_gb": total_mb / 1024,
+                    })
+        if visible_gpus is not None:
+            logger.info(f"🔍 Found {len(gpus)} GPU(s) visible to ALLAMA: {[g['index'] for g in gpus]}")
         return gpus
     except Exception as e:
         logger.error(f"Error getting GPU info: {e}")
@@ -469,10 +481,8 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
         is_consecutive = all(indices[j] + 1 == indices[j + 1] for j in range(len(indices) - 1))
 
         if is_consecutive:
-            # Skip group if it contains the failed GPU
             if skip_gpu is not None and skip_gpu in indices:
                 continue
-            logger.info(f"🎯 {physical_name}: TP={effective_tp} on GPU(s) {indices}")
             return effective_tp, indices[0]
 
     # Fallback: no consecutive group found (shouldn't happen with 2 GPUs 0+1)
@@ -891,10 +901,39 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                 logger.debug(f"♻️  Reusing {displayname}:{port}")
                 return port
 
+    # Prevent duplicate concurrent loads
+    if physicalname in loading_models:
+        logger.info(f"⏳ {displayname} already loading, waiting...")
+        await asyncio.sleep(2)
+        with global_lock:
+            if physicalname in active_servers:
+                proc = active_servers[physicalname]["process"]
+                if proc.poll() is None:
+                    port = active_servers[physicalname]["port"]
+                    server_idle_time[physicalname] = time.time()
+                    logger.debug(f"♻️  Reusing {displayname}:{port} after wait")
+                    return port
+        raise RuntimeError(f"Loading timeout for {displayname} - load may have stuck")
+
+    loading_models.add(physicalname)
+    success = False
+    try:
+        port = await _load_model_impl(physicalname, cfg, backend, displayname)
+        success = True
+        return port
+    finally:
+        loading_models.remove(physicalname)
+        if not success:
+            with global_lock:
+                active_servers.pop(physicalname, None)
+                server_idle_time.pop(physicalname, None)
+
+
+async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayname: str) -> int:
+    """Internal implementation of model loading."""
     NEEDGB = get_model_vram_need(cfg, physicalname)
     logger.info(f"🧮 {displayname} needs {NEEDGB:.1f}GB VRAM")
 
-    # Tensor parallelism (TP) vai a disciplina da VRAM check
     tp_size = int(cfg.get("tensor_parallel", "1"))
     if tp_size > 1:
         logger.info(f"🔄 Tensor parallel={tp_size} - using total VRAM")
@@ -1036,7 +1075,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                 server_idle_time[physicalname] = time.time()
 
             logger.info(f"✅ Process started PID {proc.pid} on port {port}, GPU {current_gpu_id}")
-            logger.info(f"📄 Log: tail -f {PATH_TO_ALLAMA}/{logfilepath}")
+            logger.info(f"📄 Log: tail -f {PATH_TO_ALLAMA}/allama/{logfilepath}")
 
             ready = await wait_for_model_ready(
                 proc, port, backend, logfilepath, displayname,
@@ -1086,6 +1125,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         finally:
             if logfile and not logfile.closed:
                 logfile.close()
+    raise RuntimeError(f"Model {displayname} failed to load after all attempts")
 
 
 # ==============================================================================
