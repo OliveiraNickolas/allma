@@ -1434,15 +1434,12 @@ async def health():
 
 
 if RICH_AVAILABLE:
-    # Palette
-    W = 94
-    C_YELLOW = "#f5c518"
-    C_WHITE = "#fafafa"
-    C_TEAL = "#5fd7af"
-    C_TERRA = "#d7875f"
-    C_BERRY = "#9b6dff"
-    C_DIM = "#2d2d4e"
-    C_MARRON = "#ed333b"
+    # ── Apple Lisa monochrome palette ──────────────────────────────────────
+    W   = 94
+    CW  = "#e8e8e8"   # white  – main text
+    CLG = "#999999"   # light gray – titles, secondary
+    CMG = "#555555"   # mid gray – shadows, dim borders
+    CDG = "#2e2e2e"   # dark gray – very subtle
 
     console = Console(width=W)
 
@@ -1461,94 +1458,119 @@ if RICH_AVAILABLE:
             tbl.add_row(*row)
         return tbl
 
-    banner_txt = Text(justify="center")
-    banner_txt.append("🦙 ALLAMA 🦙\n", style=f"bold {C_YELLOW}")
-    banner_txt.append(f"http://127.0.0.1:{ALLAMA_PORT}", style=f"italic {C_WHITE}")
+    def build_logo() -> list[str]:
+        """ALLAMA pixel logo. Each L gets a drop shadow (+1 col, +1 row)
+        so the two real L's and their two shadows read as LLLL — ALL LLM."""
+        CHARS = {
+            'A': [" ███ ", "█   █", "█████", "█   █", "█   █"],
+            'L': ["█    ", "█    ", "█    ", "█    ", "█████"],
+            'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
+        }
+        word   = list("ALLAMA")
+        starts = [0, 6, 12, 18, 24, 30]
+        height = 6    # 5 main rows + 1 shadow spill row
+        width  = 36   # 35 chars + 1 for rightmost shadow
+
+        canvas = [[0] * width for _ in range(height)]
+
+        for ch, col in zip(word, starts):
+            for r, row in enumerate(CHARS[ch]):
+                for c, px in enumerate(row):
+                    if px == "█":
+                        canvas[r][col + c] = 1          # bright pixel
+            if ch == "L":
+                for r, row in enumerate(CHARS[ch]):
+                    for c, px in enumerate(row):
+                        if px == "█":
+                            sr, sc = r + 1, col + c + 1
+                            if sr < height and sc < width and canvas[sr][sc] == 0:
+                                canvas[sr][sc] = 2      # shadow pixel
+
+        return [
+            "".join("█" if v == 1 else "▒" if v == 2 else " " for v in row)
+            for row in canvas
+        ]
+
+    # ── Banner ─────────────────────────────────────────────────────────────
+    logo_rows = build_logo()
+    banner = Text(justify="center")
+    for i, row in enumerate(logo_rows):
+        for ch in row:
+            if ch == "█":
+                banner.append(ch, style=f"bold {CW}")
+            elif ch == "▒":
+                banner.append(ch, style=CMG)
+            else:
+                banner.append(ch)
+        if i < len(logo_rows) - 1:
+            banner.append("\n")
+    banner.append(f"\n\nhttp://127.0.0.1:{ALLAMA_PORT}", style=CLG)
+    banner.append("  ·  ALL LLM PROXY", style=CMG)
+
     console.print(Panel(
-        Align(banner_txt, align="center", vertical="top"),
-        box=box.HORIZONTALS,
-        border_style=C_YELLOW,
-        padding=(0, 2),
+        Align(banner, align="center"),
+        box=box.SQUARE,
+        border_style=CMG,
+        padding=(1, 4),
         width=W,
     ))
+    console.print()
 
-    console.print(Panel(
-        Align(Text("🔧 CONFIGURATION", style=f"bold {C_WHITE}"), align="center"),
-        box=box.ROUNDED,
-        border_style=C_DIM,
-        padding=(0, 1),
-        width=W,
-        expand=False,
-    ), justify="center")
+    # ── Configuration ──────────────────────────────────────────────────────
+    console.rule(f"[{CLG}] CONFIGURATION [/]", style=CMG)
+    console.print()
 
-    config_items = [
-        ("📦 Physical Models", f"[bold {C_MARRON}]{len(PHYSICAL_MODELS)}[/]"),
-        ("🧠 Logical Models", f"[bold {C_MARRON}]{len(LOGICAL_MODELS)}[/]"),
-        ("⏰Keep Alive", f"[bold {C_MARRON}]{KEEP_ALIVE_SECONDS}s[/]"),
-    ]
     cfg_panels = [
         Panel(
-            Align(Text.from_markup(val), align="center", vertical="top"),
-            title=f"[dim {C_WHITE}]{lbl}[/]",
-            box=box.ROUNDED,
-            border_style=C_WHITE,
-            padding=(0, 1),
-            expand=True,
-        )
-        for lbl, val in config_items
+            Align(Text(str(len(PHYSICAL_MODELS)), style=f"bold {CW}", justify="center"), align="center"),
+            title=f"[{CLG}] PHYSICAL MODELS [/]",
+            box=box.SQUARE, border_style=CMG, padding=(0, 1), expand=True,
+        ),
+        Panel(
+            Align(Text(str(len(LOGICAL_MODELS)), style=f"bold {CW}", justify="center"), align="center"),
+            title=f"[{CLG}] LOGICAL MODELS [/]",
+            box=box.SQUARE, border_style=CMG, padding=(0, 1), expand=True,
+        ),
+        Panel(
+            Align(Text(f"{KEEP_ALIVE_SECONDS}s", style=f"bold {CW}", justify="center"), align="center"),
+            title=f"[{CLG}] KEEP ALIVE [/]",
+            box=box.SQUARE, border_style=CMG, padding=(0, 1), expand=True,
+        ),
     ]
     console.print(make_table(cfg_panels, cols=3))
     console.print()
 
-    console.print(Panel(
-        Align(Text("📦 PHYSICAL MODELS", style=f"bold {C_TEAL}"), align="center"),
-        box=box.ROUNDED,
-        border_style=C_DIM,
-        padding=(0, 1),
-        width=W,
-        expand=False,
-    ), justify="center")
+    # ── Physical Models ────────────────────────────────────────────────────
+    console.rule(f"[{CLG}] PHYSICAL MODELS [/]", style=CMG)
+    console.print()
 
-    vllm_panels = []
+    vllm_panels  = []
     llama_panels = []
     for name, cfg in PHYSICAL_MODELS.items():
         backend = cfg.get("backend", "vllm")
         if backend == "vllm":
-            bcolor, icon, title_c = C_TEAL, "🔰 vLLM", C_TEAL
             vllm_panels.append(Panel(
-                Align(Text(name, style=f"bold {C_WHITE}", justify="center"), align="center", vertical="top"),
-                title=f"[dim {title_c}]{icon}[/]",
-                box=box.ROUNDED,
-                border_style=bcolor,
-                padding=(0, 1),
-                expand=True,
+                Align(Text(name, style=f"bold {CW}", justify="center"), align="center", vertical="top"),
+                title=f"[{CLG}] vLLM [/]",
+                box=box.SQUARE, border_style=CLG, padding=(0, 1), expand=True,
             ))
         else:
-            bcolor, icon, title_c = C_TERRA, "🔆 llama.cpp", C_TERRA
             llama_panels.append(Panel(
-                Align(Text(name, style=f"bold {C_WHITE}", justify="center"), align="center", vertical="top"),
-                title=f"[dim {title_c}]{icon}[/]",
-                box=box.ROUNDED,
-                border_style=bcolor,
-                padding=(0, 1),
-                expand=True,
+                Align(Text(name, style=f"bold {CW}", justify="center"), align="center", vertical="top"),
+                title=f"[{CMG}] llama.cpp [/]",
+                box=box.SQUARE, border_style=CMG, padding=(0, 1), expand=True,
             ))
     if vllm_panels:
         console.print(make_table(vllm_panels, cols=3))
     if vllm_panels and llama_panels:
-        console.print(Text("─" * W, style=C_DIM))
+        console.print(Text("─" * W, style=CDG))
     if llama_panels:
         console.print(make_table(llama_panels, cols=3))
     console.print()
 
-    console.print(Panel(
-        Align(Text("🧠 LOGICAL MODELS", style=f"bold {C_BERRY}"), align="center"),
-        box=box.ROUNDED,
-        border_style=C_DIM,
-        padding=(0, 1),
-        width=W,
-        expand=False,
-    ), justify="center")
+    # ── Logical Models ─────────────────────────────────────────────────────
+    console.rule(f"[{CLG}] LOGICAL MODELS [/]", style=CMG)
+    console.print()
 
     grouped: dict = {}
     for log_name, log_cfg in LOGICAL_MODELS.items():
@@ -1559,22 +1581,19 @@ if RICH_AVAILABLE:
     for phys, names in grouped.items():
         body = Text()
         for i, n in enumerate(names):
-            body.append(f"  > {n}", style=C_WHITE)
+            body.append(f"  {n}", style=CW)
             if i < len(names) - 1:
                 body.append("\n")
         log_panels.append(Panel(
-            Align(body, align="left", vertical="top"),
-            title=f"[bold {C_BERRY}]{phys}[/]",
-            box=box.ROUNDED,
-            border_style=C_BERRY,
-            padding=(0, 1),
-            expand=True,
+            body,
+            title=f"[{CLG}] {phys} [/]",
+            box=box.SQUARE, border_style=CMG, padding=(0, 1), expand=True,
         ))
+
     max_name_len = max(
-        (len(f"  > {n}") for names in grouped.values() for n in names),
+        (len(f"  {n}") for names in grouped.values() for n in names),
         default=20,
     )
-    # panel border (2) + padding (2) = 4 overhead per panel; cols=2 gives W/2-4 chars
     log_cols = 2 if max_name_len > (W // 3 - 4) else 3
     console.print(make_table(log_panels, cols=log_cols))
     console.print()
