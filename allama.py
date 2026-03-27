@@ -1444,8 +1444,10 @@ if RICH_AVAILABLE:
     C_PURP = "#b388ff"   # row 4 logo / logical
     C_WHT  = "#ffffff"   # main text
     C_DIM  = "#546e7a"   # dim separators / subtitle
+    C_SHD  = "#2a2a2a"   # drop shadow
 
     console = Console(width=W)
+    SHADOW  = Text("  " + "▄" * (W - 3), style=C_SHD)
 
     def make_table(panels, cols=3):
         tbl = Table.grid(expand=True, padding=0)
@@ -1469,7 +1471,7 @@ if RICH_AVAILABLE:
         grid.add_row(Rule(title=f"[bold {C_WHT}]{header}[/]",
                           style=rule_color, characters="≡"))
         grid.add_row(body)
-        return Panel(grid, box=box.SQUARE, border_style=border_color,
+        return Panel(grid, box=box.HEAVY, border_style=border_color,
                      padding=(0, 1), expand=expand)
 
     def build_logo() -> list[str]:
@@ -1523,16 +1525,15 @@ if RICH_AVAILABLE:
 
     console.print(Panel(
         Align(banner, align="center"),
-        box=box.SQUARE,
+        box=box.HEAVY,
         border_style=C_GOLD,
         padding=(1, 4),
         width=W,
     ))
-    console.print()
+    console.print(SHADOW)
 
     # ── Configuration ──────────────────────────────────────────────────────
     console.rule(f"[bold {C_GOLD}] CONFIGURATION [/]", style=C_DIM, characters="≡")
-    console.print()
     cfg_panels = [
         mac_panel("PHYSICAL MODELS",
                   Align(Text(str(len(PHYSICAL_MODELS)), style=f"bold {C_WHT}",
@@ -1548,11 +1549,10 @@ if RICH_AVAILABLE:
                   border_color=C_GOLD, rule_color=C_GOLD),
     ]
     console.print(make_table(cfg_panels, cols=3))
-    console.print()
+    console.print(SHADOW)
 
     # ── Physical Models ────────────────────────────────────────────────────
     console.rule(f"[bold {C_CYAN}] PHYSICAL MODELS [/]", style=C_DIM, characters="≡")
-    console.print()
     vllm_panels  = []
     llama_panels = []
     for name, cfg in PHYSICAL_MODELS.items():
@@ -1571,11 +1571,10 @@ if RICH_AVAILABLE:
         console.print(Text("─" * W, style=C_DIM))
     if llama_panels:
         console.print(make_table(llama_panels, cols=3))
-    console.print()
+    console.print(SHADOW)
 
     # ── Logical Models ─────────────────────────────────────────────────────
     console.rule(f"[bold {C_PURP}] LOGICAL MODELS [/]", style=C_DIM, characters="≡")
-    console.print()
     grouped: dict = {}
     for log_name, log_cfg in LOGICAL_MODELS.items():
         phys = log_cfg["physical"]
@@ -1597,6 +1596,7 @@ if RICH_AVAILABLE:
     )
     log_cols = 2 if max_name_len > (W // 3 - 4) else 3
     console.print(make_table(log_panels, cols=log_cols))
+    console.print(SHADOW)
     console.print()
 
 else:
