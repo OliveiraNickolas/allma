@@ -1435,12 +1435,15 @@ async def health():
 
 
 if RICH_AVAILABLE:
-    # ── Mac System 7 monochrome palette ────────────────────────────────────
-    W   = 94
-    CW  = "#e8e8e8"   # white  – main text
-    CLG = "#999999"   # light gray – secondary / dim titles
-    CMG = "#555555"   # mid gray – borders, rules
-    CDG = "#2e2e2e"   # dark gray – very subtle
+    # ── SNES 16-bit palette ────────────────────────────────────────────────
+    W      = 94
+    C_RED  = "#ff4444"   # row 0 logo / accents
+    C_ORG  = "#ff8c00"   # row 1 logo / llama.cpp
+    C_GOLD = "#ffd700"   # row 2 logo / config
+    C_CYAN = "#00e5ff"   # row 3 logo / vLLM
+    C_PURP = "#b388ff"   # row 4 logo / logical
+    C_WHT  = "#ffffff"   # main text
+    C_DIM  = "#546e7a"   # dim separators / subtitle
 
     console = Console(width=W)
 
@@ -1459,11 +1462,12 @@ if RICH_AVAILABLE:
             tbl.add_row(*row)
         return tbl
 
-    def mac_panel(header, body, *, border_color=CMG, expand=True):
-        """Panel with Mac-style ≡≡≡ title bar inside."""
+    def mac_panel(header, body, *, border_color, rule_color, expand=True):
+        """Panel with ≡≡≡ title bar in SNES color."""
         grid = Table.grid(expand=True, padding=0)
         grid.add_column()
-        grid.add_row(Rule(title=f"[bold {CW}]{header}[/]", style=CMG, characters="≡"))
+        grid.add_row(Rule(title=f"[bold {C_WHT}]{header}[/]",
+                          style=rule_color, characters="≡"))
         grid.add_row(body)
         return Panel(grid, box=box.SQUARE, border_style=border_color,
                      padding=(0, 1), expand=expand)
@@ -1500,69 +1504,77 @@ if RICH_AVAILABLE:
         ]
 
     # ── Logo window ────────────────────────────────────────────────────────
+    LOGO_COLORS = [C_RED, C_ORG, C_GOLD, C_CYAN, C_PURP]  # sunset gradient
+
     logo_rows = build_logo()
     banner = Text(justify="center")
     for i, row in enumerate(logo_rows):
+        color = LOGO_COLORS[i % len(LOGO_COLORS)]
         for ch in row:
             if ch == "█":
-                banner.append(ch, style=f"bold {CW}")
+                banner.append(ch, style=f"bold {color}")
             elif ch == "▒":
-                banner.append(ch, style=CMG)
+                banner.append(ch, style=f"dim {color}")
             else:
                 banner.append(ch)
         if i < len(logo_rows) - 1:
             banner.append("\n")
-    banner.append(f"\n\nhttp://127.0.0.1:{ALLAMA_PORT}", style=CLG)
+    banner.append(f"\n\nhttp://127.0.0.1:{ALLAMA_PORT}", style=C_DIM)
 
     console.print(Panel(
         Align(banner, align="center"),
         box=box.SQUARE,
-        border_style=CMG,
+        border_style=C_GOLD,
         padding=(1, 4),
         width=W,
     ))
     console.print()
 
     # ── Configuration ──────────────────────────────────────────────────────
-    console.rule(f"[bold {CW}] CONFIGURATION [/]", style=CMG, characters="≡")
+    console.rule(f"[bold {C_GOLD}] CONFIGURATION [/]", style=C_DIM, characters="≡")
     console.print()
     cfg_panels = [
         mac_panel("PHYSICAL MODELS",
-                  Align(Text(str(len(PHYSICAL_MODELS)), style=f"bold {CW}",
-                             justify="center"), align="center")),
+                  Align(Text(str(len(PHYSICAL_MODELS)), style=f"bold {C_WHT}",
+                             justify="center"), align="center"),
+                  border_color=C_GOLD, rule_color=C_GOLD),
         mac_panel("LOGICAL MODELS",
-                  Align(Text(str(len(LOGICAL_MODELS)), style=f"bold {CW}",
-                             justify="center"), align="center")),
+                  Align(Text(str(len(LOGICAL_MODELS)), style=f"bold {C_WHT}",
+                             justify="center"), align="center"),
+                  border_color=C_GOLD, rule_color=C_GOLD),
         mac_panel("KEEP ALIVE",
-                  Align(Text(f"{KEEP_ALIVE_SECONDS}s", style=f"bold {CW}",
-                             justify="center"), align="center")),
+                  Align(Text(f"{KEEP_ALIVE_SECONDS}s", style=f"bold {C_WHT}",
+                             justify="center"), align="center"),
+                  border_color=C_GOLD, rule_color=C_GOLD),
     ]
     console.print(make_table(cfg_panels, cols=3))
     console.print()
 
     # ── Physical Models ────────────────────────────────────────────────────
-    console.rule(f"[bold {CW}] PHYSICAL MODELS [/]", style=CMG, characters="≡")
+    console.rule(f"[bold {C_CYAN}] PHYSICAL MODELS [/]", style=C_DIM, characters="≡")
     console.print()
     vllm_panels  = []
     llama_panels = []
     for name, cfg in PHYSICAL_MODELS.items():
         backend = cfg.get("backend", "vllm")
-        body = Align(Text(name, style=f"bold {CW}", justify="center"),
+        body = Align(Text(name, style=f"bold {C_WHT}", justify="center"),
                      align="center", vertical="top")
         if backend == "vllm":
-            vllm_panels.append(mac_panel("vLLM", body, border_color=CLG))
+            vllm_panels.append(mac_panel("vLLM", body,
+                                         border_color=C_CYAN, rule_color=C_CYAN))
         else:
-            llama_panels.append(mac_panel("llama.cpp", body))
+            llama_panels.append(mac_panel("llama.cpp", body,
+                                          border_color=C_ORG, rule_color=C_ORG))
     if vllm_panels:
         console.print(make_table(vllm_panels, cols=3))
     if vllm_panels and llama_panels:
-        console.print(Text("─" * W, style=CDG))
+        console.print(Text("─" * W, style=C_DIM))
     if llama_panels:
         console.print(make_table(llama_panels, cols=3))
     console.print()
 
     # ── Logical Models ─────────────────────────────────────────────────────
-    console.rule(f"[bold {CW}] LOGICAL MODELS [/]", style=CMG, characters="≡")
+    console.rule(f"[bold {C_PURP}] LOGICAL MODELS [/]", style=C_DIM, characters="≡")
     console.print()
     grouped: dict = {}
     for log_name, log_cfg in LOGICAL_MODELS.items():
@@ -1573,10 +1585,11 @@ if RICH_AVAILABLE:
     for phys, names in grouped.items():
         body = Text()
         for i, n in enumerate(names):
-            body.append(f"  {n}", style=CW)
+            body.append(f"  {n}", style=C_WHT)
             if i < len(names) - 1:
                 body.append("\n")
-        log_panels.append(mac_panel(phys, body))
+        log_panels.append(mac_panel(phys, body,
+                                    border_color=C_PURP, rule_color=C_PURP))
 
     max_name_len = max(
         (len(f"  {n}") for names in grouped.values() for n in names),
