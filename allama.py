@@ -1435,7 +1435,7 @@ async def health():
 
 if RICH_AVAILABLE:
     # Palette
-    W = 120
+    W = 94
     C_YELLOW = "#f5c518"
     C_WHITE = "#fafafa"
     C_TEAL = "#5fd7af"
@@ -1509,22 +1509,36 @@ if RICH_AVAILABLE:
         expand=False,
     ), justify="center")
 
-    phys_panels = []
+    vllm_panels = []
+    llama_panels = []
     for name, cfg in PHYSICAL_MODELS.items():
         backend = cfg.get("backend", "vllm")
         if backend == "vllm":
             bcolor, icon, title_c = C_TEAL, "🔰 vLLM", C_TEAL
+            vllm_panels.append(Panel(
+                Align(Text(name, style=f"bold {C_WHITE}", justify="center"), align="center", vertical="top"),
+                title=f"[dim {title_c}]{icon}[/]",
+                box=box.ROUNDED,
+                border_style=bcolor,
+                padding=(0, 1),
+                expand=True,
+            ))
         else:
             bcolor, icon, title_c = C_TERRA, "🔆 llama.cpp", C_TERRA
-        phys_panels.append(Panel(
-            Align(Text(name, style=f"bold {C_WHITE}", justify="center"), align="center", vertical="top"),
-            title=f"[dim {title_c}]{icon}[/]",
-            box=box.ROUNDED,
-            border_style=bcolor,
-            padding=(0, 1),
-            expand=True,
-        ))
-    console.print(make_table(phys_panels, cols=3))
+            llama_panels.append(Panel(
+                Align(Text(name, style=f"bold {C_WHITE}", justify="center"), align="center", vertical="top"),
+                title=f"[dim {title_c}]{icon}[/]",
+                box=box.ROUNDED,
+                border_style=bcolor,
+                padding=(0, 1),
+                expand=True,
+            ))
+    if vllm_panels:
+        console.print(make_table(vllm_panels, cols=3))
+    if vllm_panels and llama_panels:
+        console.print(Text("─" * W, style=C_DIM))
+    if llama_panels:
+        console.print(make_table(llama_panels, cols=3))
     console.print()
 
     console.print(Panel(
@@ -1556,7 +1570,13 @@ if RICH_AVAILABLE:
             padding=(0, 1),
             expand=True,
         ))
-    console.print(make_table(log_panels, cols=3))
+    max_name_len = max(
+        (len(f"  > {n}") for names in grouped.values() for n in names),
+        default=20,
+    )
+    # panel border (2) + padding (2) = 4 overhead per panel; cols=2 gives W/2-4 chars
+    log_cols = 2 if max_name_len > (W // 3 - 4) else 3
+    console.print(make_table(log_panels, cols=log_cols))
     console.print()
 
 else:
