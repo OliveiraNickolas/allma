@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import math
 import os
 import signal
 import socket
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -128,9 +130,7 @@ VLLM_BASE_PORT = int(os.environ.get("VLLM_BASE_PORT", "8000"))
 LLAMA_BASE_PORT = int(os.environ.get("LLAMA_BASE_PORT", "9001"))
 KEEP_ALIVE_SECONDS = int(os.environ.get("KEEP_ALIVE_SECONDS", "600"))
 HEALTH_CHECK_INTERVAL = int(os.environ.get("HEALTH_CHECK_INTERVAL", "60"))
-GPU_MEMORY_THRESHOLD_GB = float(os.environ.get("GPU_MEMORY_THRESHOLD_GB", "1.0"))
 AUTO_SWAP_ENABLED = os.environ.get("AUTO_SWAP_ENABLED", "true").lower() == "true"
-SWAP_IDLE_THRESHOLD = int(os.environ.get("SWAP_IDLE_THRESHOLD", "300"))
 MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", "15"))
 
 # Paths (relative to script location)
@@ -184,6 +184,7 @@ server_idle_time: Dict[str, float] = {}
 next_vllm_port = VLLM_BASE_PORT
 next_llama_port = LLAMA_BASE_PORT
 global_lock = threading.Lock()
+port_lock = threading.Lock()
 loading_models = set()  # Track models currently loading to prevent duplicate loads
 running = True
 ALLAMA_PID = os.getpid()
@@ -200,16 +201,18 @@ LOGICAL_MODELS: Dict[str, Dict[str, Any]] = {}
 def get_next_vllm_port() -> int:
     """Get next available vLLM port."""
     global next_vllm_port
-    port = next_vllm_port
-    next_vllm_port += 1
+    with port_lock:
+        port = next_vllm_port
+        next_vllm_port += 1
     return port
 
 
 def get_next_llama_port() -> int:
     """Get next available llama port."""
     global next_llama_port
-    port = next_llama_port
-    next_llama_port += 1
+    with port_lock:
+        port = next_llama_port
+        next_llama_port += 1
     return port
 
 
@@ -231,6 +234,16 @@ PHYSICAL_MODELS, LOGICAL_MODELS = load_models_from_configs()
 # ==============================================================================
 # SECTION: UTILITY FUNCTIONS
 # ==============================================================================
+def _calc_model_size_gb(model_path: str) -> float:
+    """Sum .safetensors files in a model directory to estimate model size in GB."""
+    total_bytes = sum(
+        os.path.getsize(os.path.join(root, f))
+        for root, _, files in os.walk(model_path)
+        for f in files if f.endswith(".safetensors")
+    )
+    return total_bytes / (1024 ** 3)
+
+
 def is_port_free(port: int) -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -275,8 +288,6 @@ def get_best_gpu() -> int:
 
 def get_all_gpus() -> list[dict]:
     """Get all GPUs with their VRAM info, respecting ALLAMA_VISIBLE_DEVICES env var."""
-    import subprocess
-
     # Check if user wants to restrict visible GPUs
     visible_devices = os.environ.get("ALLAMA_VISIBLE_DEVICES", None)
     visible_gpus = None
@@ -326,12 +337,7 @@ def get_gpu_available(model_path: str, tp_size: int, gpu_memory_util: float) -> 
 
         # Estimate model size
         try:
-            total_size_bytes = sum(
-                os.path.getsize(os.path.join(root, file))
-                for root, _, files in os.walk(model_path)
-                for file in files if file.endswith('.safetensors')
-            )
-            total_size_gb = total_size_bytes / (1024**3)
+            total_size_gb = _calc_model_size_gb(model_path)
             required_gb = total_size_gb * 1.2  # 20% overhead
             required_per_gpu = required_gb / tp_size
         except Exception:
@@ -360,26 +366,6 @@ def get_gpu_available(model_path: str, tp_size: int, gpu_memory_util: float) -> 
         logger.error(f"Error in get_gpu_available: {e}")
         return []
 
-
-def get_gpus_for_tp(tp_size: int, available_gpus: list[dict]) -> list[int]:
-    """
-    Get list of GPU indices for tensor parallel.
-    Requires consecutive GPUs (based on their indices, not positions).
-    Returns indices of GPUs, or [] if not enough GPUs available.
-    """
-    if not available_gpus or len(available_gpus) < tp_size:
-        return []
-
-    # Check if we have consecutive GPU indices
-    indices = sorted([g["index"] for g in available_gpus])
-
-    for i in range(len(indices) - tp_size + 1):
-        candidate = indices[i:i + tp_size]
-        if all(candidate[j] + 1 == candidate[j + 1] for j in range(len(candidate) - 1)):
-            return candidate
-
-    # Fallback: return any tp_size GPUs if no consecutive ones
-    return indices[:tp_size]
 
 
 def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) -> tuple[int, int]:
@@ -435,12 +421,7 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
 
     # Estimate model size from .safetensors files
     try:
-        total_size_bytes = sum(
-            os.path.getsize(os.path.join(root, file))
-            for root, _, files in os.walk(model_path)
-            for file in files if file.endswith('.safetensors')
-        )
-        total_size_gb = total_size_bytes / (1024**3)
+        total_size_gb = _calc_model_size_gb(model_path)
         required_gb = total_size_gb * 1.2  # 20% overhead for KV cache, activations, etc.
     except Exception as e:
         logger.warning(f"Could not estimate model size for {physical_name}: {e}")
@@ -449,7 +430,6 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
 
     # Calculate minimum TP needed so the model fits per GPU
     usable_per_gpu_gb = max_gpu_gb * gpu_mem_util
-    import math
     min_tp_needed = max(1, math.ceil(required_gb / usable_per_gpu_gb))
 
     # Auto-upgrade: if model won't fit with requested TP, use the minimum required
@@ -498,14 +478,11 @@ def get_model_vram_need(cfg: Dict[str, Any], physical_name: str) -> float:
             model_path = cfg.get("path", "")
             if not model_path or not os.path.isdir(model_path):
                 return 4.0
-            total_size_gb = sum(
-                os.path.getsize(os.path.join(root, file))
-                for root, _, files in os.walk(model_path)
-                for file in files
-            ) / (1024**3)
+            total_size_gb = _calc_model_size_gb(model_path)
             model_len = int(cfg.get("max_model_len", "40960"))
             max_seqs = int(cfg.get("max_num_seqs", "8"))
-            kv_cache_overhead = (model_len * max_seqs * 2) / (1024**3)
+            # 2 bytes (fp16) × 2 (key + value) per token slot
+            kv_cache_overhead = (model_len * max_seqs * 2 * 2) / (1024 ** 3)
             return total_size_gb * 1.06 + kv_cache_overhead + 1.0
         elif backend == "llama.cpp":
             model_file = cfg.get("model", "")
@@ -583,7 +560,6 @@ def kill_vram_fast():
             logger.info("No ALLAMA-managed processes to shutdown")
     except Exception as e:
         logger.error(f"Error in killvramfast: {e}")
-        import traceback
         logger.error(traceback.format_exc())
 
 
@@ -688,7 +664,6 @@ def kill_process_tree(pid: int, timeout: int = 2) -> bool:
 
 
 def shutdown_server(physicalname: str, reason: str = "user", fast: bool = False):
-    global active_servers, server_idle_time  # noqa: F824
     proc = None
     port = None
     backend = None
@@ -714,7 +689,7 @@ def shutdown_server(physicalname: str, reason: str = "user", fast: bool = False)
             pass
         except Exception:
             kill_process_tree(pid, timeout=3 if fast else 5)
-        time.sleep(3)
+        time.sleep(1 if fast else 3)
 
     # Called before global_lock release - port allocated to this server is now free
     # We don't reset the next_port here since we rely on is_port_free() to find available ports
@@ -831,8 +806,8 @@ async def wait_for_model_ready(
     try:
         while time.time() < deadline:
             try:
-                if proc.poll() is not None:
-                    returncode = proc.poll()
+                returncode = proc.poll()
+                if returncode is not None:
                     spinner.stop(success=False)
                     logger.error(f"{displayname} exited with code {returncode} during loading")
                     return False
@@ -850,12 +825,12 @@ async def wait_for_model_ready(
                     for line in new_content.splitlines():
                         if line.strip():
                             logger.debug(f"[{displayname}] {line}")
-                        for expected_signal in signals:
-                            if expected_signal in line:
-                                spinner.stop(success=True)
-                                logger.info(f"🎉 {displayname} ready: {expected_signal}")
-                                await asyncio.sleep(1)
-                                return True
+                            for expected_signal in signals:
+                                if expected_signal in line:
+                                    spinner.stop(success=True)
+                                    logger.info(f"🎉 {displayname} ready: {expected_signal}")
+                                    await asyncio.sleep(1)
+                                    return True
             except Exception as e:
                 logger.debug(f"Error reading log for {displayname}: {e}")
 
@@ -901,28 +876,34 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                 logger.debug(f"♻️  Reusing {displayname}:{port}")
                 return port
 
-    # Prevent duplicate concurrent loads
-    if physicalname in loading_models:
+        already_loading = physicalname in loading_models
+        if not already_loading:
+            loading_models.add(physicalname)
+
+    # Prevent duplicate concurrent loads — wait up to 5 minutes for the loading task
+    if already_loading:
         logger.info(f"⏳ {displayname} already loading, waiting...")
-        await asyncio.sleep(2)
-        with global_lock:
-            if physicalname in active_servers:
-                proc = active_servers[physicalname]["process"]
-                if proc.poll() is None:
-                    port = active_servers[physicalname]["port"]
-                    server_idle_time[physicalname] = time.time()
-                    logger.debug(f"♻️  Reusing {displayname}:{port} after wait")
-                    return port
+        for _ in range(150):  # 150 × 2s = 5 minutes
+            await asyncio.sleep(2)
+            with global_lock:
+                if physicalname in active_servers:
+                    proc = active_servers[physicalname]["process"]
+                    if proc.poll() is None:
+                        port = active_servers[physicalname]["port"]
+                        server_idle_time[physicalname] = time.time()
+                        logger.debug(f"♻️  Reusing {displayname}:{port} after wait")
+                        return port
+                if physicalname not in loading_models:
+                    break
         raise RuntimeError(f"Loading timeout for {displayname} - load may have stuck")
 
-    loading_models.add(physicalname)
     success = False
     try:
         port = await _load_model_impl(physicalname, cfg, backend, displayname)
         success = True
         return port
     finally:
-        loading_models.remove(physicalname)
+        loading_models.discard(physicalname)
         if not success:
             with global_lock:
                 active_servers.pop(physicalname, None)
@@ -950,8 +931,8 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
             f"📊 VRAM max single: {max_free_gb:.1f}GB / total: {total_free_gb:.1f}GB - "
             f"Attempt {attempt + 1}/{maxretries} (need {NEEDGB:.1f}GB)"
         )
-        # Compare with total VRAM for TP models, single GPU for non-TP models
-        available_gb = total_free_gb if tp_size > 1 else max_free_gb
+        # llama.cpp distributes layers across all GPUs even with TP=1 (-ngl -1)
+        available_gb = total_free_gb if (tp_size > 1 or backend == "llama.cpp") else max_free_gb
         if available_gb >= NEEDGB:
             logger.info(f"✅ VRAM sufficient ({available_gb:.1f}GB)")
             break
@@ -993,7 +974,7 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
 
     await asyncio.sleep(2)
     gpus = get_free_gpu_memory()
-    available_final = sum(g["free_gb"] for g in gpus) if tp_size > 1 else max((g["free_gb"] for g in gpus), default=0.0)
+    available_final = sum(g["free_gb"] for g in gpus) if (tp_size > 1 or backend == "llama.cpp") else max((g["free_gb"] for g in gpus), default=0.0)
     if available_final < NEEDGB:
         logger.warning(
             f"⚠️  VRAM insuficiente: {available_final:.1f}GB < {NEEDGB:.1f}GB, "
@@ -1050,8 +1031,12 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                     subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_indices
                     logger.info(f"🎮 vLLM TP={tp_from_cmd} pinned to GPUs [{gpu_indices}] via CUDA_VISIBLE_DEVICES")
             elif backend == "llama.cpp" and int(cfg.get("tensor_parallel", "1")) == 1:
-                subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
-                logger.info(f"🎮 llama.cpp TP=1 pinned to GPU {current_gpu_id} via CUDA_VISIBLE_DEVICES")
+                # Only pin to single GPU if the model fits; otherwise let llama.cpp see all GPUs
+                if max_free_gb >= NEEDGB:
+                    subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
+                    logger.info(f"🎮 llama.cpp TP=1 pinned to GPU {current_gpu_id} via CUDA_VISIBLE_DEVICES")
+                else:
+                    logger.info(f"🎮 llama.cpp TP=1 needs multi-GPU offload ({NEEDGB:.1f}GB > {max_free_gb:.1f}GB) — all GPUs visible")
             # llama.cpp TP>1: leave system GPU discovery untouched
 
             proc = subprocess.Popen(
@@ -1101,15 +1086,16 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
             return port
         except RuntimeError as runtime_err:
             # Clean up failed process
-            if active_servers.get(physicalname):
-                p = active_servers[physicalname].get("process")
-                if p:
-                    try:
-                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                    except Exception:
-                        pass
-                active_servers.pop(physicalname, None)
-                server_idle_time.pop(physicalname, None)
+            with global_lock:
+                if active_servers.get(physicalname):
+                    p = active_servers[physicalname].get("process")
+                    if p:
+                        try:
+                            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                        except Exception:
+                            pass
+                    active_servers.pop(physicalname, None)
+                    server_idle_time.pop(physicalname, None)
             # Check if retryable - set skip_gpu to avoid same GPU next time
             if attempt < max_attempts - 1 and "VRAM allocation" in str(runtime_err):
                 logger.warning(f"💥 Attempt {attempt + 1} failed (GPU {current_gpu_id}), retrying with different GPU...")
@@ -1156,7 +1142,7 @@ def health_monitor():
                             continue
 
                         idle = now - server_idle_time.get(physical_name, 0)
-                        if idle > KEEP_ALIVE_SECONDS:
+                        if AUTO_SWAP_ENABLED and idle > KEEP_ALIVE_SECONDS:
                             logger.info(f"⏰ {physical_name} idle {idle:.0f}s, unloading")
                             to_unload.append(physical_name)
 
@@ -1205,6 +1191,10 @@ async def lifespan(app: FastAPI):
     """Lifespan handler for startup/shutdown events (modern FastAPI alternative to on_event)."""
     yield
     logger.info("🛑 Shutting down Allama...")
+    with global_lock:
+        names = list(active_servers.keys())
+    for name in names:
+        shutdown_server(name, reason="shutdown", fast=True)
     await close_http_client()
 
 app = FastAPI(title="Allama - LLM API", lifespan=lifespan)
@@ -1300,11 +1290,6 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
         else:
-            # ---- LOG 2: confirmação antes do POST (de novo só Heretic) ----
-            if model_name.lower() == "qwen3.5-9b-heretic":
-                logger.info("HERETIC_REQUEST_URL %s", url)
-            # ---------------------------------------------------------------
-
             resp = await client.post(url, json=body)
             if resp.status_code == 400:
                 error_body = await resp.aread()
@@ -1385,7 +1370,6 @@ async def messages(request: Request, body: dict = Body(...)):
         logger.info(f"🔄 Model switch: {current_loaded} -> {physical_name} ({model_name})")
 
     port = await ensure_physical_model(physical_name, model_name)
-    server_idle_time[physical_name] = time.time()
 
     max_model_len = int(cfg.get("max_model_len", "40960"))
     max_output_cap = max_model_len // 4
@@ -1450,8 +1434,6 @@ async def health():
 
 
 if RICH_AVAILABLE:
-    from collections import OrderedDict
-
     # Palette
     W = 120
     C_YELLOW = "#f5c518"
@@ -1554,7 +1536,7 @@ if RICH_AVAILABLE:
         expand=False,
     ), justify="center")
 
-    grouped: OrderedDict = OrderedDict()
+    grouped: dict = {}
     for log_name, log_cfg in LOGICAL_MODELS.items():
         phys = log_cfg["physical"]
         grouped.setdefault(phys, []).append(log_name)
@@ -1638,6 +1620,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
-
     main()
