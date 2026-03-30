@@ -123,7 +123,9 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                 try:
                     async with client.stream("POST", url, json=body) as response:
                         if response.status_code != 200:
-                            logger.error(f"Backend returned {response.status_code}")
+                            error_body = await response.aread()
+                            error_detail = error_body.decode() if isinstance(error_body, bytes) else str(error_body)
+                            logger.error(f"Backend returned {response.status_code} for {model_name}: {error_detail}")
                             yield 'data: {"error": "Backend error"}\n\n'
                             return
                         async for line in response.aiter_lines():
@@ -177,13 +179,13 @@ async def messages(request: Request, body: dict = Body(...)):
 
     if model_name not in LOGICAL_MODELS:
         with state.global_lock:
-            loaded_vllm = [
+            loaded = [
                 name
                 for name, srv in state.active_servers.items()
-                if srv.get("backend") == "vllm" and srv.get("process") and srv["process"].poll() is None
+                if srv.get("process") and srv["process"].poll() is None
             ]
-        if loaded_vllm:
-            physical = loaded_vllm[0]
+        if loaded:
+            physical = loaded[0]
             model_name = next(
                 (k for k, v in LOGICAL_MODELS.items() if v["physical"] == physical),
                 None,
@@ -199,22 +201,7 @@ async def messages(request: Request, body: dict = Body(...)):
     logical_cfg = LOGICAL_MODELS[model_name]
     physical_name = logical_cfg["physical"]
     cfg = PHYSICAL_MODELS[physical_name]
-
-    if cfg.get("backend", "vllm") != "vllm":
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Anthropic Messages API requires vllm backend"},
-        )
-
-    current_loaded = None
-    with state.global_lock:
-        for name, srv in state.active_servers.items():
-            if srv.get("backend") == "vllm" and srv.get("process") and srv["process"].poll() is None:
-                current_loaded = name
-                break
-
-    if current_loaded and current_loaded != physical_name:
-        logger.info(f"🔄 Model switch: {current_loaded} -> {physical_name} ({model_name})")
+    backend = cfg.get("backend", "vllm")
 
     port = await ensure_physical_model(physical_name, model_name)
 
@@ -225,33 +212,135 @@ async def messages(request: Request, body: dict = Body(...)):
         logger.info(f"⚠️  max_tokens {requested} -> {max_output_cap}")
         body["max_tokens"] = max_output_cap
 
-    body["model"] = cfg["path"]
-    url = f"http://127.0.0.1:{port}/v1/messages"
-
-    logger.debug(f"{model_name} -> {physical_name}:{port}")
+    logger.debug(f"{model_name} -> {physical_name}:{port} ({backend})")
 
     client = await get_http_client()
+
+    # vLLM supports /v1/messages natively — pass through
+    if backend == "vllm":
+        body["model"] = cfg["path"]
+        url = f"http://127.0.0.1:{port}/v1/messages"
+        try:
+            if body.get("stream", False):
+                async def generate_vllm():
+                    try:
+                        async with client.stream("POST", url, json=body) as response:
+                            async for line in response.aiter_lines():
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                yield line + "\n\n"
+                    except Exception as e:
+                        logger.error(f"Stream error: {e}")
+
+                return StreamingResponse(
+                    generate_vllm(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+                )
+            else:
+                resp = await client.post(url, json=body)
+                return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        except httpx.ConnectError as e:
+            logger.warning(f"Connection failed: {e}")
+            return JSONResponse(status_code=503, content={"error": "Backend unavailable"})
+        except Exception as e:
+            logger.error(f"Claude Code error: {e}")
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
+    # llama.cpp — translate Anthropic Messages ↔ OpenAI Chat format
+    import json as _json
+    import uuid as _uuid
+
+    oai_messages = []
+    system_raw = body.get("system", "")
+    if system_raw:
+        if isinstance(system_raw, list):
+            system_text = "".join(
+                block.get("text", "") for block in system_raw if block.get("type") == "text"
+            )
+        else:
+            system_text = system_raw
+        if system_text:
+            oai_messages.append({"role": "system", "content": system_text})
+    for msg in body.get("messages", []):
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            # Extract text blocks only
+            content = "".join(
+                block.get("text", "") for block in content if block.get("type") == "text"
+            )
+        oai_messages.append({"role": role, "content": content})
+
+    oai_body = {
+        "model": cfg["model"],
+        "messages": oai_messages,
+        "max_tokens": body.get("max_tokens", max_output_cap),
+        "stream": body.get("stream", False),
+    }
+    if "temperature" in body:
+        oai_body["temperature"] = body["temperature"]
+
+    url = f"http://127.0.0.1:{port}/chat/completions"
+
     try:
-        if body.get("stream", False):
-            async def generate():
+        if oai_body["stream"]:
+            msg_id = f"msg_{_uuid.uuid4().hex[:24]}"
+
+            async def generate_llama():
                 try:
-                    async with client.stream("POST", url, json=body) as response:
+                    # Anthropic SSE preamble
+                    yield f"event: message_start\ndata: {_json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model_name, 'stop_reason': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
+                    yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                    yield "event: ping\ndata: {\"type\": \"ping\"}\n\n"
+
+                    async with client.stream("POST", url, json=oai_body) as response:
                         async for line in response.aiter_lines():
                             line = line.strip()
-                            if not line:
+                            if not line or not line.startswith("data: "):
                                 continue
-                            yield line + "\n\n"
+                            raw = line[6:]
+                            if raw == "[DONE]":
+                                break
+                            try:
+                                chunk = _json.loads(raw)
+                                delta_text = chunk["choices"][0]["delta"].get("content", "")
+                                if delta_text:
+                                    yield f"event: content_block_delta\ndata: {_json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': delta_text}})}\n\n"
+                            except Exception:
+                                pass
                 except Exception as e:
-                    logger.error(f"Stream error: {e}")
+                    logger.error(f"llama.cpp stream error: {e}")
+                finally:
+                    yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                    yield f"event: message_delta\ndata: {_json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': {'output_tokens': 0}})}\n\n"
+                    yield f"event: message_stop\ndata: {_json.dumps({'type': 'message_stop'})}\n\n"
 
             return StreamingResponse(
-                generate(),
+                generate_llama(),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
         else:
-            resp = await client.post(url, json=body)
-            return JSONResponse(content=resp.json(), status_code=resp.status_code)
+            resp = await client.post(url, json=oai_body)
+            oai = resp.json()
+            text = oai["choices"][0]["message"]["content"]
+            msg_id = f"msg_{_uuid.uuid4().hex[:24]}"
+            anthropic_resp = {
+                "id": msg_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": text}],
+                "model": model_name,
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": oai.get("usage", {}).get("prompt_tokens", 0),
+                    "output_tokens": oai.get("usage", {}).get("completion_tokens", 0),
+                },
+            }
+            return JSONResponse(content=anthropic_resp, status_code=200)
 
     except httpx.ConnectError as e:
         logger.warning(f"Connection failed: {e}")
@@ -298,6 +387,38 @@ async def ps():
     return {"servers": servers}
 
 
+@app.post("/v1/shutdown")
+async def shutdown_endpoint():
+    """Gracefully shut down the server and all backends."""
+    import asyncio
+    import os
+    import signal as _signal
+
+    async def _do_shutdown():
+        await asyncio.sleep(0.1)
+        os.kill(os.getpid(), _signal.SIGTERM)
+
+    asyncio.create_task(_do_shutdown())
+    return JSONResponse({"status": "shutting down"})
+
+
+@app.post("/v1/load")
+async def load_model(body: dict = Body(...)):
+    """Pre-load a model without generating any tokens."""
+    model_name = body.get("model", "")
+    if model_name not in LOGICAL_MODELS:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Model '{model_name}' not found"},
+        )
+    logical_cfg = LOGICAL_MODELS[model_name]
+    physical_name = logical_cfg["physical"]
+    cfg = PHYSICAL_MODELS[physical_name]
+    backend = cfg.get("backend", "vllm")
+    await ensure_physical_model(physical_name, model_name)
+    return JSONResponse({"status": "loaded", "model": model_name, "backend": backend})
+
+
 # ==============================================================================
 # BANNER
 # ==============================================================================
@@ -318,46 +439,41 @@ def show_banner():
 
     from rich import box as _box
     from rich.align import Align
-    from rich.console import Console
+    from rich.console import Console, Group
     from rich.panel import Panel
     from rich.rule import Rule
     from rich.table import Table
     from rich.text import Text
 
-    W      = 94
-    C_RED  = "#ff4444"
-    C_ORG  = "#ff8c00"
-    C_GOLD = "#ffd700"
-    C_CYAN = "#00e5ff"
-    C_PURP = "#b388ff"
-    C_WHT  = "#ffffff"
-    C_DIM  = "#546e7a"
-    C_SHD  = "#2a2a2a"
+    _console_probe = Console()
+    _term_w  = _console_probe.width
+    W        = min(max(_term_w - 1, 40), 130)
+    _narrow  = _term_w < 72   # mobile / narrow terminal
+    # Logo brand colors (pixel art identity — unchanged)
+    C_RED    = "#e52529"
+    C_ORG    = "#f7941d"
+    C_YELL   = "#f7d000"
+    C_GRN    = "#43b047"
+    C_BLUE   = "#009ddc"
+    # Warm cream + teal palette (DOS wizard style)
+    C_BG     = "#e8dfc8"   # window background (warm cream)
+    C_SCREEN = "#d0c4a8"   # desktop / outer background (darker cream)
+    C_FG     = "#1a1408"   # main text (near-black, warm)
+    C_DIM    = "#6a5a48"   # secondary / dim (warm gray-brown)
+    C_ACCENT = "#007878"   # section titles, accents (teal)
+    C_BORDER = "#008888"   # panel border lines (teal)
+    C_OK     = "#007878"   # READY / online (teal)
 
     console = Console(width=W)
-    SHADOW  = Text("  " + "▄" * (W - 3), style=C_SHD)
 
-    def make_table(panels, cols=3):
-        tbl = Table.grid(expand=True, padding=0)
-        for _ in range(cols):
-            tbl.add_column(ratio=1)
-        row = []
-        for p in panels:
-            row.append(p)
-            if len(row) == cols:
-                tbl.add_row(*row)
-                row = []
-        if row:
-            row += [Text("")] * (cols - len(row))
-            tbl.add_row(*row)
-        return tbl
-
-    def mac_panel(header, body, *, border_color, rule_color, expand=True):
-        grid = Table.grid(expand=True, padding=0)
-        grid.add_column()
-        grid.add_row(Rule(title=f"[bold {C_WHT}]{header}[/]", style=rule_color, characters="≡"))
-        grid.add_row(body)
-        return Panel(grid, box=_box.HEAVY, border_style=border_color, padding=(0, 1), expand=expand)
+    # ── helpers ──────────────────────────────────────────────────────────────
+    def section(name: str) -> Text:
+        """Render a [ Section Name ] label in wizard style."""
+        t = Text()
+        t.append("[ ", style=C_DIM)
+        t.append(name, style=f"bold {C_ACCENT}")
+        t.append(" ]", style=C_DIM)
+        return t
 
     def build_logo() -> list[str]:
         CHARS = {
@@ -365,11 +481,8 @@ def show_banner():
             'L': ["█    ", "█    ", "█    ", "█    ", "█████"],
             'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
         }
-        word   = list("ALLAMA")
-        starts = [0, 6, 12, 18, 24, 30]
-        height = 5
-        width  = 36
-        canvas = [[0] * width for _ in range(height)]
+        word, starts = list("ALLAMA"), [0, 6, 12, 18, 24, 30]
+        canvas = [[0] * 36 for _ in range(5)]
         for ch, col in zip(word, starts):
             for r, row in enumerate(CHARS[ch]):
                 for c, px in enumerate(row):
@@ -380,86 +493,202 @@ def show_banner():
                     for c, px in enumerate(row):
                         if px == "█":
                             sc = col + c + 1
-                            if sc < width and canvas[r][sc] == 0:
+                            if sc < 36 and canvas[r][sc] == 0:
                                 canvas[r][sc] = 2
-        return [
-            "".join("█" if v == 1 else "▒" if v == 2 else " " for v in row)
-            for row in canvas
-        ]
+        return ["".join("█" if v == 1 else "▒" if v == 2 else " " for v in row)
+                for row in canvas]
 
-    LOGO_COLORS = [C_RED, C_ORG, C_GOLD, C_CYAN, C_PURP]
-    logo_rows = build_logo()
-    banner = Text(justify="center")
-    for i, row in enumerate(logo_rows):
+    # ── logo panel ────────────────────────────────────────────────────────────
+    LOGO_COLORS = [C_RED, C_ORG, C_YELL, C_GRN, C_BLUE]
+    logo_text   = Text(justify="center")
+    for i, row in enumerate(build_logo()):
         color = LOGO_COLORS[i % len(LOGO_COLORS)]
         for ch in row:
-            if ch == "█":
-                banner.append(ch, style=f"bold {color}")
-            elif ch == "▒":
-                banner.append(ch, style=f"dim {color}")
-            else:
-                banner.append(ch)
-        if i < len(logo_rows) - 1:
-            banner.append("\n")
-    banner.append(f"\n\nhttp://127.0.0.1:{ALLAMA_PORT}", style=C_DIM)
+            if ch == "█":   logo_text.append(ch, style=f"bold {color}")
+            elif ch == "▒": logo_text.append(ch, style=f"dim {color}")
+            else:            logo_text.append(ch)
+        if i < 4:
+            logo_text.append("\n")
+    # ── configuration summary ─────────────────────────────────────────────────
+    cfg_line = Text()
+    cfg_line.append(f"  {len(PHYSICAL_MODELS)}", style=f"bold {C_FG}")
+    cfg_line.append(" phys  ·  " if _narrow else " physical model(s)  ·  ", style=C_DIM)
+    cfg_line.append(f"{len(LOGICAL_MODELS)}", style=f"bold {C_FG}")
+    cfg_line.append(" logical  ·  keep-alive: " if _narrow else " logical model(s)  ·  keep-alive: ", style=C_DIM)
+    cfg_line.append(f"{KEEP_ALIVE_SECONDS}s", style=f"bold {C_FG}")
 
-    console.print(Panel(Align(banner, align="center"), box=_box.HEAVY,
-                        border_style=C_GOLD, padding=(1, 4), width=W))
-    console.print(SHADOW)
+    # ── physical models table — sorted by backend group then size desc ───────
+    import re as _re
 
-    console.rule(f"[bold {C_GOLD}] CONFIGURATION [/]", style=C_DIM, characters="≡")
-    cfg_panels = [
-        mac_panel("PHYSICAL MODELS",
-                  Align(Text(str(len(PHYSICAL_MODELS)), style=f"bold {C_WHT}", justify="center"), align="center"),
-                  border_color=C_GOLD, rule_color=C_GOLD),
-        mac_panel("LOGICAL MODELS",
-                  Align(Text(str(len(LOGICAL_MODELS)), style=f"bold {C_WHT}", justify="center"), align="center"),
-                  border_color=C_GOLD, rule_color=C_GOLD),
-        mac_panel("KEEP ALIVE",
-                  Align(Text(f"{KEEP_ALIVE_SECONDS}s", style=f"bold {C_WHT}", justify="center"), align="center"),
-                  border_color=C_GOLD, rule_color=C_GOLD),
-    ]
-    console.print(make_table(cfg_panels, cols=3))
-    console.print(SHADOW)
+    def _param_b(model_name: str) -> float:
+        m = _re.search(r'(\d+(?:\.\d+)?)\s*[bB]', model_name)
+        return float(m.group(1)) if m else 0.0
 
-    console.rule(f"[bold {C_CYAN}] PHYSICAL MODELS [/]", style=C_DIM, characters="≡")
-    vllm_panels  = []
-    llama_panels = []
-    for name, cfg in PHYSICAL_MODELS.items():
-        backend = cfg.get("backend", "vllm")
-        body = Align(Text(name, style=f"bold {C_WHT}", justify="center"), align="center", vertical="top")
-        if backend == "vllm":
-            vllm_panels.append(mac_panel("vLLM", body, border_color=C_CYAN, rule_color=C_CYAN))
-        else:
-            llama_panels.append(mac_panel("llama.cpp", body, border_color=C_ORG, rule_color=C_ORG))
-    if vllm_panels:
-        console.print(make_table(vllm_panels, cols=3))
-    if vllm_panels and llama_panels:
-        console.print(Text("─" * W, style=C_DIM))
-    if llama_panels:
-        console.print(make_table(llama_panels, cols=3))
-    console.print(SHADOW)
-
-    console.rule(f"[bold {C_PURP}] LOGICAL MODELS [/]", style=C_DIM, characters="≡")
-    grouped: dict = {}
-    for log_name, log_cfg in LOGICAL_MODELS.items():
-        phys = log_cfg["physical"]
-        grouped.setdefault(phys, []).append(log_name)
-
-    log_panels = []
-    for phys, names in grouped.items():
-        body = Text()
-        for i, n in enumerate(names):
-            body.append(f"  {n}", style=C_WHT)
-            if i < len(names) - 1:
-                body.append("\n")
-        log_panels.append(mac_panel(phys, body, border_color=C_PURP, rule_color=C_PURP))
-
-    max_name_len = max(
-        (len(f"  {n}") for names in grouped.values() for n in names),
-        default=20,
+    sorted_phys = sorted(
+        PHYSICAL_MODELS.items(),
+        key=lambda kv: (
+            0 if kv[1].get("backend", "vllm") == "vllm" else 1,  # vllm first
+            -_param_b(kv[0]),                                      # larger first
+            kv[0].lower(),
+        ),
     )
-    log_cols = 2 if max_name_len > (W // 3 - 4) else 3
-    console.print(make_table(log_panels, cols=log_cols))
-    console.print(SHADOW)
-    console.print()
+
+    # group by backend so we can add a separator between groups
+    _phys_groups: dict[str, list] = {}
+    for _n, _c in sorted_phys:
+        _g = "vllm" if _c.get("backend", "vllm") == "vllm" else "gguf"
+        _phys_groups.setdefault(_g, []).append((_n, _c))
+
+    _tbl_pad  = (0, 1, 0, 0) if _narrow else (0, 2, 0, 0)
+    _w_name_p = 16 if _narrow else 28
+    _w_fmt    = 8  if _narrow else 12
+
+    phys_tbl = Table(box=None, padding=_tbl_pad, show_header=True,
+                     header_style=f"bold {C_DIM}", expand=True)
+    phys_tbl.add_column("NAME",    style=C_FG,     no_wrap=True, min_width=_w_name_p)
+    phys_tbl.add_column("FORMAT",  style=C_ACCENT, no_wrap=True, min_width=_w_fmt)
+    phys_tbl.add_column("CTX",     style=C_DIM,    justify="right", min_width=6)
+    phys_tbl.add_column("GPU",     style=C_DIM,    justify="right", min_width=3)
+
+    _group_labels = {"vllm": "safetensors", "gguf": "gguf"}
+    _group_list   = [g for g in ("vllm", "gguf") if g in _phys_groups]
+    for _gi, _g in enumerate(_group_list):
+        _items = _phys_groups[_g]
+        _label = _group_labels[_g]
+        _is_last_group = _gi == len(_group_list) - 1
+        for _i, (_name, _cfg) in enumerate(_items):
+            _ctx     = _cfg.get("n_ctx") or _cfg.get("max_model_len", "—")
+            _gpu     = _cfg.get("n_gpu_layers", "—")
+            _gpu_str = "all" if str(_gpu) == "-1" else str(_gpu)
+            _end_sec = (_i == len(_items) - 1) and not _is_last_group
+            phys_tbl.add_row(_name, _label, str(_ctx), _gpu_str,
+                             end_section=_end_sec)
+
+    # ── logical models table — grouped by physical backend, sorted by size ───
+    def _log_sort_key(kv):
+        _lname, _lcfg = kv
+        _phys_name = _lcfg.get("physical", "")
+        _phys_cfg  = PHYSICAL_MODELS.get(_phys_name, {})
+        _backend   = _phys_cfg.get("backend", "vllm")
+        _group     = 0 if _backend == "vllm" else 1
+        return (_group, -_param_b(_phys_name), _phys_name.lower(), _lname.lower())
+
+    sorted_log = sorted(LOGICAL_MODELS.items(), key=_log_sort_key)
+
+    # group by physical backend for separator
+    _log_groups: dict[str, list] = {}
+    for _n, _c in sorted_log:
+        _phys_cfg = PHYSICAL_MODELS.get(_c.get("physical", ""), {})
+        _g = "vllm" if _phys_cfg.get("backend", "vllm") == "vllm" else "gguf"
+        _log_groups.setdefault(_g, []).append((_n, _c))
+
+    _w_name_l = 14 if _narrow else 24
+    _w_phys   = 16 if _narrow else 28
+
+    log_tbl = Table(box=None, padding=_tbl_pad, show_header=True,
+                    header_style=f"bold {C_DIM}", expand=True)
+    log_tbl.add_column("NAME",     style=C_FG,   no_wrap=True, min_width=_w_name_l)
+    log_tbl.add_column("PHYSICAL", style=C_DIM,  no_wrap=True, min_width=_w_phys)
+    log_tbl.add_column("TEMP",     style=C_DIM,  justify="right", min_width=4)
+    log_tbl.add_column("TOP_P",    style=C_DIM,  justify="right", min_width=4)
+    log_tbl.add_column("TOP_K",    style=C_DIM,  justify="right", min_width=4)
+
+    _log_group_list = [g for g in ("vllm", "gguf") if g in _log_groups]
+    for _gi, _g in enumerate(_log_group_list):
+        _items = _log_groups[_g]
+        _is_last_group = _gi == len(_log_group_list) - 1
+        for _i, (_lname, _lcfg) in enumerate(_items):
+            _sampling = _lcfg.get("sampling", {})
+            _end_sec  = (_i == len(_items) - 1) and not _is_last_group
+            log_tbl.add_row(
+                _lname,
+                _lcfg.get("physical", "—"),
+                str(_sampling.get("temperature", "—")),
+                str(_sampling.get("top_p",       "—")),
+                str(_sampling.get("top_k",       "—")),
+                end_section=_end_sec,
+            )
+
+    # ── sub-panels (DOS wizard style — bordered boxes inside the main window) ──
+    _inner_pad = (0, 1) if _narrow else (0, 2)
+    _sec_title = lambda name: f"[bold {C_ACCENT}][ {name} ][/]"
+
+    _S = f"on {C_BG}"  # window background style
+
+    logo_panel = Panel(
+        Align(logo_text, align="center"),
+        box=_box.SQUARE, border_style=C_BORDER,
+        style=_S, padding=(1, 0),
+    )
+
+    cfg_panel = Panel(
+        Align(cfg_line, align="center"),
+        title=_sec_title("Configuration"), title_align="left",
+        box=_box.SQUARE, border_style=C_DIM,
+        style=_S, padding=_inner_pad,
+    )
+
+    phys_panel = Panel(
+        phys_tbl,
+        title=_sec_title("Physical Models"), title_align="left",
+        box=_box.SQUARE, border_style=C_DIM,
+        style=_S, padding=_inner_pad,
+    )
+
+    log_panel = Panel(
+        log_tbl,
+        title=_sec_title("Logical Models"), title_align="left",
+        box=_box.SQUARE, border_style=C_DIM,
+        style=_S, padding=_inner_pad,
+    )
+
+    # ── status bar ────────────────────────────────────────────────────────────
+    status_line = Text(justify="center")
+    status_line.append("● ", style=f"bold {C_OK}")
+    status_line.append("READY", style=f"bold {C_OK}")
+    status_line.append("  ·  ", style=C_DIM)
+    if _narrow:
+        status_line.append(f":{ALLAMA_PORT}", style=C_ACCENT)
+    else:
+        status_line.append(f"http://127.0.0.1:{ALLAMA_PORT}", style=C_ACCENT)
+        status_line.append("  ·  Ctrl+C to stop", style=C_DIM)
+
+    status_panel = Panel(
+        Align(status_line, align="center"),
+        box=_box.SQUARE, border_style=C_DIM,
+        style=_S, padding=(0, 1),
+    )
+
+    # ── main floating window — light bg, floats on dark terminal desktop ──────
+    import sys as _sys
+    body     = Group(logo_panel, cfg_panel, phys_panel, log_panel, status_panel)
+    main_win = Panel(body, box=_box.DOUBLE, border_style=C_BORDER,
+                     style=f"on {C_SCREEN}", padding=(0, 0), width=W)
+
+    # Capture panel with ANSI codes so we can add shadow on each line
+    _cap = Console(width=W, force_terminal=True, color_system="truecolor",
+                   highlight=False)
+    with _cap.capture() as _capture:
+        _cap.print(main_win)
+    _lines = _capture.get().rstrip('\n').split('\n')
+
+    import re as _re_ansi
+    _ansi_re  = _re_ansi.compile(r'\x1b\[[0-9;]*m')
+    _lpad     = " " * max(0, (_term_w - W) // 2)
+    _shd_char = "\033[48;2;42;32;24m  \033[0m"   # 2 cols, warm dark = solid shadow
+    _bshd     = (" " * (max(0, (_term_w - W) // 2) + 2)
+                 + "\033[48;2;42;32;24m" + " " * W + "\033[0m")
+
+    _sys.stdout.write('\n')
+    for i, ln in enumerate(_lines):
+        if i == 0:
+            _sys.stdout.write(_lpad + ln + '\n')
+        else:
+            # pad to exactly W visible chars so shadow sits flush on the border
+            vis = len(_ansi_re.sub('', ln))
+            pad = ' ' * max(0, W - vis)
+            _sys.stdout.write(_lpad + ln + pad + _shd_char + '\n')
+    if not _narrow:
+        _sys.stdout.write(_bshd + '\n')
+    _sys.stdout.write('\n')
+    _sys.stdout.flush()

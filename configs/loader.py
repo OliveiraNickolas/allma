@@ -62,6 +62,14 @@ def parse_all_file(content: str) -> Dict[str, Any]:
                 value = False
             elif value.lower() in ('null', 'none', '~'):
                 value = None
+            else:
+                try:
+                    value = int(value)
+                except ValueError:
+                    try:
+                        value = float(value)
+                    except ValueError:
+                        pass
 
             if current_section is not None:
                 current_section[key] = value
