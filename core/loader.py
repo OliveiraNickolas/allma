@@ -172,13 +172,20 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
             with state.global_lock:
                 if physicalname in state.active_servers:
                     proc = state.active_servers[physicalname]["process"]
-                    if proc.poll() is None:
+                    if proc and proc.poll() is None:
                         port = state.active_servers[physicalname]["port"]
                         state.server_idle_time[physicalname] = time.time()
                         logger.debug(f"♻️  Reusing {displayname}:{port} after wait")
                         return port
                 if physicalname not in state.loading_models:
-                    break
+                    # Primary loader finished — check if it succeeded
+                    if physicalname in state.active_servers:
+                        proc = state.active_servers[physicalname]["process"]
+                        if proc and proc.poll() is None:
+                            port = state.active_servers[physicalname]["port"]
+                            state.server_idle_time[physicalname] = time.time()
+                            return port
+                    raise RuntimeError(f"{displayname} failed to load")
         raise RuntimeError(f"Loading timeout for {displayname} - load may have stuck")
 
     success = False
@@ -336,7 +343,7 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                 state.server_idle_time[physicalname] = time.time()
 
             logger.info(f"✅ Process started PID {proc.pid} on port {port}, GPU {current_gpu_id}")
-            logger.info(f"📄 Log: tail -f {PATH_TO_ALLAMA}/allama/{logfilepath}")
+            logger.info(f"📄 Log: tail -f {logfilepath}")
 
             ready = await wait_for_model_ready(
                 proc, port, backend, logfilepath, displayname,

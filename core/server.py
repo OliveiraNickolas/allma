@@ -29,7 +29,7 @@ async def get_http_client() -> httpx.AsyncClient:
     global _httpx_client
     if _httpx_client is None or _httpx_client.is_closed:
         _httpx_client = httpx.AsyncClient(
-            timeout=600.0,
+            timeout=httpx.Timeout(30.0, read=600.0),
             headers={"Authorization": "Bearer dummy"},
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
