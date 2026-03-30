@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -33,6 +34,45 @@ def _get(path: str, timeout: float = 3.0):
 
 def _is_running() -> bool:
     return _get("/health") is not None
+
+
+def _run_spinner(stop_event: threading.Event, label_ref: list):
+    """Retro DOS-style bouncing bar spinner. label_ref[0] can be mutated to change the label."""
+    track = 8
+    positions = list(range(track)) + list(range(track - 2, 0, -1))
+    start = time.time()
+    last_len = 0
+    i = 0
+    while not stop_event.is_set():
+        elapsed = time.time() - start
+        pos = positions[i % len(positions)]
+        bar = "░" * pos + "▓" + "░" * (track - pos - 1)
+        line = f"  [{bar}]  {label_ref[0]}{elapsed:.1f}s"
+        sys.stdout.write(f"\r{line}")
+        sys.stdout.flush()
+        last_len = len(line)
+        time.sleep(0.08)
+        i += 1
+    sys.stdout.write("\r" + " " * (last_len + 2) + "\r")
+    sys.stdout.flush()
+
+
+def _post(path: str, body: dict, timeout: float = 300.0):
+    """Simple HTTP POST, returns parsed JSON or None."""
+    try:
+        import urllib.request as _ur
+        data = json.dumps(body).encode()
+        req = _ur.Request(
+            f"{BASE_URL}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        with _ur.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        return None
 
 
 def _wait_for_server(timeout: int = 30) -> bool:
@@ -84,15 +124,18 @@ def _run_watchdog(verbose: bool):
 
     restart_count = 0
     while True:
-        if verbose:
-            proc = subprocess.run([PYTHON, SERVER_SCRIPT])
-        else:
-            with open(LOG_FILE, "a") as log:
-                proc = subprocess.run(
-                    [PYTHON, SERVER_SCRIPT],
-                    stdout=log,
-                    stderr=log,
-                )
+        try:
+            if verbose:
+                proc = subprocess.run([PYTHON, SERVER_SCRIPT])
+            else:
+                with open(LOG_FILE, "a") as log:
+                    proc = subprocess.run(
+                        [PYTHON, SERVER_SCRIPT],
+                        stdout=log,
+                        stderr=log,
+                    )
+        except KeyboardInterrupt:
+            break
 
         code = proc.returncode
 
@@ -116,39 +159,91 @@ def _run_watchdog(verbose: bool):
 def cmd_serve(args):
     """Start the Allama daemon."""
     if args.verbose:
-        # Foreground: run watchdog directly (shows rich banner + logs + auto-restart)
         print("Starting Allama (verbose mode — Ctrl+C to stop)...")
         _run_watchdog(verbose=True)
     else:
         if _is_running():
             print("Allama is already running.")
             return
+        label = ["Starting Allama...  "]
+        stop_spinner = threading.Event()
+        spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
+        spinner.start()
         _start_daemon()
-        print("Starting Allama...", end="", flush=True)
-        if _wait_for_server(30):
-            print(" ready.")
+        ok = _wait_for_server(30)
+        stop_spinner.set()
+        spinner.join()
+        if ok:
+            print("Allama ready.")
         else:
-            print(" timed out. Check logs: allama logs")
+            print("Allama timed out. Check logs: allama logs")
+
+
+def _kill_leftover_backends() -> int:
+    """Kill any allama-managed vllm/llama-server processes still alive.
+
+    Uses command-line fingerprints specific to allama-spawned backends
+    (--host 127.0.0.1 --api-key dummy for vllm, --host 127.0.0.1 for llama)
+    to avoid hitting unrelated instances.
+    """
+    killed = 0
+    try:
+        import psutil
+        uid = os.getuid()
+        for proc in psutil.process_iter(["pid", "cmdline", "uids"]):
+            try:
+                if proc.uids().real != uid:
+                    continue
+                cmd = " ".join(proc.cmdline())
+                is_vllm  = "vllm" in cmd and "serve" in cmd and "--api-key dummy" in cmd
+                is_llama = "llama-server" in cmd and "--host 127.0.0.1" in cmd
+                if is_vllm or is_llama:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        proc.kill()
+                    killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except ImportError:
+        pass
+    return killed
 
 
 def cmd_stop(args):
-    """Stop the Allama daemon."""
+    """Stop the Allama daemon and all backend processes."""
+    if not _is_running() and not _read_pid():
+        print("Allama is not running.")
+        return
+
+    # Step 1: ask the FastAPI server to gracefully shut down (kills backends via lifespan)
+    if _is_running():
+        _post("/v1/shutdown", {}, timeout=5.0)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if not _is_running():
+                break
+            time.sleep(0.4)
+
+    # Step 2: kill watchdog so it doesn't restart the server
     pid = _read_pid()
     if pid:
         try:
             os.kill(pid, signal.SIGTERM)
-            print(f"Stopped (PID {pid}).")
-            PID_FILE.unlink(missing_ok=True)
-            return
         except ProcessLookupError:
-            PID_FILE.unlink(missing_ok=True)
+            pass
+        PID_FILE.unlink(missing_ok=True)
 
-    if not _is_running():
-        print("Allama is not running.")
-        return
+    # Step 3: fallback — kill any orphaned backends the graceful path missed
+    time.sleep(1)
+    killed = _kill_leftover_backends()
+    if killed:
+        print(f"Cleaned up {killed} orphaned backend process(es).")
 
-    # Fallback: ask the server to shut itself down isn't standard, just warn
-    print("Could not find watchdog PID. Kill allama.py manually if needed.")
+    if _is_running():
+        print("Allama did not stop cleanly. Check: allama logs")
+    else:
+        print("Stopped.")
 
 
 def cmd_status(args):
@@ -216,20 +311,28 @@ def cmd_logs(args):
 def cmd_run(args):
     """Load a model and open an interactive chat session."""
     model = args.model
+    already_running = _is_running()
 
-    # Ensure server is up
-    if not _is_running():
-        print(f"Starting Allama...", end="", flush=True)
+    label = ["Loading model...  " if already_running else "Starting Allama...  "]
+    stop_spinner = threading.Event()
+    spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
+    spinner.start()
+
+    if not already_running:
         _start_daemon()
         if not _wait_for_server(30):
-            print(" failed to start. Check logs: allama logs")
+            stop_spinner.set()
+            spinner.join()
+            print("Allama failed to start. Check logs: allama logs")
             sys.exit(1)
-        print(" ready.")
+        label[0] = "Loading model...  "
 
     # Verify model exists
     data = _get("/v1/models")
     available = [m["id"] for m in (data or {}).get("data", [])]
     if model not in available:
+        stop_spinner.set()
+        spinner.join()
         print(f"Model '{model}' not found.")
         if available:
             print("Available models:")
@@ -237,7 +340,60 @@ def cmd_run(args):
                 print(f"  {m}")
         sys.exit(1)
 
+    # Pre-load model (triggers ensure_physical_model server-side)
+    try:
+        _post("/v1/load", {"model": model}, timeout=300.0)
+    except KeyboardInterrupt:
+        stop_spinner.set()
+        spinner.join()
+        print("\nCancelled.")
+        sys.exit(0)
+
+    stop_spinner.set()
+    spinner.join()
+
     _repl(model)
+
+
+def _print_repl_header(console, model: str):
+    from rich import box as _box
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    # Lisa-16 CLI palette (dark terminal compatible)
+    C_FG     = "#b0c4d0"
+    C_DIM    = "#485e6e"
+    C_ACCENT = "#5aaecf"
+    C_BORDER = "#1a4a8a"
+    C_OK     = "#3a7850"
+    W = 68
+
+    body = Table.grid(expand=True, padding=(0, 1))
+    body.add_column()
+
+    info = Text()
+    info.append("  MODEL  ▸  ", style=f"bold {C_DIM}")
+    info.append(model, style=f"bold {C_ACCENT}")
+    info.append("    PORT  ▸  ", style=f"bold {C_DIM}")
+    info.append(str(ALLAMA_PORT), style=f"bold {C_OK}")
+    body.add_row(info)
+
+    cmds = Text()
+    cmds.append("  /bye", style=f"bold {C_ACCENT}")
+    cmds.append("  ·  ", style=C_DIM)
+    cmds.append("/clear", style=f"bold {C_ACCENT}")
+    cmds.append("  ·  ", style=C_DIM)
+    cmds.append("/exit", style=f"bold {C_ACCENT}")
+    cmds.append("    ", style=C_DIM)
+    cmds.append("Ctrl+C", style=f"bold {C_FG}")
+    cmds.append(" to quit", style=C_DIM)
+    body.add_row(cmds)
+
+    console.print()
+    console.print(Panel(body, title=f"[bold {C_FG}] ALLAMA RUN [/]",
+                        box=_box.DOUBLE, border_style=C_BORDER, padding=(0, 1), width=W))
+    console.print()
 
 
 def _repl(model: str):
@@ -248,13 +404,23 @@ def _repl(model: str):
         print("httpx not installed. Run: pip install httpx")
         sys.exit(1)
 
+    try:
+        from rich.console import Console
+        _rich_console = Console()
+        _use_rich = True
+    except ImportError:
+        _use_rich = False
+
     history = []
-    print(f"\n{'─'*50}")
-    print(f"  Model : {model}")
-    print(f"  Port  : {ALLAMA_PORT}")
-    print(f"  /bye or Ctrl+C to exit")
-    print(f"{'─'*50}\n")
-    print("Loading model on first message...\n")
+
+    if _use_rich:
+        _print_repl_header(_rich_console, model)
+    else:
+        print(f"\n{'─'*50}")
+        print(f"  Model : {model}")
+        print(f"  Port  : {ALLAMA_PORT}")
+        print(f"  /bye or Ctrl+C to exit")
+        print(f"{'─'*50}\n")
 
     try:
         while True:
@@ -282,8 +448,15 @@ def _repl(model: str):
                 "stream": True,
             }
 
+            spin_label = [""]
             full_response = ""
-            print()
+            stop_spinner = threading.Event()
+            spinner = threading.Thread(
+                target=_run_spinner,
+                args=(stop_spinner, spin_label),
+                daemon=True,
+            )
+            spinner.start()
             try:
                 with httpx.Client(timeout=300.0) as client:
                     with client.stream(
@@ -293,9 +466,12 @@ def _repl(model: str):
                         headers={"Authorization": "Bearer dummy"},
                     ) as resp:
                         if resp.status_code != 200:
+                            stop_spinner.set()
+                            spinner.join()
                             print(f"[error {resp.status_code}]")
                             history.pop()
                             continue
+                        first_token = True
                         for line in resp.iter_lines():
                             if not line or line == "data: [DONE]":
                                 continue
@@ -304,18 +480,30 @@ def _repl(model: str):
                                     chunk = json.loads(line[6:])
                                     delta = chunk["choices"][0]["delta"].get("content", "")
                                     if delta:
+                                        if first_token:
+                                            stop_spinner.set()
+                                            spinner.join()
+                                            print()
+                                            first_token = False
                                         print(delta, end="", flush=True)
                                         full_response += delta
                                 except (json.JSONDecodeError, KeyError):
                                     pass
             except KeyboardInterrupt:
+                stop_spinner.set()
+                spinner.join()
                 print("\n[interrupted]")
                 history.pop()
                 print()
                 continue
             except httpx.ConnectError:
+                stop_spinner.set()
+                spinner.join()
                 print("[connection error — is Allama running?]")
                 break
+            finally:
+                stop_spinner.set()
+                spinner.join()
 
             print("\n")
             if full_response:

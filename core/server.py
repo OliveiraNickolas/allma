@@ -205,7 +205,7 @@ async def messages(request: Request, body: dict = Body(...)):
 
     port = await ensure_physical_model(physical_name, model_name)
 
-    max_model_len = int(cfg.get("max_model_len", "40960"))
+    max_model_len = int(cfg.get("max_model_len") or cfg.get("n_ctx") or "40960")
     max_output_cap = max_model_len // 4
     requested = body.get("max_tokens", max_output_cap)
     if requested > max_output_cap:
@@ -252,6 +252,21 @@ async def messages(request: Request, body: dict = Body(...)):
     import json as _json
     import uuid as _uuid
 
+    # ── Convert tool definitions (Anthropic → OpenAI) ──
+    oai_tools = None
+    if body.get("tools"):
+        oai_tools = []
+        for tool in body["tools"]:
+            oai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {}),
+                },
+            })
+
+    # ── Convert messages ──
     oai_messages = []
     system_raw = body.get("system", "")
     if system_raw:
@@ -263,15 +278,60 @@ async def messages(request: Request, body: dict = Body(...)):
             system_text = system_raw
         if system_text:
             oai_messages.append({"role": "system", "content": system_text})
+
     for msg in body.get("messages", []):
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        if isinstance(content, list):
-            # Extract text blocks only
-            content = "".join(
-                block.get("text", "") for block in content if block.get("type") == "text"
-            )
-        oai_messages.append({"role": role, "content": content})
+
+        if isinstance(content, str):
+            oai_messages.append({"role": role, "content": content})
+            continue
+        if not isinstance(content, list):
+            oai_messages.append({"role": role, "content": str(content)})
+            continue
+
+        # Separate content block types
+        text_parts, tool_uses, tool_results = [], [], []
+        for block in content:
+            btype = block.get("type", "")
+            if btype == "text":
+                text_parts.append(block.get("text", ""))
+            elif btype == "tool_use":
+                tool_uses.append(block)
+            elif btype == "tool_result":
+                tool_results.append(block)
+
+        if role == "assistant":
+            oai_msg = {"role": "assistant"}
+            oai_msg["content"] = "".join(text_parts) if text_parts else None
+            if tool_uses:
+                oai_msg["tool_calls"] = [
+                    {
+                        "id": tu["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tu["name"],
+                            "arguments": _json.dumps(tu.get("input", {})),
+                        },
+                    }
+                    for tu in tool_uses
+                ]
+            oai_messages.append(oai_msg)
+        else:
+            # User messages: text first, then tool_results as separate "tool" role messages
+            if text_parts:
+                oai_messages.append({"role": "user", "content": "".join(text_parts)})
+            for tr in tool_results:
+                tr_content = tr.get("content", "")
+                if isinstance(tr_content, list):
+                    tr_content = "".join(
+                        b.get("text", "") for b in tr_content if b.get("type") == "text"
+                    )
+                oai_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tr.get("tool_use_id", ""),
+                    "content": str(tr_content),
+                })
 
     oai_body = {
         "model": cfg["model"],
@@ -281,6 +341,8 @@ async def messages(request: Request, body: dict = Body(...)):
     }
     if "temperature" in body:
         oai_body["temperature"] = body["temperature"]
+    if oai_tools:
+        oai_body["tools"] = oai_tools
 
     url = f"http://127.0.0.1:{port}/chat/completions"
 
@@ -292,10 +354,20 @@ async def messages(request: Request, body: dict = Body(...)):
                 try:
                     # Anthropic SSE preamble
                     yield f"event: message_start\ndata: {_json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model_name, 'stop_reason': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
-                    yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                    yield "event: ping\ndata: {\"type\": \"ping\"}\n\n"
+
+                    block_idx = 0
+                    text_started = False
+                    tool_calls_acc = {}  # tc_index -> {id, name, arguments, block_idx}
+                    stop_reason = "end_turn"
 
                     async with client.stream("POST", url, json=oai_body) as response:
+                        if response.status_code != 200:
+                            error_body = await response.aread()
+                            logger.error(f"Backend returned {response.status_code}: {error_body.decode()}")
+                            yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                            yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                            return
+
                         async for line in response.aiter_lines():
                             line = line.strip()
                             if not line or not line.startswith("data: "):
@@ -305,16 +377,50 @@ async def messages(request: Request, body: dict = Body(...)):
                                 break
                             try:
                                 chunk = _json.loads(raw)
-                                delta_text = chunk["choices"][0]["delta"].get("content", "")
+                                delta = chunk["choices"][0].get("delta", {})
+
+                                # ── Text content ──
+                                delta_text = delta.get("content", "")
                                 if delta_text:
-                                    yield f"event: content_block_delta\ndata: {_json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': delta_text}})}\n\n"
+                                    if not text_started:
+                                        yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': block_idx, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                        text_started = True
+                                    yield f"event: content_block_delta\ndata: {_json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'text_delta', 'text': delta_text}})}\n\n"
+
+                                # ── Tool calls ──
+                                for tc_delta in delta.get("tool_calls", []):
+                                    tc_idx = tc_delta.get("index", 0)
+                                    if tc_idx not in tool_calls_acc:
+                                        # New tool call — close text block if open
+                                        if text_started:
+                                            yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
+                                            block_idx += 1
+                                            text_started = False
+
+                                        tc_id = tc_delta.get("id", f"toolu_{_uuid.uuid4().hex[:24]}")
+                                        tc_name = tc_delta.get("function", {}).get("name", "")
+                                        tool_calls_acc[tc_idx] = {"id": tc_id, "name": tc_name, "block_idx": block_idx}
+                                        stop_reason = "tool_use"
+
+                                        yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': block_idx, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': tc_name, 'input': {}}})}\n\n"
+
+                                    args_delta = tc_delta.get("function", {}).get("arguments", "")
+                                    if args_delta:
+                                        yield f"event: content_block_delta\ndata: {_json.dumps({'type': 'content_block_delta', 'index': tool_calls_acc[tc_idx]['block_idx'], 'delta': {'type': 'input_json_delta', 'partial_json': args_delta}})}\n\n"
+
                             except Exception:
                                 pass
+
                 except Exception as e:
                     logger.error(f"llama.cpp stream error: {e}")
                 finally:
-                    yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
-                    yield f"event: message_delta\ndata: {_json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': {'output_tokens': 0}})}\n\n"
+                    # Close any open content blocks
+                    if text_started:
+                        yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
+                    for tc_info in tool_calls_acc.values():
+                        yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': tc_info['block_idx']})}\n\n"
+
+                    yield f"event: message_delta\ndata: {_json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': 0}})}\n\n"
                     yield f"event: message_stop\ndata: {_json.dumps({'type': 'message_stop'})}\n\n"
 
             return StreamingResponse(
@@ -325,15 +431,39 @@ async def messages(request: Request, body: dict = Body(...)):
         else:
             resp = await client.post(url, json=oai_body)
             oai = resp.json()
-            text = oai["choices"][0]["message"]["content"]
+            choice = oai["choices"][0]
+            message = choice.get("message", {})
             msg_id = f"msg_{_uuid.uuid4().hex[:24]}"
+
+            content_blocks = []
+            if message.get("content"):
+                content_blocks.append({"type": "text", "text": message["content"]})
+
+            stop_reason = "end_turn"
+            if message.get("tool_calls"):
+                stop_reason = "tool_use"
+                for tc in message["tool_calls"]:
+                    try:
+                        input_data = _json.loads(tc["function"]["arguments"])
+                    except (ValueError, KeyError):
+                        input_data = {}
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", f"toolu_{_uuid.uuid4().hex[:24]}"),
+                        "name": tc["function"]["name"],
+                        "input": input_data,
+                    })
+
+            if not content_blocks:
+                content_blocks.append({"type": "text", "text": ""})
+
             anthropic_resp = {
                 "id": msg_id,
                 "type": "message",
                 "role": "assistant",
-                "content": [{"type": "text", "text": text}],
+                "content": content_blocks,
                 "model": model_name,
-                "stop_reason": "end_turn",
+                "stop_reason": stop_reason,
                 "stop_sequence": None,
                 "usage": {
                     "input_tokens": oai.get("usage", {}).get("prompt_tokens", 0),

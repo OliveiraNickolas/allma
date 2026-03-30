@@ -82,10 +82,29 @@ SCRIPT_DIR = Path(__file__).parent.parent  # allama/ root
 ALLAMA_LOG_DIR = Path(os.environ.get("ALLAMA_LOG_DIR", str(SCRIPT_DIR / "logs")))
 CONFIG_DIR = Path(os.environ.get("ALLAMA_CONFIG_DIR", str(SCRIPT_DIR / "configs")))
 PATH_TO_ALLAMA = os.environ.get("PATH_TO_ALLAMA", str(SCRIPT_DIR.parent))
-LLAMA_CPP_PATH = os.environ.get(
-    "LLAMA_CPP_PATH",
-    str(SCRIPT_DIR.parent / "AI" / "llama.cpp" / "build" / "bin" / "llama-server"),
-)
+def _find_llama_server() -> str:
+    """Find llama-server binary: env var → PATH → common locations."""
+    from shutil import which
+    # 1. Explicit env var
+    if (env := os.environ.get("LLAMA_CPP_PATH")):
+        return env
+    # 2. llama-server on PATH
+    if (found := which("llama-server")):
+        return found
+    # 3. Common build locations relative to HOME
+    home = Path.home()
+    candidates = [
+        home / "AI" / "llama.cpp" / "build" / "bin" / "llama-server",
+        home / "llama.cpp" / "build" / "bin" / "llama-server",
+        Path("/usr/local/bin/llama-server"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    # Fallback — will fail at runtime with a clear error
+    return "llama-server"
+
+LLAMA_CPP_PATH = _find_llama_server()
 
 # ==============================================================================
 # LOGGING SETUP

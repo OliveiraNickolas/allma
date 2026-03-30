@@ -22,6 +22,8 @@ import core.state as state
 
 
 def main():
+    show_banner()
+
     _health_monitor_thread = threading.Thread(target=health_monitor, daemon=True)
     _health_monitor_thread.start()
 
@@ -49,7 +51,6 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    show_banner()
     uvicorn.run(app, host="127.0.0.1", port=ALLAMA_PORT)
 
 
