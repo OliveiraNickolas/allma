@@ -1,6 +1,7 @@
 """
-Process management: build commands, kill, shutdown, VRAM cleanup.
+Process management: build commands, kill, shutdown, VRAM cleanup, PID registry.
 """
+import json
 import os
 import signal
 import subprocess
@@ -10,8 +11,84 @@ from typing import Any, Dict, Optional
 
 import psutil
 
-from core.config import logger, PHYSICAL_MODELS, LLAMA_CPP_PATH
+from core.config import logger, PHYSICAL_MODELS, LLAMA_CPP_PATH, ALLAMA_LOG_DIR
 import core.state as state
+
+# ==============================================================================
+# PID REGISTRY — persist backend PIDs to disk for orphan recovery
+# ==============================================================================
+_PID_REGISTRY = ALLAMA_LOG_DIR / "backends.json"
+
+
+def _load_registry() -> dict:
+    try:
+        return json.loads(_PID_REGISTRY.read_text()) if _PID_REGISTRY.exists() else {}
+    except Exception:
+        return {}
+
+
+def _save_registry(data: dict):
+    ALLAMA_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _PID_REGISTRY.write_text(json.dumps(data, indent=2))
+
+
+def save_backend_pid(name: str, pid: int, port: int, backend: str):
+    """Register a backend process on disk."""
+    reg = _load_registry()
+    reg[name] = {"pid": pid, "port": port, "backend": backend}
+    _save_registry(reg)
+
+
+def remove_backend_pid(name: str):
+    """Remove a backend from the PID registry."""
+    reg = _load_registry()
+    if name in reg:
+        del reg[name]
+        _save_registry(reg)
+
+
+def clear_backend_registry():
+    """Clear all entries from the PID registry."""
+    _save_registry({})
+
+
+def cleanup_orphaned_backends():
+    """Kill backend processes left over from a previous allama session."""
+    reg = _load_registry()
+    if not reg:
+        return
+
+    killed = 0
+    for name, info in list(reg.items()):
+        pid = info.get("pid")
+        if not pid:
+            continue
+        try:
+            proc = psutil.Process(pid)
+            cmdline = " ".join(proc.cmdline())
+            # Verify it's actually a backend process (not a random PID reuse)
+            is_vllm = "vllm" in cmdline and "serve" in cmdline
+            is_llama = "llama-server" in cmdline or "llama.cpp" in cmdline
+            if is_vllm or is_llama:
+                logger.info(f"🧹 Killing orphaned backend: {name} (PID {pid}, {info.get('backend')})")
+                kill_process_tree(pid, timeout=3)
+                killed += 1
+            else:
+                logger.debug(f"PID {pid} is no longer a backend process, skipping")
+        except psutil.NoSuchProcess:
+            logger.debug(f"Orphan PID {pid} ({name}) already dead")
+        except Exception as e:
+            logger.warning(f"Error cleaning up {name} (PID {pid}): {e}")
+
+    # Clear the registry
+    _save_registry({})
+
+    if killed:
+        time.sleep(2)
+        from core.gpu import get_free_gpu_memory
+        gpus = get_free_gpu_memory()
+        freegb = sum(g["free_gb"] for g in gpus)
+        logger.info(f"🧹 Cleaned up {killed} orphaned backend(s). VRAM free: {freegb:.1f}GB")
 from core.gpu import (
     find_optimal_tp_and_gpus,
     get_best_gpu,
@@ -132,6 +209,7 @@ def shutdown_server(physicalname: str, reason: str = "user", fast: bool = False)
         port = server["port"]
         backend = server.get("backend", "unknown")
 
+    remove_backend_pid(physicalname)
     logger.info(f"📤 Unload {physicalname}:{port} ({reason})")
 
     if proc and proc.poll() is None:

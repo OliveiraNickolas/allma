@@ -19,6 +19,7 @@ from core.process import (
     shutdown_server,
     kill_vram_fast,
     list_gpu_processes,
+    save_backend_pid,
 )
 
 
@@ -342,6 +343,7 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                 }
                 state.server_idle_time[physicalname] = time.time()
 
+            save_backend_pid(physicalname, proc.pid, port, backend)
             logger.info(f"✅ Process started PID {proc.pid} on port {port}, GPU {current_gpu_id}")
             logger.info(f"📄 Log: tail -f {logfilepath}")
 

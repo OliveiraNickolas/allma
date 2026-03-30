@@ -17,12 +17,13 @@ import uvicorn
 from core.config import ALLAMA_PORT, logger
 from core.server import app, close_http_client, show_banner
 from core.health import health_monitor
-from core.process import kill_process_tree
+from core.process import kill_process_tree, cleanup_orphaned_backends, clear_backend_registry
 import core.state as state
 
 
 def main():
     show_banner()
+    cleanup_orphaned_backends()
 
     _health_monitor_thread = threading.Thread(target=health_monitor, daemon=True)
     _health_monitor_thread.start()
@@ -44,6 +45,7 @@ def main():
                     pid = server["process"].pid
                     kill_process_tree(pid)
                     logger.info(f"🔥 Killed process tree for {name} (PID {pid})")
+        clear_backend_registry()
         _health_monitor_thread.join(timeout=5)
         time.sleep(1)
         os._exit(0)
