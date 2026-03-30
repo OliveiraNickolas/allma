@@ -41,9 +41,9 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[lis
         "vllm", "serve", cfg["path"],
         "--tokenizer", cfg["tokenizer"],
         "--tensor-parallel-size", str(tp_size),
-        "--gpu-memory-utilization", cfg.get("gpu_memory_utilization", "0.90"),
-        "--max-model-len", cfg["max_model_len"],
-        "--max-num-seqs", cfg.get("max_num_seqs", "8"),
+        "--gpu-memory-utilization", str(cfg.get("gpu_memory_utilization", "0.90")),
+        "--max-model-len", str(cfg["max_model_len"]),
+        "--max-num-seqs", str(cfg.get("max_num_seqs", "8")),
         "--generation-config", "vllm",
         "--port", str(port),
         "--host", "127.0.0.1",
@@ -73,10 +73,10 @@ def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
         "-m", cfg["model"],
         "--host", "127.0.0.1",
         "--port", str(port),
-        "-t", cfg.get("n_threads", "16"),
-        "-c", cfg.get("n_ctx", "40960"),
-        "-b", cfg.get("n_batch", "1024"),
-        "-ngl", cfg.get("n_gpu_layers", "-1"),
+        "-t", str(cfg.get("n_threads", "16")),
+        "-c", str(cfg.get("n_ctx", "40960")),
+        "-b", str(cfg.get("n_batch", "1024")),
+        "-ngl", str(cfg.get("n_gpu_layers", "-1")),
     ]
     if cfg.get("mmproj") and os.path.exists(cfg["mmproj"]):
         cmd.extend(["--mmproj", cfg["mmproj"]])
