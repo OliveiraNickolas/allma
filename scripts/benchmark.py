@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple
 from datetime import datetime
 
 
-class Allama Benchmarker:
+class AlamaBenchmarker:
     """Benchmark Allama performance on your hardware."""
 
     def __init__(self, allama_host: str = "http://127.0.0.1", allama_port: int = 9000):
@@ -254,7 +254,7 @@ class Allama Benchmarker:
 
 def quick_benchmark_coding():
     """Quick benchmark: Coding profile latency."""
-    benchmarker = Allama Benchmarker()
+    benchmarker = AlamaBenchmarker()
     results = benchmarker.benchmark_profile(
         "coding",
         ["Write a simple Hello World program in 5 languages"],
@@ -267,7 +267,7 @@ def quick_benchmark_coding():
 
 def quick_benchmark_ocr():
     """Quick benchmark: OCR profile accuracy."""
-    benchmarker = Allama Benchmarker()
+    benchmarker = AlamaBenchmarker()
     # Note: This requires an actual image
     results = benchmarker.benchmark_profile(
         "ocr",
@@ -281,7 +281,7 @@ def quick_benchmark_ocr():
 
 def full_benchmark():
     """Full benchmark: All profiles."""
-    benchmarker = Allama Benchmarker()
+    benchmarker = AlamaBenchmarker()
     results = benchmarker.benchmark_all_profiles()
     benchmarker.save_results(results, "YOUR_BENCHMARKS.md")
     benchmarker.print_summary(results)
@@ -315,7 +315,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    benchmarker = Allama Benchmarker()
+    benchmarker = AlamaBenchmarker()
 
     if args.profile == "all":
         print("Running full benchmark suite...")
