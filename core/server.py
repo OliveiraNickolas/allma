@@ -253,16 +253,43 @@ async def messages(request: Request, body: dict = Body(...)):
     import uuid as _uuid
 
     # ── Convert tool definitions (Anthropic → OpenAI) ──
+    # Strip numeric constraints that cause llama.cpp GBNF grammar explosion
+    def _simplify_schema(schema):
+        """Remove JSON Schema constraints that produce astronomically complex
+        GBNF grammar rules in llama.cpp (e.g. min/max integer range validation
+        generates hundreds of nested parentheses per field)."""
+        if not isinstance(schema, dict):
+            return schema
+        drop_keys = {
+            "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+            "minLength", "maxLength", "minItems", "maxItems",
+            "$schema", "additionalProperties",
+        }
+        out = {}
+        for k, v in schema.items():
+            if k in drop_keys:
+                continue
+            if k == "properties" and isinstance(v, dict):
+                out[k] = {pk: _simplify_schema(pv) for pk, pv in v.items()}
+            elif k == "items" and isinstance(v, dict):
+                out[k] = _simplify_schema(v)
+            elif k == "anyOf" and isinstance(v, list):
+                out[k] = [_simplify_schema(item) for item in v]
+            else:
+                out[k] = v
+        return out
+
     oai_tools = None
     if body.get("tools"):
         oai_tools = []
         for tool in body["tools"]:
+            raw_schema = tool.get("input_schema", {})
             oai_tools.append({
                 "type": "function",
                 "function": {
                     "name": tool["name"],
                     "description": tool.get("description", ""),
-                    "parameters": tool.get("input_schema", {}),
+                    "parameters": _simplify_schema(raw_schema) if backend == "llama.cpp" else raw_schema,
                 },
             })
 
