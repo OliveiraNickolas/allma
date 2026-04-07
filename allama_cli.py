@@ -311,6 +311,50 @@ def cmd_logs(args):
 def cmd_run(args):
     """Load a model and open an interactive chat session."""
     model = args.model
+    provider = getattr(args, "provider", None)
+    on_keyword = getattr(args, "on", None)
+    persist = getattr(args, "persist", False)
+
+    # Handle new syntax: allama run <model> on <provider>
+    if on_keyword == "on" and provider:
+        from core.provider_resolver import resolve_remote_model
+        from core.config import load_dynamic_models, save_dynamic_models, DYNAMIC_MODELS
+
+        logger.info(f"🌐 Resolving {model} from {provider}...")
+
+        # Try to resolve the model from remote provider
+        metadata = resolve_remote_model(provider, model)
+        if not metadata:
+            print(f"❌ Model '{model}' not found on {provider}")
+            sys.exit(1)
+
+        # Create a temporary logical model name
+        logical_model_name = f"{provider}/{model}"
+
+        # Check if already cached
+        dynamic_models = load_dynamic_models()
+        if logical_model_name not in dynamic_models:
+            # Create physical model config for remote provider
+            dynamic_models[logical_model_name] = {
+                "backend": provider,
+                "model_id": model,
+                "base_url": metadata.get("base_url"),
+                "context_window": metadata.get("context_window", 4096),
+                "max_tokens": metadata.get("max_tokens", 2048),
+            }
+
+            if persist:
+                save_dynamic_models(dynamic_models)
+                print(f"💾 Saved {logical_model_name} to dynamic_models.json")
+
+        model = logical_model_name
+    elif on_keyword and provider:
+        print(f"❌ Invalid syntax. Use: allama run <model> on <provider>")
+        sys.exit(1)
+    elif on_keyword == "on" or provider:
+        print(f"❌ Invalid syntax. Use: allama run <model> on <provider>")
+        sys.exit(1)
+
     already_running = _is_running()
 
     label = ["Loading model...  " if already_running else "Starting Allama...  "]
@@ -609,7 +653,10 @@ def main():
 
     # run
     p_run = sub.add_parser("run", help="Chat with a model interactively")
-    p_run.add_argument("model", help="Logical model name (e.g. Qwen3.5:27b-Instruct)")
+    p_run.add_argument("model", help="Model name or remote model (e.g. 'Qwen3.5:27b' or 'gpt-4')")
+    p_run.add_argument("on", nargs="?", default=None, help="Keyword 'on' (internal)")
+    p_run.add_argument("provider", nargs="?", default=None, help="Remote provider (opencode, openclaw)")
+    p_run.add_argument("--persist", action="store_true", help="Save remote model for future use")
     p_run.set_defaults(func=cmd_run)
 
     # backend

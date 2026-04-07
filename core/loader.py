@@ -10,17 +10,20 @@ import threading
 import time
 from typing import Optional
 
-from core.config import logger, PHYSICAL_MODELS, ALLAMA_LOG_DIR, PATH_TO_ALLAMA
+from core.config import logger, PHYSICAL_MODELS, ALLAMA_LOG_DIR, PATH_TO_ALLAMA, ENV_CREDENTIALS, DYNAMIC_MODELS, save_dynamic_models
 import core.state as state
 from core.gpu import get_free_gpu_memory, get_model_vram_need
 from core.process import (
     build_vllm_cmd,
     build_llama_cmd,
+    build_opencode_cmd,
+    build_openclaw_cmd,
     shutdown_server,
     kill_vram_fast,
     list_gpu_processes,
     save_backend_pid,
 )
+from core.provider_resolver import resolve_remote_model
 
 
 # ==============================================================================
@@ -81,7 +84,14 @@ async def wait_for_model_ready(
     READY_SIGNALS = {
         "vllm": ["Application startup complete", "Uvicorn running on"],
         "llama.cpp": ["main: starting the main loop", "main: server is listening"],
+        "opencode": [],
+        "openclaw": [],
     }
+
+    # Remote providers are always ready immediately
+    if backend in ["opencode", "openclaw"]:
+        logger.info(f"🎉 {displayname} ready (remote provider)")
+        return True
 
     use_tcp_fallback = backend == "vllm"
     signals = READY_SIGNALS.get(backend, [])
@@ -277,6 +287,21 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
         )
 
     logger.info(f"⏳ Loading {displayname} ({backend})")
+
+    # Remote providers don't need local process spawning
+    if backend in ["opencode", "openclaw"]:
+        port = 443  # Dummy port for remote providers
+        with state.global_lock:
+            state.active_servers[physicalname] = {
+                "process": None,  # No local process
+                "pid": None,
+                "port": port,
+                "backend": backend,
+                "logfile": None,
+            }
+            state.server_idle_time[physicalname] = time.time()
+        logger.info(f"🚀 {displayname} ready (remote provider)")
+        return port
 
     max_attempts = 5
     skip_gpu: int | None = None

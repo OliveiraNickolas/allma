@@ -14,6 +14,8 @@ from core.config import (
     ALLAMA_PORT,
     RICH_AVAILABLE,
     format_user_agent,
+    ENV_CREDENTIALS,
+    DYNAMIC_MODELS,
 )
 import core.state as state
 from core.loader import ensure_physical_model
@@ -69,7 +71,8 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})"
     )
 
-    if model_name not in LOGICAL_MODELS:
+    # Check both static and dynamic models
+    if model_name not in LOGICAL_MODELS and model_name not in DYNAMIC_MODELS:
         return JSONResponse(
             status_code=404,
             content={"error": f"Model '{model_name}' not found"},
@@ -78,13 +81,41 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     if "messages" in body and MAX_MESSAGES > 0:
         body["messages"] = body["messages"][-MAX_MESSAGES:]
 
-    logical_cfg = LOGICAL_MODELS[model_name]
-    physical_name = logical_cfg["physical"]
+    # Determine if this is a logical or dynamic model
+    if model_name in LOGICAL_MODELS:
+        logical_cfg = LOGICAL_MODELS[model_name]
+        physical_name = logical_cfg["physical"]
+    else:
+        # Dynamic model - use the model name as both logical and physical
+        physical_name = model_name
+        logical_cfg = {"physical": physical_name}
+        # Ensure physical model exists in PHYSICAL_MODELS
+        if physical_name not in PHYSICAL_MODELS:
+            PHYSICAL_MODELS[physical_name] = DYNAMIC_MODELS[model_name]
+
     port = await ensure_physical_model(physical_name, model_name)
 
     cfg = PHYSICAL_MODELS[physical_name]
     backend = cfg.get("backend", "vllm")
-    if backend == "vllm":
+
+    # Remote providers: forward to external API
+    if backend == "opencode":
+        body["model"] = cfg.get("model_id", "gpt-4")
+        url = cfg.get("base_url", ENV_CREDENTIALS.get("OPENCODE_BASE_URL", "https://api.opencode.io/v1"))
+        url = f"{url}/chat/completions"
+        auth_header = ENV_CREDENTIALS.get("OPENCODE_API_KEY")
+        if auth_header:
+            client = await get_http_client()
+            client.headers["Authorization"] = f"Bearer {auth_header}"
+    elif backend == "openclaw":
+        body["model"] = cfg.get("model_id", "gpt-4")
+        url = cfg.get("base_url", ENV_CREDENTIALS.get("OPENCLAW_BASE_URL", "https://api.openclaw.ai/v1"))
+        url = f"{url}/chat/completions"
+        auth_header = ENV_CREDENTIALS.get("OPENCLAW_API_KEY")
+        if auth_header:
+            client = await get_http_client()
+            client.headers["Authorization"] = f"Bearer {auth_header}"
+    elif backend == "vllm":
         body["model"] = cfg["path"]
         url = f"http://127.0.0.1:{port}/v1/chat/completions"
     else:
@@ -509,9 +540,11 @@ async def messages(request: Request, body: dict = Body(...)):
 
 @app.get("/v1/models")
 async def models_list():
+    # Combine static logical models + dynamic cached remote models
+    all_models = list(LOGICAL_MODELS.keys()) + list(DYNAMIC_MODELS.keys())
     return {
         "object": "list",
-        "data": [{"id": k, "object": "model"} for k in LOGICAL_MODELS],
+        "data": [{"id": k, "object": "model"} for k in sorted(set(all_models))],
     }
 
 

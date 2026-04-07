@@ -41,6 +41,8 @@ logs/
 # Configs
 *.local.json
 secrets.json
+.env
+.allama/.env
 
 # OS
 .DS_Store
