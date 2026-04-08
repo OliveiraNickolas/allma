@@ -97,28 +97,42 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         if physical_name not in PHYSICAL_MODELS:
             PHYSICAL_MODELS[physical_name] = dynamic[model_name]
 
-    port = await ensure_physical_model(physical_name, model_name)
-
     cfg = PHYSICAL_MODELS[physical_name]
     backend = cfg.get("backend", "vllm")
 
+    # Remote providers: forward to external API (don't load locally)
+    if backend == "opencode" or backend == "openclaw":
+        logger.info(f"🌐 Routing {model_name} to {backend} remote provider")
+        port = None  # No local port needed for remote
+    else:
+        port = await ensure_physical_model(physical_name, model_name)
+
     # Remote providers: forward to external API
+    client = None
+    url = None
+
     if backend == "opencode":
         body["model"] = cfg.get("model_id", "gpt-4")
         url = cfg.get("base_url", ENV_CREDENTIALS.get("OPENCODE_BASE_URL", "https://api.opencode.io/v1"))
         url = f"{url}/chat/completions"
         auth_header = ENV_CREDENTIALS.get("OPENCODE_API_KEY")
+        logger.info(f"🌐 OpenCode: {body['model']} -> {url}")
         if auth_header:
             client = await get_http_client()
             client.headers["Authorization"] = f"Bearer {auth_header}"
+        else:
+            logger.warning("⚠️  No OPENCODE_API_KEY configured")
     elif backend == "openclaw":
         body["model"] = cfg.get("model_id", "gpt-4")
         url = cfg.get("base_url", ENV_CREDENTIALS.get("OPENCLAW_BASE_URL", "https://api.openclaw.ai/v1"))
         url = f"{url}/chat/completions"
         auth_header = ENV_CREDENTIALS.get("OPENCLAW_API_KEY")
+        logger.info(f"🌐 OpenClaw: {body['model']} -> {url}")
         if auth_header:
             client = await get_http_client()
             client.headers["Authorization"] = f"Bearer {auth_header}"
+        else:
+            logger.warning("⚠️  No OPENCLAW_API_KEY configured")
     elif backend == "vllm":
         body["model"] = cfg["path"]
         url = f"http://127.0.0.1:{port}/v1/chat/completions"
@@ -151,7 +165,9 @@ async def chat_completions(request: Request, body: dict = Body(...)):
             content={"choices": [{"message": {"content": ""}}]},
         )
 
-    client = await get_http_client()
+    # Get HTTP client if not already set (for remote providers)
+    if not client:
+        client = await get_http_client()
     try:
         if body.get("stream", False):
             async def generate():
