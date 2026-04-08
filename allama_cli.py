@@ -4,6 +4,7 @@ Allama CLI — allama serve / run / list / ps / stop / logs
 """
 import argparse
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -11,6 +12,10 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 ALLAMA_DIR  = Path(__file__).parent
