@@ -313,6 +313,56 @@ def cmd_logs(args):
         pass
 
 
+def cmd_ui(args):
+    """Open a web UI to chat with Allama models."""
+    interface = args.interface.lower()
+
+    # Check if server is running
+    if not _is_running():
+        print("❌ Allama server is not running. Start with: allama serve")
+        sys.exit(1)
+
+    base_url = BASE_URL
+    allama_api = f"{base_url}/v1"
+
+    if interface == "openwebui":
+        print(f"🌐 Opening OpenWebUI...")
+        print(f"   Allama API: {allama_api}")
+        print(f"   Configure OpenWebUI to connect to: {allama_api}")
+
+        # Try to open OpenWebUI if installed
+        try:
+            import webbrowser
+            webbrowser.open("http://localhost:8080")
+            print("✅ Opened browser at http://localhost:8080")
+            print("   (Make sure OpenWebUI is running separately)")
+        except Exception as e:
+            print(f"⚠️  Could not auto-open browser: {e}")
+            print(f"   Visit: http://localhost:8080")
+
+    elif interface == "opencode":
+        print(f"🌐 Opening OpenCode...")
+        print(f"   Allama API: {allama_api}")
+        print()
+        print("📋 To connect OpenCode to Allama:")
+        print(f"   1. Open OpenCode")
+        print(f"   2. Settings → API Configuration")
+        print(f"   3. Set API Base URL to: {allama_api}")
+        print(f"   4. Set API Key to: any-key-here (not used)")
+        print()
+
+        # Try to launch OpenCode
+        try:
+            import webbrowser
+            # Try to open OpenCode if it's running locally
+            webbrowser.open("http://localhost:3000")
+            print("✅ Opened browser at http://localhost:3000")
+            print("   (Make sure OpenCode is running)")
+        except Exception as e:
+            print(f"⚠️  Could not auto-open browser: {e}")
+            print(f"   Try running OpenCode separately and visiting: http://localhost:3000")
+
+
 def cmd_run(args):
     """Load a model and open an interactive chat session."""
     model = args.model
@@ -681,6 +731,13 @@ def main():
     p_run.add_argument("provider", nargs="?", default=None, help="Remote provider (opencode, openclaw)")
     p_run.add_argument("--persist", action="store_true", help="Save remote model for future use")
     p_run.set_defaults(func=cmd_run)
+
+    # ui
+    p_ui = sub.add_parser("ui", help="Open web UI to chat with models")
+    p_ui.add_argument("interface", nargs="?", default="openwebui",
+                      choices=["openwebui", "opencode"],
+                      help="Web interface to open (default: openwebui)")
+    p_ui.set_defaults(func=cmd_ui)
 
     # backend
     p_backend = sub.add_parser("backend", help="Backend server commands")
