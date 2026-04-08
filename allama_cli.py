@@ -323,12 +323,19 @@ def cmd_run(args):
     # Handle new syntax: allama run <model> on <provider>
     if on_keyword == "on" and provider:
         from core.provider_resolver import resolve_remote_model
-        from core.config import load_dynamic_models, save_dynamic_models, DYNAMIC_MODELS
+        from core.config import load_dynamic_models, save_dynamic_models, DYNAMIC_MODELS, ENV_CREDENTIALS
 
         logger.info(f"🌐 Resolving {model} from {provider}...")
 
+        # Skip API validation if using demo/test API key (testing mode)
+        skip_validation = False
+        api_key = ENV_CREDENTIALS.get(f"{provider.upper()}_API_KEY", "")
+        if api_key in ["abacate", "test", "demo", ""]:
+            logger.info(f"⚙️  Using demo mode (test API key detected)")
+            skip_validation = True
+
         # Try to resolve the model from remote provider
-        metadata = resolve_remote_model(provider, model)
+        metadata = resolve_remote_model(provider, model, skip_validation=skip_validation)
         if not metadata:
             print(f"❌ Model '{model}' not found on {provider}")
             sys.exit(1)

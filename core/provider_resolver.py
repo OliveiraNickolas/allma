@@ -113,20 +113,30 @@ def get_resolver(provider: str) -> Optional[ProviderResolver]:
     return None
 
 
-def resolve_remote_model(provider: str, model_id: str) -> Optional[Dict[str, Any]]:
+def resolve_remote_model(provider: str, model_id: str, skip_validation: bool = False) -> Optional[Dict[str, Any]]:
     """
     Resolve a remote model: check existence + fetch metadata.
     Returns model config dict or None if not found.
+
+    Args:
+        provider: Provider name (opencode, openclaw)
+        model_id: Model identifier
+        skip_validation: If True, skip API validation (for testing/demo)
     """
     resolver = get_resolver(provider)
     if not resolver:
         logger.error(f"Unknown provider: {provider}")
         return None
 
-    if not resolver.validate_model(model_id):
-        logger.error(f"Model {model_id} not found on {provider}")
-        return None
+    # Try validation unless skipped
+    if not skip_validation:
+        if not resolver.validate_model(model_id):
+            logger.error(f"Model {model_id} not found on {provider}")
+            return None
+    else:
+        logger.info(f"Skipping validation for {model_id} (demo mode)")
 
+    # Try to fetch metadata
     metadata = resolver.get_model_metadata(model_id)
     if not metadata:
         # Build minimal metadata if fetch fails
