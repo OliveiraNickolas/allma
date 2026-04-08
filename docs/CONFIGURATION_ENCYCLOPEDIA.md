@@ -11,6 +11,7 @@ Welcome! This encyclopedia explains what each configuration parameter does in si
 3. [llama.cpp Parameters](#llamacpp-parameters-local-cpu-gpu-inference)
 4. [Model-Specific Recommendations](#model-specific-recommendations)
 5. [Decision Trees](#decision-trees-which-parameters-to-change)
+6. [**Advanced: extra_args & Model-Specific Flags**](#advanced-extra_args--model-specific-flags) — ⭐ **NEW**: All CLI flags, reasoning, tool calling, multimodal optimization
 
 ---
 
@@ -549,15 +550,355 @@ A: No. Edit the config file and restart Allama: `allama stop && allama serve`
 
 ---
 
+## Advanced: `extra_args` & Model-Specific Flags
+
+This section covers **advanced command-line flags** that unlock specialized features. These are passed via `extra_args` in your `.allm` config files.
+
+### What Are `extra_args`?
+
+**Simple Explanation:** Extra arguments are additional "switches" you can toggle to enable advanced features beyond the core parameters.
+
+**Where they go:**
+```ini
+# In physical model config (.allm files)
+extra_args = ["--flag1", "value1", "--flag2", "value2"]
+
+# Example from your Qwen 35B setup:
+extra_args = ["--reasoning-parser", "qwen3",
+              "--enable-auto-tool-choice",
+              "--tool-call-parser", "qwen3_coder",
+              "--disable-custom-all-reduce"]
+```
+
+### vLLM Advanced Flags
+
+These are passed when starting `vllm serve` and control specialized features.
+
+#### **Reasoning & Thinking Mode**
+
+| Flag | Default | Purpose | Effect |
+|------|---------|---------|--------|
+| `--reasoning-parser` | None | Parse thinking/reasoning tokens from Qwen models | Enables "thinking mode" for advanced reasoning |
+| `--disable-custom-all-reduce` | False | Workaround for GPU sync issues on some hardware | Fixes CUDA synchronization bugs |
+| `--async-scheduling` | False | Non-blocking task scheduling | Better latency with multiple concurrent requests |
+
+**Example:** Your Qwen 35B uses `--reasoning-parser qwen3` to enable extended thinking.
+
+**What it does:** The model generates internal "thinking" tokens (similar to o1-preview) before outputting final answers. Great for complex math, code, and logic.
+
+**When to use:**
+- ✅ Complex reasoning (math, algorithms, debugging)
+- ❌ Not helpful for simple questions (wastes tokens)
+
+---
+
+#### **Tool Calling & Function Calling**
+
+| Flag | Options | Purpose |
+|------|---------|---------|
+| `--enable-auto-tool-choice` | True/False | Automatically choose which tool to call |
+| `--tool-call-parser` | `qwen3_coder`, `qwen3`, `openai`, etc. | Parse tool calls from model output |
+| `--tool-parser-plugin` | string | Custom tool parser plugin |
+| `--tool-server` | `host:port` | Remote server for tool execution |
+
+**Your Usage:**
+```ini
+extra_args = ["--enable-auto-tool-choice",
+              "--tool-call-parser", "qwen3_coder"]
+```
+
+**What it does:**
+- `--enable-auto-tool-choice`: Model automatically decides to use tools without you specifying
+- `--tool-call-parser qwen3_coder`: Parse Qwen's specific format for function calls (designed for code/dev tools)
+
+**When to use:**
+- ✅ Websearch, function calling, MCP integration
+- ✅ Coding tasks where model might need external APIs
+- ❌ Simple chat (adds latency)
+
+---
+
+#### **Multimodal & Vision Parameters**
+
+| Flag | Value | Purpose | Example |
+|--------|-------|---------|---------|
+| `--mm-encoder-tp-mode` | `data`, `distributed` | Tensor parallel for vision encoder | `--mm-encoder-tp-mode data` |
+| `--limit-mm-per-prompt.image` | int | Max images per request | `--limit-mm-per-prompt.image 10` |
+| `--limit-mm-per-prompt.video` | int | Max videos per request | `--limit-mm-per-prompt.video 0` (disable if image-only) |
+
+**Your Vision 8B Setup Uses:**
+```ini
+extra_args = ["--mm-encoder-tp-mode", "data",
+              "--async-scheduling",
+              "--disable-custom-all-reduce"]
+```
+
+**What they do:**
+- `--mm-encoder-tp-mode data`: Split vision encoder work across GPUs (faster multimodal processing)
+- `--async-scheduling`: Process images while generating text (better throughput)
+- `--limit-mm-per-prompt.video 0`: Save VRAM if you only process images (OCR, not video)
+
+**When to use:**
+- ✅ For OCR: set `--limit-mm-per-prompt.video 0` to save ~2-3GB
+- ✅ For video: set to larger number (no limit = `-1`)
+- ✅ For batching: use `--async-scheduling` for faster throughput
+
+---
+
+#### **Performance & Optimization Flags**
+
+| Flag | Purpose | Trade-off |
+|------|---------|-----------|
+| `--cpu-offload-gb` | Offload to CPU when VRAM full | Slower, but avoids OOM |
+| `--swap-space` | Swap KV cache to disk | Much slower, last resort |
+| `--speculative-config` | Enable speculative decoding | Faster token generation, uses more memory |
+
+**Speculative Decoding Example (Advanced):**
+```bash
+--speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
+```
+
+---
+
+### llama.cpp Advanced Flags
+
+These are specific to the llama.cpp backend (GGUF models).
+
+#### **Flash Attention & Optimization**
+
+| Flag | Short | Purpose | Impact |
+|------|-------|---------|--------|
+| `--flash-attn` | `-fa` | Enable Flash Attention acceleration | 20-50% faster inference |
+| `--jinja` | N/A | Use Jinja2 chat template | Required for proper chat formatting |
+| `--no-mmap` | N/A | Disable memory mapping | Better for slow storage |
+
+**Your GGUF Setup:**
+```ini
+extra_args = ["--jinja", "--flash-attn", "on"]
+```
+
+**What they do:**
+- `--jinja`: Load chat template from GGUF (so prompts are formatted correctly)
+- `--flash-attn on`: Use optimized attention algorithm (requires llama.cpp compiled with FA support)
+
+**When to use:**
+- ✅ Always use `--jinja` for Qwen GGUF (required for chat)
+- ✅ Use `--flash-attn` if your llama.cpp supports it (check with `llama-cli --help`)
+
+---
+
+#### **Context & Caching Optimization**
+
+| Flag | Purpose | Impact |
+|------|---------|--------|
+| `--cache-type-k` | KV cache quantization | Save 50% KV memory with minor quality loss |
+| `--cache-type-v` | (same as above, for V cache) | Reduces peak memory |
+| `--no-context-shift` | Disable context shift | Better quality, uses more memory |
+
+**Advanced Example:**
+```bash
+llama-cli ... --cache-type-k q8_0 --cache-type-v q8_0
+# Quantizes KV cache to 8-bit, saves ~50% peak memory
+```
+
+---
+
+#### **Selective Memory & Performance Modes**
+
+| Flag | Purpose | Effect |
+|------|---------|--------|
+| `-sm row` | Selective memory (row mode) | Faster but less flexible |
+| `-sm full` | Full context management | Slower but maintains all context |
+
+**Example from Qwen3.5 GGUF:**
+```bash
+llama-server -hf Qwen/Qwen3.5-35B-GGUF:Q8_0 \
+  --jinja --reasoning-format deepseek \
+  -ngl 99 -fa -sm row \
+  --temp 0.6 --top-k 20 --top-p 0.95
+```
+
+---
+
+### Model-Specific Extra_args Combinations
+
+Here are **ready-to-use combinations** based on your actual models.
+
+#### **Qwen3.5-35B (MoE Reasoning)**
+
+**For Coding + Thinking:**
+```ini
+extra_args = ["--reasoning-parser", "qwen3",
+              "--disable-custom-all-reduce"]
+```
+
+**For Tool Calling + Code Generation:**
+```ini
+extra_args = ["--reasoning-parser", "qwen3",
+              "--enable-auto-tool-choice",
+              "--tool-call-parser", "qwen3_coder",
+              "--disable-custom-all-reduce"]
+```
+
+**For Pure Speed (no thinking):**
+```ini
+# Don't use --reasoning-parser, just:
+extra_args = ["--disable-custom-all-reduce"]
+```
+
+**Impact:**
+- With reasoning: slower (1-2 sec overhead) but better quality
+- Without: faster, but less advanced reasoning
+
+---
+
+#### **Qwen3.VL-8B (Vision)**
+
+**For OCR Documents (Text-Only Input):**
+```ini
+extra_args = ["--mm-encoder-tp-mode", "data",
+              "--limit-mm-per-prompt.video", "0",
+              "--disable-custom-all-reduce"]
+```
+
+**For Video Analysis (Mixed Input):**
+```ini
+extra_args = ["--mm-encoder-tp-mode", "data",
+              "--async-scheduling",
+              "--disable-custom-all-reduce"]
+```
+
+**For Comics/Panel Extraction (High Throughput):**
+```ini
+extra_args = ["--mm-encoder-tp-mode", "data",
+              "--async-scheduling",
+              "--disable-custom-all-reduce"]
+# And set max_num_seqs = 4 to batch panels
+```
+
+**VRAM Savings Trick:**
+If you're only doing OCR (no video), adding `--limit-mm-per-prompt.video 0` saves ~2-3GB VRAM!
+
+---
+
+#### **Qwen3.5-27B GGUF (llama.cpp)**
+
+```ini
+extra_args = ["--jinja",
+              "--flash-attn", "on",
+              "--reasoning-format", "deepseek"]
+```
+
+**What each does:**
+- `--jinja`: Use chat template from GGUF
+- `--flash-attn on`: Optimize attention (if compiled with support)
+- `--reasoning-format deepseek`: Parse thinking tokens (if using thinking variant)
+
+---
+
+### Chat Templates (`chat_template`)
+
+Some models have custom **chat templates** that control how messages are formatted before going to the model.
+
+**Your Qwen 35B has:**
+```
+/home/nick/AI/Models/Qwen3.5-35B-A3B-FP8/chat_template.jinja
+```
+
+**What it does:** Controls how user/assistant messages are combined into tokens.
+
+**When to customize:**
+- Usually NOT needed (model comes with built-in template)
+- Only if: you want a different message format (rare)
+
+**Example (do NOT change unless you know why):**
+```jinja
+{%- if enable_thinking -%}
+<|think_start|>
+...thinking...
+<|think_end|>
+{%- endif -%}
+
+<|im_start|>user
+{{ message }}
+<|im_end|>
+```
+
+**For your setup:** Leave as-is. The `--jinja` flag automatically uses it.
+
+---
+
+### Decision Tree: Which Flags Should You Use?
+
+```
+What's your task?
+
+├─ Coding with complex reasoning
+│  └─ Add: --reasoning-parser qwen3
+│
+├─ Need tool calling (websearch, function calls)
+│  └─ Add: --enable-auto-tool-choice --tool-call-parser qwen3_coder
+│
+├─ Image processing (OCR, comics)
+│  └─ Add: --mm-encoder-tp-mode data --async-scheduling
+│  └─ If image-only (no video): --limit-mm-per-prompt.video 0 [saves 2-3GB]
+│
+├─ Video analysis
+│  └─ Add: --mm-encoder-tp-mode data --async-scheduling
+│
+├─ Running on GGUF (llama.cpp)
+│  └─ Always use: --jinja --flash-attn on
+│
+└─ Performance critical (low latency)
+   └─ Add: --async-scheduling
+   └─ Consider: --disable-custom-all-reduce if GPU sync issues
+```
+
+---
+
+### Common Issues & Solutions
+
+**Issue: "Unknown argument" error**
+- **Cause:** Flag not supported in your vLLM/llama.cpp version
+- **Fix:** Check version with `vllm --version` or `llama-cli --help`
+
+**Issue: Slower with `--reasoning-parser`**
+- **Cause:** Model is thinking (generating internal tokens)
+- **Fix:** This is expected. Use without `--reasoning-parser` for speed, with it for quality.
+
+**Issue: Vision model out of memory**
+- **Cause:** Video embeddings consuming VRAM
+- **Fix:** Add `--limit-mm-per-prompt.video 0` if you only process images
+
+**Issue: Tool calling not working**
+- **Cause:** Wrong parser for your model
+- **Fix:** Use `--tool-call-parser qwen3_coder` for Qwen3.5
+
+---
+
 ## Resources
 
-- [vLLM Official Docs](https://docs.vllm.ai/) — Comprehensive technical reference
+### Official Documentation
+- [vLLM Engine Arguments](https://docs.vllm.ai/en/stable/configuration/engine_args/) — Complete engine config reference
+- [vLLM CLI Reference](https://docs.vllm.ai/en/latest/cli/) — Command-line arguments
+- [vLLM GitHub: cli_args.py](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/cli_args.py) — Source code of all CLI args
 - [llama.cpp GitHub](https://github.com/ggml-org/llama.cpp/) — Latest updates and examples
-- [Qwen3.5 Model Card](https://huggingface.co/Qwen/Qwen3.5-7B) — Official specs
-- [Gemma4 Announcement](https://blogs.nvidia.com/blog/rtx-ai-garage-open-models-google-gemma-4/) — Performance data
+- [llama.cpp CLI README](https://github.com/ggml-org/llama.cpp/blob/master/tools/cli/README.md) — Complete CLI reference
+
+### Model-Specific Guides
+- [Qwen3.5-35B vLLM Recipes](https://docs.vllm.ai/projects/recipes/en/latest/Qwen/Qwen3.5.html) — Official vLLM configuration guide
+- [Qwen3.5-35B-A3B HuggingFace](https://huggingface.co/Qwen/Qwen3.5-35B-A3B) — Official model card with examples
+- [Qwen3.5-27B HuggingFace](https://huggingface.co/Qwen/Qwen3.5-27B) — Official specs and recommendations
+- [Qwen3-VL-8B HuggingFace](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-FP8) — Vision model specs
+- [Qwen3.5 llama.cpp Guide](https://qwen.readthedocs.io/en/latest/run_locally/llama.cpp.html) — Running GGUF versions
+- [Qwen3.5 Unsloth Guide](https://unsloth.ai/docs/models/qwen3.5) — Community best practices
+
+### Performance & Optimization
+- [vLLM Throughput Optimization](https://medium.com/@kaige.yang0110/vllm-throughput-optimization-1-basic-of-vllm-parameters-c39ace00a519) — Parameter tuning guide
+- [Red Hat vLLM Server Arguments](https://docs.redhat.com/en/documentation/red_hat_ai_inference_server/3.0/html/vllm_server_arguments/all-server-arguments-server-arguments) — Enterprise reference
 
 ---
 
 **Last Updated:** April 2026
-**Version:** 1.0
-**Audience:** All skill levels (beginner-friendly)
+**Version:** 2.0 (Expanded with extra_args & advanced flags)
+**Audience:** All skill levels (beginner-friendly with expert details)
