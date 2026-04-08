@@ -346,11 +346,19 @@ def cmd_run(args):
         # Check if already cached
         dynamic_models = load_dynamic_models()
         if logical_model_name not in dynamic_models:
+            # Get base URL from credentials
+            if provider == "opencode":
+                base_url = ENV_CREDENTIALS.get("OPENCODE_BASE_URL", "https://api.opencode.io/v1")
+            elif provider == "openclaw":
+                base_url = ENV_CREDENTIALS.get("OPENCLAW_BASE_URL", "https://api.openclaw.ai/v1")
+            else:
+                base_url = metadata.get("base_url", "")
+
             # Create physical model config for remote provider
             dynamic_models[logical_model_name] = {
                 "backend": provider,
                 "model_id": model,
-                "base_url": metadata.get("base_url"),
+                "base_url": base_url,
                 "context_window": metadata.get("context_window", 4096),
                 "max_tokens": metadata.get("max_tokens", 2048),
             }
