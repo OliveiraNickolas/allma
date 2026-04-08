@@ -16,6 +16,7 @@ from core.config import (
     format_user_agent,
     ENV_CREDENTIALS,
     DYNAMIC_MODELS,
+    load_dynamic_models,
 )
 import core.state as state
 from core.loader import ensure_physical_model
@@ -71,8 +72,11 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})"
     )
 
+    # Reload dynamic models from disk (in case new remote models were added)
+    dynamic = load_dynamic_models()
+
     # Check both static and dynamic models
-    if model_name not in LOGICAL_MODELS and model_name not in DYNAMIC_MODELS:
+    if model_name not in LOGICAL_MODELS and model_name not in dynamic:
         return JSONResponse(
             status_code=404,
             content={"error": f"Model '{model_name}' not found"},
@@ -91,7 +95,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         logical_cfg = {"physical": physical_name}
         # Ensure physical model exists in PHYSICAL_MODELS
         if physical_name not in PHYSICAL_MODELS:
-            PHYSICAL_MODELS[physical_name] = DYNAMIC_MODELS[model_name]
+            PHYSICAL_MODELS[physical_name] = dynamic[model_name]
 
     port = await ensure_physical_model(physical_name, model_name)
 
@@ -540,8 +544,10 @@ async def messages(request: Request, body: dict = Body(...)):
 
 @app.get("/v1/models")
 async def models_list():
+    # Reload dynamic models from disk (in case new remote models were added)
+    dynamic = load_dynamic_models()
     # Combine static logical models + dynamic cached remote models
-    all_models = list(LOGICAL_MODELS.keys()) + list(DYNAMIC_MODELS.keys())
+    all_models = list(LOGICAL_MODELS.keys()) + list(dynamic.keys())
     return {
         "object": "list",
         "data": [{"id": k, "object": "model"} for k in sorted(set(all_models))],
