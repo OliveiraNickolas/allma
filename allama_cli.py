@@ -340,93 +340,9 @@ def cmd_ui(args):
             print(f"⚠️  Could not auto-open browser: {e}")
             print(f"   Visit: http://localhost:8080")
 
-    elif interface == "opencode":
-        print(f"🌐 Opening OpenCode...")
-        print(f"   Allama API: {allama_api}")
-        print()
-        print("📋 To connect OpenCode to Allama:")
-        print(f"   1. Open OpenCode")
-        print(f"   2. Settings → API Configuration")
-        print(f"   3. Set API Base URL to: {allama_api}")
-        print(f"   4. Set API Key to: any-key-here (not used)")
-        print()
-
-        # Try to launch OpenCode
-        try:
-            import webbrowser
-            # Try to open OpenCode if it's running locally
-            webbrowser.open("http://localhost:3000")
-            print("✅ Opened browser at http://localhost:3000")
-            print("   (Make sure OpenCode is running)")
-        except Exception as e:
-            print(f"⚠️  Could not auto-open browser: {e}")
-            print(f"   Try running OpenCode separately and visiting: http://localhost:3000")
-
-
 def cmd_run(args):
     """Load a model and open an interactive chat session."""
     model = args.model
-    provider = getattr(args, "provider", None)
-    on_keyword = getattr(args, "on", None)
-    persist = getattr(args, "persist", False)
-
-    # Handle new syntax: allama run <model> on <provider>
-    if on_keyword == "on" and provider:
-        from core.provider_resolver import resolve_remote_model
-        from core.config import load_dynamic_models, save_dynamic_models, DYNAMIC_MODELS, ENV_CREDENTIALS
-
-        logger.info(f"🌐 Resolving {model} from {provider}...")
-
-        # Skip API validation if using demo/test API key (testing mode)
-        skip_validation = False
-        api_key = ENV_CREDENTIALS.get(f"{provider.upper()}_API_KEY", "")
-        if api_key in ["abacate", "test", "demo", ""]:
-            logger.info(f"⚙️  Using demo mode (test API key detected)")
-            skip_validation = True
-
-        # Try to resolve the model from remote provider
-        metadata = resolve_remote_model(provider, model, skip_validation=skip_validation)
-        if not metadata:
-            print(f"❌ Model '{model}' not found on {provider}")
-            sys.exit(1)
-
-        # Create a temporary logical model name
-        logical_model_name = f"{provider}/{model}"
-
-        # Check if already cached
-        dynamic_models = load_dynamic_models()
-        if logical_model_name not in dynamic_models:
-            # Get base URL from credentials
-            if provider == "opencode":
-                base_url = ENV_CREDENTIALS.get("OPENCODE_BASE_URL", "https://api.opencode.io/v1")
-            elif provider == "openclaw":
-                base_url = ENV_CREDENTIALS.get("OPENCLAW_BASE_URL", "https://api.openclaw.ai/v1")
-            else:
-                base_url = metadata.get("base_url", "")
-
-            # Create physical model config for remote provider
-            dynamic_models[logical_model_name] = {
-                "backend": provider,
-                "model_id": model,
-                "base_url": base_url,
-                "context_window": metadata.get("context_window", 4096),
-                "max_tokens": metadata.get("max_tokens", 2048),
-            }
-
-            # Always save to disk (so server can reload)
-            save_dynamic_models(dynamic_models)
-            if persist:
-                print(f"✅ Registered & persisted {logical_model_name}")
-            else:
-                print(f"✅ Registered {logical_model_name} (session only)")
-
-        model = logical_model_name
-    elif on_keyword and provider:
-        print(f"❌ Invalid syntax. Use: allama run <model> on <provider>")
-        sys.exit(1)
-    elif on_keyword == "on" or provider:
-        print(f"❌ Invalid syntax. Use: allama run <model> on <provider>")
-        sys.exit(1)
 
     already_running = _is_running()
 
@@ -726,16 +642,13 @@ def main():
 
     # run
     p_run = sub.add_parser("run", help="Chat with a model interactively")
-    p_run.add_argument("model", help="Model name or remote model (e.g. 'Qwen3.5:27b' or 'gpt-4')")
-    p_run.add_argument("on", nargs="?", default=None, help="Keyword 'on' (internal)")
-    p_run.add_argument("provider", nargs="?", default=None, help="Remote provider (opencode, openclaw)")
-    p_run.add_argument("--persist", action="store_true", help="Save remote model for future use")
+    p_run.add_argument("model", help="Model name (e.g. 'Qwen3.5:27b')")
     p_run.set_defaults(func=cmd_run)
 
     # ui
     p_ui = sub.add_parser("ui", help="Open web UI to chat with models")
     p_ui.add_argument("interface", nargs="?", default="openwebui",
-                      choices=["openwebui", "opencode"],
+                      choices=["openwebui"],
                       help="Web interface to open (default: openwebui)")
     p_ui.set_defaults(func=cmd_ui)
 

@@ -7,7 +7,6 @@ import logging.handlers
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
 
 try:
     from rich import box
@@ -199,56 +198,3 @@ def load_models_from_configs() -> tuple[dict, dict]:
 
 
 PHYSICAL_MODELS, LOGICAL_MODELS = load_models_from_configs()
-
-# ==============================================================================
-# REMOTE PROVIDER CREDENTIALS & DYNAMIC MODELS
-# ==============================================================================
-ALLAMA_CONFIG_DIR = Path(os.environ.get("ALLAMA_CONFIG_DIR", str(Path.home() / ".allama")))
-ALLAMA_ENV_FILE = ALLAMA_CONFIG_DIR / ".env"
-DYNAMIC_MODELS_FILE = ALLAMA_CONFIG_DIR / "dynamic_models.json"
-
-
-def load_env_credentials() -> Dict[str, str]:
-    """Load API keys and provider URLs from ~/.allama/.env"""
-    creds = {}
-    if ALLAMA_ENV_FILE.exists():
-        try:
-            with open(ALLAMA_ENV_FILE) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if "=" in line:
-                        key, val = line.split("=", 1)
-                        creds[key.strip()] = val.strip().strip('"\'')
-        except Exception as e:
-            logger.warning(f"Error reading {ALLAMA_ENV_FILE}: {e}")
-    # Fallback to environment variables
-    for key in ["OPENCODE_API_KEY", "OPENCLAW_API_KEY", "OPENCODE_BASE_URL"]:
-        if key not in creds and key in os.environ:
-            creds[key] = os.environ[key]
-    return creds
-
-
-def load_dynamic_models() -> Dict[str, Dict[str, Any]]:
-    """Load previously cached remote models from ~/.allama/dynamic_models.json"""
-    if DYNAMIC_MODELS_FILE.exists():
-        try:
-            return json.loads(DYNAMIC_MODELS_FILE.read_text())
-        except Exception as e:
-            logger.warning(f"Error loading dynamic models: {e}")
-    return {}
-
-
-def save_dynamic_models(models: Dict[str, Dict[str, Any]]):
-    """Save dynamic models to disk for persistence."""
-    ALLAMA_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        DYNAMIC_MODELS_FILE.write_text(json.dumps(models, indent=2))
-    except Exception as e:
-        logger.error(f"Error saving dynamic models: {e}")
-
-
-# Load on startup
-ENV_CREDENTIALS = load_env_credentials()
-DYNAMIC_MODELS = load_dynamic_models()

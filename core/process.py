@@ -163,24 +163,6 @@ def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
     return cmd, port, gpu_id
 
 
-def build_opencode_cmd(physical_name: str) -> tuple[None, None, None]:
-    """
-    Remote provider stub: OpenCode doesn't spawn a local process.
-    Returns (None, None, None) to signal remote-only operation.
-    """
-    logger.info(f"🌐 {physical_name} -> OpenCode (remote API)")
-    return None, None, None
-
-
-def build_openclaw_cmd(physical_name: str) -> tuple[None, None, None]:
-    """
-    Remote provider stub: OpenClaw doesn't spawn a local process.
-    Returns (None, None, None) to signal remote-only operation.
-    """
-    logger.info(f"🌐 {physical_name} -> OpenClaw (remote API)")
-    return None, None, None
-
-
 # ==============================================================================
 # PROCESS MANAGEMENT
 # ==============================================================================

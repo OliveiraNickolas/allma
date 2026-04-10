@@ -30,9 +30,7 @@ scripts/
 
 docs/
 ├── YOUR_SETUP_GUIDE.md          → Detailed guide (READ THIS)
-├── CONFIGURATION_ENCYCLOPEDIA.md → Parameter reference
-├── REMOTE_PROVIDERS.md          → OpenCode/OpenClaw
-└── TESTING_GUIDE.md             → Validation tests
+└── CONFIGURATION_ENCYCLOPEDIA.md → Parameter reference
 ```
 
 ---

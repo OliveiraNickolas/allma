@@ -1,11 +1,22 @@
 # Physical model: Qwen3.5-35b (vLLM backend)
+# Optimized for: coding + tool calling + long context workflow
+# Hardware: 2x RTX 3090 (48GB VRAM)
 
 backend = "vllm"
-path = "/home/nick/AI/Models/Qwen3.5-35B-A3B-FP8"
-tokenizer = "/home/nick/AI/Models/Qwen3.5-35B-A3B-FP8"
+path = "/mnt/ssd/home/nick/AI/Models/Qwen3.5-35B-A3B-GPTQ-Int4"
+tokenizer = "/mnt/ssd/home/nick/AI/Models/Qwen3.5-35B-A3B-GPTQ-Int4"
 tensor_parallel = "2"
-gpu_memory_utilization = "0.95"
-max_model_len = 65536
-max_num_seqs = 8
+gpu_memory_utilization = "0.92"
+max_model_len = 131072
+max_num_seqs = 2
+max_num_batched_tokens = 8192
 
-extra_args = ["--reasoning-parser", "qwen3", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder", "--disable-custom-all-reduce"]
+extra_args = [
+    "--reasoning-parser", "qwen3",
+    "--enable-auto-tool-choice",
+    "--tool-call-parser", "qwen3_coder",
+    "--disable-custom-all-reduce",
+    "--enable-chunked-prefill",
+    "--enable-prefix-caching",
+    "--kv-cache-dtype", "fp8"
+]

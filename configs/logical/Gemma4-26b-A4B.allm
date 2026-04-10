@@ -1,0 +1,11 @@
+# Logical model: Gemma4:26b-A4B
+# Sampling params: official recommendation from Gemma 4 README
+# Source: https://huggingface.co/unsloth/gemma-4-26B-A4B-GGUF (Best Practices section)
+
+name = "Gemma4:26b-A4B"
+physical = "Gemma4-26b-A4B-gguf"
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 64
