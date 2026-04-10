@@ -570,6 +570,12 @@ async def models_list():
     }
 
 
+@app.head("/")
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
+
 @app.get("/health")
 async def health():
     with state.global_lock:
