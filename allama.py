@@ -53,7 +53,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    uvicorn.run(app, host="127.0.0.1", port=ALLAMA_PORT)
+    uvicorn.run(app, host="127.0.0.1", port=ALLAMA_PORT, loop="uvloop")
 
 
 if __name__ == "__main__":
