@@ -52,3 +52,5 @@ Thumbs.db
 !configs/*.allm
 !test_*
 tests/
+*.Zone.Identifier
+configs/profiles/

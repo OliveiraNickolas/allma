@@ -14,9 +14,6 @@ from core.config import (
     ALLAMA_PORT,
     RICH_AVAILABLE,
     format_user_agent,
-    ENV_CREDENTIALS,
-    DYNAMIC_MODELS,
-    load_dynamic_models,
 )
 import core.state as state
 from core.loader import ensure_physical_model
@@ -72,11 +69,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})"
     )
 
-    # Reload dynamic models from disk (in case new remote models were added)
-    dynamic = load_dynamic_models()
-
-    # Check both static and dynamic models
-    if model_name not in LOGICAL_MODELS and model_name not in dynamic:
+    if model_name not in LOGICAL_MODELS:
         return JSONResponse(
             status_code=404,
             content={"error": f"Model '{model_name}' not found"},
@@ -85,55 +78,17 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     if "messages" in body and MAX_MESSAGES > 0:
         body["messages"] = body["messages"][-MAX_MESSAGES:]
 
-    # Determine if this is a logical or dynamic model
-    if model_name in LOGICAL_MODELS:
-        logical_cfg = LOGICAL_MODELS[model_name]
-        physical_name = logical_cfg["physical"]
-    else:
-        # Dynamic model - use the model name as both logical and physical
-        physical_name = model_name
-        logical_cfg = {"physical": physical_name}
-        # Ensure physical model exists in PHYSICAL_MODELS
-        if physical_name not in PHYSICAL_MODELS:
-            PHYSICAL_MODELS[physical_name] = dynamic[model_name]
-
+    logical_cfg = LOGICAL_MODELS[model_name]
+    physical_name = logical_cfg["physical"]
     cfg = PHYSICAL_MODELS[physical_name]
     backend = cfg.get("backend", "vllm")
 
-    # Remote providers: forward to external API (don't load locally)
-    if backend == "opencode" or backend == "openclaw":
-        logger.info(f"🌐 Routing {model_name} to {backend} remote provider")
-        port = None  # No local port needed for remote
-    else:
-        port = await ensure_physical_model(physical_name, model_name)
+    port = await ensure_physical_model(physical_name, model_name)
 
-    # Remote providers: forward to external API
     client = None
     url = None
 
-    if backend == "opencode":
-        body["model"] = cfg.get("model_id", "gpt-4")
-        url = cfg.get("base_url", ENV_CREDENTIALS.get("OPENCODE_BASE_URL", "https://api.opencode.io/v1"))
-        url = f"{url}/chat/completions"
-        auth_header = ENV_CREDENTIALS.get("OPENCODE_API_KEY")
-        logger.info(f"🌐 OpenCode: {body['model']} -> {url}")
-        if auth_header:
-            client = await get_http_client()
-            client.headers["Authorization"] = f"Bearer {auth_header}"
-        else:
-            logger.warning("⚠️  No OPENCODE_API_KEY configured")
-    elif backend == "openclaw":
-        body["model"] = cfg.get("model_id", "gpt-4")
-        url = cfg.get("base_url", ENV_CREDENTIALS.get("OPENCLAW_BASE_URL", "https://api.openclaw.ai/v1"))
-        url = f"{url}/chat/completions"
-        auth_header = ENV_CREDENTIALS.get("OPENCLAW_API_KEY")
-        logger.info(f"🌐 OpenClaw: {body['model']} -> {url}")
-        if auth_header:
-            client = await get_http_client()
-            client.headers["Authorization"] = f"Bearer {auth_header}"
-        else:
-            logger.warning("⚠️  No OPENCLAW_API_KEY configured")
-    elif backend == "vllm":
+    if backend == "vllm":
         body["model"] = cfg["path"]
         url = f"http://127.0.0.1:{port}/v1/chat/completions"
     else:
@@ -165,7 +120,6 @@ async def chat_completions(request: Request, body: dict = Body(...)):
             content={"choices": [{"message": {"content": ""}}]},
         )
 
-    # Get HTTP client if not already set (for remote providers)
     if not client:
         client = await get_http_client()
     try:
@@ -560,14 +514,16 @@ async def messages(request: Request, body: dict = Body(...)):
 
 @app.get("/v1/models")
 async def models_list():
-    # Reload dynamic models from disk (in case new remote models were added)
-    dynamic = load_dynamic_models()
-    # Combine static logical models + dynamic cached remote models
-    all_models = list(LOGICAL_MODELS.keys()) + list(dynamic.keys())
     return {
         "object": "list",
-        "data": [{"id": k, "object": "model"} for k in sorted(set(all_models))],
+        "data": [{"id": k, "object": "model"} for k in sorted(LOGICAL_MODELS.keys())],
     }
+
+
+@app.head("/")
+@app.get("/")
+async def root():
+    return {"status": "ok"}
 
 
 @app.get("/health")
