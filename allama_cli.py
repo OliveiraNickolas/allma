@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Allama CLI — allama serve / run / list / ps / stop / logs
+Allama CLI — allama serve / run / list / ps / stop / logs / launch
 """
 import argparse
 import json
@@ -42,23 +42,46 @@ def _is_running() -> bool:
 
 
 def _run_spinner(stop_event: threading.Event, label_ref: list):
-    """Retro DOS-style bouncing bar spinner. label_ref[0] can be mutated to change the label."""
-    track = 8
-    positions = list(range(track)) + list(range(track - 2, 0, -1))
+    """3-row parallax Andes spinner with running llama."""
+    ci = si = ni = 0
+    last_c = last_s = last_n = 0
     start = time.time()
-    last_len = 0
-    i = 0
+    tick = 0
+
+    sys.stdout.write("\n\n")  # reserve 3 lines
+
     while not stop_event.is_set():
         elapsed = time.time() - start
-        pos = positions[i % len(positions)]
-        bar = "░" * pos + "▓" + "░" * (track - pos - 1)
-        line = f"  [{bar}]  {label_ref[0]}{elapsed:.1f}s"
-        sys.stdout.write(f"\r{line}")
+        cview = (_SPINNER_CLOUDS    * 2)[ci % len(_SPINNER_CLOUDS):    ci % len(_SPINNER_CLOUDS)    + _WINDOW]
+        sview = (_SPINNER_SKY       * 2)[si % len(_SPINNER_SKY):       si % len(_SPINNER_SKY)       + _WINDOW]
+        nview = (_SPINNER_MOUNTAINS * 2)[ni % len(_SPINNER_MOUNTAINS): ni % len(_SPINNER_MOUNTAINS) + _WINDOW]
+        cview, sview, nview = _inject_llama(cview, sview, nview, tick)
+
+        cloud_line = f"  {cview}"
+        sky_line   = f"  {sview}"
+        near_line  = f"  {nview}  {label_ref[0]}{elapsed:.1f}s"
+
+        sys.stdout.write(f"\033[2A\r{' ' * last_c}\r{cloud_line}\n")
+        sys.stdout.write(f"\r{' ' * last_s}\r{sky_line}\n")
+        sys.stdout.write(f"\r{' ' * last_n}\r{near_line}")
         sys.stdout.flush()
-        last_len = len(line)
-        time.sleep(0.08)
-        i += 1
-    sys.stdout.write("\r" + " " * (last_len + 2) + "\r")
+
+        last_c = len(cloud_line)
+        last_s = len(sky_line)
+        last_n = len(near_line)
+
+        time.sleep(0.06)
+        tick += 1
+        if tick % 5 == 0:
+            ci += 1
+        if tick % 3 == 0:
+            si += 1
+        if tick % 2 == 0:
+            ni += 1
+
+    sys.stdout.write(f"\r{' ' * last_n}\r")
+    sys.stdout.write(f"\033[1A\r{' ' * last_s}\r")
+    sys.stdout.write(f"\033[1A\r{' ' * last_c}\r")
     sys.stdout.flush()
 
 
@@ -546,6 +569,274 @@ def _repl(model: str):
         print("\nBye!")
 
 
+_LLAMA_PHRASES_LOADING = [
+    "The llama is fluffing its wool; weights are almost ready.",
+    "Llama is arranging vectors into neat little pastures.",
+    "Alpaca warming up the tensor before the next token.",
+    "The model is sipping a byte-sized drink before starting.",
+    "Attention heads lined up — all staring across the same field.",
+    "Stacking embeddings with pure Andean elegance.",
+    "The optimizer is stretching before the climb.",
+    "Llama checking if the learning rate feels natural.",
+    "Synchronizing dance steps between CPU and GPU — smooth and steady.",
+    "The model is taking a deep breath before spreading wisdom.",
+    "The royal llama has requested full-precision mode — no shortcuts.",
+    "Warming up the GPU... no one touch the lever this time.",
+    "A groovy transformation is in progress — please stand by.",
+    "Alpaca intern measuring tensor fluffiness per microsecond.",
+    "GPU fans spinning gloriously under the Andean sun.",
+    "Model alignment supervisor insists the embeddings sparkle.",
+    "Tuning the optimizer's dance to royal perfection.",
+    "Calibrating attention heads — they must all bow in sync.",
+    "A mysterious voice said, 'Pull the other lever!' — ignoring for safety.",
+    "Llama chemistry lab mixing float32, dust, and imperial flair.",
+    "Thermal sensors report: the GPU is radiating majestic confidence.",
+    "Re-polishing tensor cores until they reflect true regal brilliance.",
+    "Exporting llama-grade tensors with maximum grace per second.",
+    "Embedding room is glowing slightly — must be enchanted gradients.",
+    "The royal inspector approved the quantization — reluctantly.",
+    "Andean frequency synchronization: stable, slightly dramatic.",
+    "VRAM cleanup complete — the field is pristine once more.",
+    "One llama muttered something about 'groove restoration.' Proceeding anyway.",
+    "Attention mechanism bowing to its emperor — inference in progress.",
+    "GPU hum sounds suspiciously like a victory fanfare.",
+]
+
+_LLAMA_PHRASES_READY = [
+    "The field is green, the model is awake.",
+    "Llama ready to spit tokens with ancient wisdom.",
+    "Transformers warmed up, Andean insight engaged.",
+    "All weights loaded, all llamas assembled.",
+    "The Andean oracle has spoken: inference time.",
+    "Alpaca clapped — model initialization achieved!",
+    "The model woke from its dream; time to generate brilliance.",
+    "GPU humming, CPU smiling — we've got a loaded llama!",
+    "Everything calibrated — let's graze some tokens.",
+    "LLM ready. Achieved full woolly elegance.",
+]
+
+_SPINNER_CLOUDS = (
+    "     ▁▂▃▂▁▁         "
+    "  ▁▂▃▄▃▂▁▁          "
+    "       ▁▁▂▃▃▂▁▁     "
+    "   ▁▂▂▃▂▂▁▁         "
+    "           ▁▂▃▄▃▂▁▁ "
+    "     ▁▂▃▂▁▂▃▂▁      "
+    "  ▁▁▂▃▂▁▁           "
+    "        ▁▂▃▃▂▁▁     "
+) * 4
+
+_SPINNER_MOUNTAINS = (
+    "▁▁▁▂▄▆█▆▄▂▁▁"
+    "▁▁▁▂▃▅▇█▇▅▃▂▁▁"
+    "▁▁▂▄▆█▆▄▂▁▁"
+    "▁▁▁▁▂▄▆█▆▄▂▁▁▁"
+    "▁▁▂▃▄▆█▆▄▃▂▁▁"
+    "▁▁▁▂▅▇█▇▅▂▁▁"
+    "▁▁▂▃▄▅▇█▇▅▄▃▂▁▁"
+    "▁▁▁▂▄▅▇█▇▅▄▂▁▁"
+) * 4
+
+_WINDOW = 36
+
+# ── Spinner middle layer (sparse sky between clouds and mountains) ─────────────
+_SPINNER_SKY = (
+    "                    "
+    "   ▁▁               "
+    "            ▁       "
+    "                ▁▁  "
+    "      ▁▁▁           "
+    "                    "
+    "           ▁▁       "
+    "    ▁               "
+) * 4
+
+# ── 3-row running llama sprite ────────────────────────────────────────────────
+# Llama faces right. Spread diagonally across 3 rows (body left, head upper-right):
+#
+#   row 1 (clouds):    · · · · · ▒ ▒      ← head
+#   row 2 (sky):       · · · · ▓           ← neck
+#   row 3 (mountains): ▓ ▒ ▓               ← body + legs
+#
+_LLAMA_HEAD        = "▄▄"   # 2 chars, placed at P+2..P+3 in clouds row (lower-half block = small head)
+_LLAMA_NECK_CH     = "▓"    # 1 char,  placed at P+4       in sky row
+_LLAMA_BODY_FRAMES = [       # 3 chars, placed at P..P+2   in mountains row
+    "▓▒▓",   # stride neutral
+    "▓▓▒",   # right leg sweeps back
+    "▓▒▓",   # stride neutral
+    "▒▓▓",   # left leg sweeps back
+]
+_LLAMA_POS   = 4   # body anchor x in the 36-char window
+_LLAMA_SPEED = 7   # ticks per animation frame
+
+
+def _inject_llama(cview: str, sview: str, nview: str, tick: int):
+    """Overlay the 3-row running llama onto the three terrain layers."""
+    frame = _LLAMA_BODY_FRAMES[(tick // _LLAMA_SPEED) % len(_LLAMA_BODY_FRAMES)]
+    cl = list(cview)
+    sl = list(sview)
+    nl = list(nview)
+    # head in clouds row
+    for k, ch in enumerate(_LLAMA_HEAD):
+        p = _LLAMA_POS + 2 + k
+        if p < len(cl):
+            cl[p] = ch
+    # neck in sky row
+    p = _LLAMA_POS + 2
+    if p < len(sl):
+        sl[p] = _LLAMA_NECK_CH
+    # body + legs in mountains row
+    for k, ch in enumerate(frame):
+        p = _LLAMA_POS + k
+        if p < len(nl):
+            nl[p] = ch
+    return "".join(cl), "".join(sl), "".join(nl)
+
+
+def _run_llama_spinner(stop_event: threading.Event, phase_ref: list):
+    """3-row parallax spinner with running llama and rotating phrases."""
+    import random
+    phrases = _LLAMA_PHRASES_LOADING[:]
+    random.shuffle(phrases)
+
+    phrase_idx = 0
+    phrase_ticks = 0
+    phrase_interval = 42
+
+    ci = si = ni = 0
+    last_c = last_s = last_n = 0
+    start = time.time()
+    tick = 0
+
+    sys.stdout.write("\n\n")
+
+    while not stop_event.is_set():
+        elapsed = time.time() - start
+        phrase = phrases[phrase_idx % len(phrases)]
+
+        cview = (_SPINNER_CLOUDS    * 2)[ci % len(_SPINNER_CLOUDS):    ci % len(_SPINNER_CLOUDS)    + _WINDOW]
+        sview = (_SPINNER_SKY       * 2)[si % len(_SPINNER_SKY):       si % len(_SPINNER_SKY)       + _WINDOW]
+        nview = (_SPINNER_MOUNTAINS * 2)[ni % len(_SPINNER_MOUNTAINS): ni % len(_SPINNER_MOUNTAINS) + _WINDOW]
+        cview, sview, nview = _inject_llama(cview, sview, nview, tick)
+
+        cloud_line = f"  {cview}"
+        sky_line   = f"  {sview}"
+        near_line  = f"  {nview}  {phrase}  {elapsed:.1f}s"
+
+        sys.stdout.write(f"\033[2A\r{' ' * last_c}\r{cloud_line}\n")
+        sys.stdout.write(f"\r{' ' * last_s}\r{sky_line}\n")
+        sys.stdout.write(f"\r{' ' * last_n}\r{near_line}")
+        sys.stdout.flush()
+
+        last_c = len(cloud_line)
+        last_s = len(sky_line)
+        last_n = len(near_line)
+
+        time.sleep(0.06)
+        tick += 1
+        if tick % 5 == 0:
+            ci += 1
+        if tick % 3 == 0:
+            si += 1
+        if tick % 2 == 0:
+            ni += 1
+        phrase_ticks += 1
+        if phrase_ticks >= phrase_interval:
+            phrase_ticks = 0
+            phrase_idx += 1
+
+    sys.stdout.write(f"\r{' ' * last_n}\r")
+    sys.stdout.write(f"\033[1A\r{' ' * last_s}\r")
+    sys.stdout.write(f"\033[1A\r{' ' * last_c}\r")
+    sys.stdout.flush()
+
+
+def _apply_claude_local_fix():
+    """Patch ~/.claude/settings.json to disable attribution header (local mode)."""
+    import json as _json
+    file_path = os.path.expanduser("~/.claude/settings.json")
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    data = {}
+    if os.path.exists(file_path):
+        try:
+            with open(file_path) as f:
+                data = _json.load(f)
+        except Exception:
+            pass
+    if "env" not in data:
+        data["env"] = {}
+    if data["env"].get("CLAUDE_CODE_ATTRIBUTION_HEADER") != "0":
+        data["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "0"
+        with open(file_path, "w") as f:
+            _json.dump(data, f, indent=2)
+
+
+def cmd_launch(args):
+    """Start allama, load a model, and open Claude Code pointed at it."""
+    model = args.model
+
+    stop_spinner = threading.Event()
+    phase_ref = ["start"]
+    spinner = threading.Thread(
+        target=_run_llama_spinner, args=(stop_spinner, phase_ref), daemon=True
+    )
+    spinner.start()
+
+    # 1 ─ Ensure allama is running
+    if not _is_running():
+        _start_daemon()
+        if not _wait_for_server(45):
+            stop_spinner.set()
+            spinner.join()
+            print("Allama falhou ao iniciar. Veja os logs: allama logs")
+            sys.exit(1)
+
+    # 2 ─ Validate model exists
+    data = _get("/v1/models")
+    available = [m["id"] for m in (data or {}).get("data", [])]
+    if model not in available:
+        stop_spinner.set()
+        spinner.join()
+        print(f"Modelo '{model}' não encontrado.")
+        if available:
+            print("Modelos disponíveis:")
+            for m in sorted(available):
+                print(f"  · {m}")
+        sys.exit(1)
+
+    # 3 ─ Pre-load model
+    phase_ref[0] = "model"
+    try:
+        _post("/v1/load", {"model": model}, timeout=300.0)
+    except KeyboardInterrupt:
+        stop_spinner.set()
+        spinner.join()
+        print("\nCancelado.")
+        sys.exit(0)
+
+    stop_spinner.set()
+    spinner.join()
+
+    import random as _random
+    print(f"  ▲  {_random.choice(_LLAMA_PHRASES_READY)}")
+
+    # 4 ─ Patch settings.json for local mode
+    _apply_claude_local_fix()
+
+    # 5 ─ Launch claude with model env vars
+    env = os.environ.copy()
+    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{ALLAMA_PORT}"
+    env["ANTHROPIC_AUTH_TOKEN"] = "dummy"
+    env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
+    env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
+    env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
+    # Remove any previously set conflicting vars
+    for var in ["ANTHROPIC_API_KEY"]:
+        env.pop(var, None)
+
+    os.execvpe("claude", ["claude"] + args.claude_args, env)
+
+
 def cmd_backend_logs(args):
     """Tail the log of the currently running backend process."""
     if not _is_running():
@@ -651,6 +942,17 @@ def main():
                       choices=["openwebui"],
                       help="Web interface to open (default: openwebui)")
     p_ui.set_defaults(func=cmd_ui)
+
+    # launch
+    p_launch = sub.add_parser("launch", help="Launch an AI client with a local model")
+    launch_sub = p_launch.add_subparsers(dest="launch_target", metavar="<client>")
+    launch_sub.required = True
+
+    p_lc = launch_sub.add_parser("claude", help="Open Claude Code with a local model")
+    p_lc.add_argument("model", help="Logical model name (e.g. 'Qwen3.5:27b-Code')")
+    p_lc.add_argument("claude_args", nargs=argparse.REMAINDER,
+                      help="Extra arguments forwarded to claude")
+    p_lc.set_defaults(func=cmd_launch)
 
     # backend
     p_backend = sub.add_parser("backend", help="Backend server commands")

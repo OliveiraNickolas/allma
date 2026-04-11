@@ -26,24 +26,99 @@ from core.process import (
 # ==============================================================================
 # LOADING UI
 # ==============================================================================
+_CLOUDS = (
+    "     ▁▂▃▂▁▁         "
+    "  ▁▂▃▄▃▂▁▁          "
+    "       ▁▁▂▃▃▂▁▁     "
+    "   ▁▂▂▃▂▂▁▁         "
+    "           ▁▂▃▄▃▂▁▁ "
+    "     ▁▂▃▂▁▂▃▂▁      "
+    "  ▁▁▂▃▂▁▁           "
+    "        ▁▂▃▃▂▁▁     "
+) * 4
+
+_SKY = (
+    "                    "
+    "   ▁▁               "
+    "            ▁       "
+    "                ▁▁  "
+    "      ▁▁▁           "
+    "                    "
+    "           ▁▁       "
+    "    ▁               "
+) * 4
+
+_MOUNTAINS = (
+    "▁▁▁▂▄▆█▆▄▂▁▁"
+    "▁▁▁▂▃▅▇█▇▅▃▂▁▁"
+    "▁▁▂▄▆█▆▄▂▁▁"
+    "▁▁▁▁▂▄▆█▆▄▂▁▁▁"
+    "▁▁▂▃▄▆█▆▄▃▂▁▁"
+    "▁▁▁▂▅▇█▇▅▂▁▁"
+    "▁▁▂▃▄▅▇█▇▅▄▃▂▁▁"
+    "▁▁▁▂▄▅▇█▇▅▄▂▁▁"
+) * 4
+
+_WIN = 36
+
+
 class LoadingSpinner:
     def __init__(self, message: str = "Loading"):
         self.message = message
-        self.spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self.running = False
         self._thread = None
         self._start_time = None
 
+    # 3-row llama sprite (mirrored from allama_cli)
+    _L_HEAD  = "▄▄"
+    _L_NECK  = "▓"
+    _L_BODY  = ["▓▒▓", "▓▓▒", "▓▒▓", "▒▓▓"]
+    _L_POS   = 4
+    _L_SPEED = 7
+
+    def _inject(self, cview, sview, nview, tick):
+        frame = self._L_BODY[(tick // self._L_SPEED) % len(self._L_BODY)]
+        cl, sl, nl = list(cview), list(sview), list(nview)
+        for k, ch in enumerate(self._L_HEAD):
+            p = self._L_POS + 2 + k
+            if p < len(cl): cl[p] = ch
+        p = self._L_POS + 2
+        if p < len(sl): sl[p] = self._L_NECK
+        for k, ch in enumerate(frame):
+            p = self._L_POS + k
+            if p < len(nl): nl[p] = ch
+        return "".join(cl), "".join(sl), "".join(nl)
+
     def _spin(self):
+        ci = si = ni = 0
+        last_c = last_s = last_n = 0
+        tick = 0
+        sys.stdout.write("\n\n")
         while self.running:
-            for frame in self.spinner:
-                if not self.running:
-                    break
-                elapsed = time.time() - self._start_time
-                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                sys.stdout.write(f"\r{timestamp} - {frame} {self.message} [{elapsed:.0f}s]")
-                sys.stdout.flush()
-                time.sleep(0.1)
+            elapsed = time.time() - self._start_time
+            cview = (_CLOUDS * 2)[ci % len(_CLOUDS): ci % len(_CLOUDS) + _WIN]
+            sview = (_SKY    * 2)[si % len(_SKY):    si % len(_SKY)    + _WIN]
+            nview = (_MOUNTAINS * 2)[ni % len(_MOUNTAINS): ni % len(_MOUNTAINS) + _WIN]
+            cview, sview, nview = self._inject(cview, sview, nview, tick)
+            cloud_line = f"  {cview}"
+            sky_line   = f"  {sview}"
+            near_line  = f"  {nview}  {self.message}  [{elapsed:.0f}s]"
+            sys.stdout.write(f"\033[2A\r{' ' * last_c}\r{cloud_line}\n")
+            sys.stdout.write(f"\r{' ' * last_s}\r{sky_line}\n")
+            sys.stdout.write(f"\r{' ' * last_n}\r{near_line}")
+            sys.stdout.flush()
+            last_c = len(cloud_line)
+            last_s = len(sky_line)
+            last_n = len(near_line)
+            time.sleep(0.06)
+            tick += 1
+            if tick % 5 == 0: ci += 1
+            if tick % 3 == 0: si += 1
+            if tick % 2 == 0: ni += 1
+        sys.stdout.write(f"\r{' ' * last_n}\r")
+        sys.stdout.write(f"\033[1A\r{' ' * last_s}\r")
+        sys.stdout.write(f"\033[1A\r{' ' * last_c}\r")
+        sys.stdout.flush()
 
     def start(self):
         self._start_time = time.time()
@@ -57,13 +132,8 @@ class LoadingSpinner:
             self._thread.join(timeout=0.5)
         if self._start_time:
             elapsed = time.time() - self._start_time
-            sys.stdout.write("\r" + " " * 80 + "\r")
-            sys.stdout.flush()
-            status = "👍 OK" if success else "❌ FAIL"
+            status = "OK" if success else "FAIL"
             logger.info(f"{status} {self.message} [{elapsed:.0f}s]")
-        else:
-            sys.stdout.write("\r" + " " * 80 + "\r")
-            sys.stdout.flush()
 
 
 # ==============================================================================
