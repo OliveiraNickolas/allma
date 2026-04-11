@@ -1,12 +1,13 @@
-# Physical model: Qwen3.5-27b-Claude-Opus-gguf (llama.cpp backend)
+# Physical model: Gemma4-31b-gguf (llama.cpp backend)
 # Hardware: 2x RTX 3090 (no NVLink) + Ryzen 9950X3D + 64GB DDR5
-# Workload: long-context coding + tool calling + multimodal
+# Architecture: Dense 30.7B, 60 layers, GQA 16 kv heads, sliding window 1024
+# Native context: 256K (no rope scaling needed)
+# Features: multimodal (vision), native tool calling, thinking mode
 
 backend = "llama.cpp"
-model = "/home/nick/AI/Models/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF/Qwen3.5-27B.Q8_0.gguf"
-mmproj = "/home/nick/AI/Models/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF/Qwen3.5-27B.BF16-mmproj.gguf"
+model = "/home/nick/AI/Models/Gemma-4-31B-GGUF/gemma-4-31B-it-UD-Q8_K_XL.gguf"
+mmproj = "/home/nick/AI/Models/Gemma-4-31B-GGUF/mmproj-BF16.gguf"
 
-# Core settings
 n_ctx = 131072
 n_batch = "4096"
 n_gpu_layers = "-1"
@@ -24,8 +25,5 @@ extra_args = [
     "--threads-batch", "16",
     "--cont-batching",
     "--defrag-thold", "0.1",
-    "--mlock",
-    "--rope-scaling", "yarn",
-    "--rope-scale", "4",
-    "--yarn-orig-ctx", "32768"
+    "--mlock"
 ]
