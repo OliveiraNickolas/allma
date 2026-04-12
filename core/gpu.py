@@ -1,9 +1,11 @@
 """
 GPU detection and VRAM allocation functions.
 """
+import json
 import math
 import os
 import subprocess
+from pathlib import Path
 from typing import Any, Dict
 
 from core.config import logger, PHYSICAL_MODELS
@@ -17,6 +19,48 @@ def _calc_model_size_gb(model_path: str) -> float:
         for f in files if f.endswith(".safetensors")
     )
     return total_bytes / (1024 ** 3)
+
+
+def _estimate_kv_cache_gb(model_path: str, max_model_len: int, kv_dtype: str = "auto") -> float:
+    """Estimate KV cache memory in GB by reading model config.json.
+
+    Handles hybrid models (e.g. Qwen3.5) that only allocate KV cache on full
+    attention layers, not on linear/recurrent layers.
+    """
+    config_path = Path(model_path) / "config.json"
+    if not config_path.exists():
+        return max_model_len * 65536 / (1024 ** 3)  # rough fallback
+    try:
+        config = json.loads(config_path.read_text())
+        # Multimodal models nest text config under "text_config"
+        tc = config.get("text_config", config)
+        num_layers = tc.get("num_hidden_layers", 32)
+        num_kv_heads = tc.get("num_key_value_heads") or tc.get("num_attention_heads", 8)
+        hidden_size = tc.get("hidden_size", 4096)
+        num_attn_heads = tc.get("num_attention_heads", 16)
+        head_dim = tc.get("head_dim") or (hidden_size // num_attn_heads)
+        # Hybrid models (linear attention + full attention): only full attention layers
+        # consume KV cache that scales with sequence length.
+        full_attn_interval = tc.get("full_attention_interval")
+        if full_attn_interval:
+            num_kv_layers = max(1, num_layers // full_attn_interval)
+        else:
+            num_kv_layers = num_layers
+        dtype_bytes = 1 if kv_dtype == "fp8" else 2
+        kv_bytes_per_token = 2 * num_kv_heads * head_dim * num_kv_layers * dtype_bytes
+        return max_model_len * kv_bytes_per_token / (1024 ** 3)
+    except Exception:
+        return max_model_len * 65536 / (1024 ** 3)
+
+
+def _get_kv_dtype(cfg: dict) -> str:
+    """Extract kv-cache-dtype from extra_args list."""
+    extra_args = cfg.get("extra_args", [])
+    if "--kv-cache-dtype" in extra_args:
+        idx = extra_args.index("--kv-cache-dtype")
+        if idx + 1 < len(extra_args):
+            return extra_args[idx + 1]
+    return "auto"
 
 
 def get_free_gpu_memory() -> list[dict]:
@@ -93,7 +137,7 @@ def get_gpu_available(model_path: str, tp_size: int, gpu_memory_util: float) -> 
             return []
         try:
             total_size_gb = _calc_model_size_gb(model_path)
-            required_gb = total_size_gb * 1.2
+            required_gb = total_size_gb * 1.2  # weights-only estimate for availability check
             required_per_gpu = required_gb / tp_size
         except Exception:
             return all_gpus
@@ -159,7 +203,12 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
 
     try:
         total_size_gb = _calc_model_size_gb(model_path)
-        required_gb = total_size_gb * 1.2
+        kv_cache_gb = _estimate_kv_cache_gb(
+            model_path,
+            int(cfg.get("max_model_len", "40960")),
+            _get_kv_dtype(cfg),
+        )
+        required_gb = total_size_gb + kv_cache_gb + 1.0
     except Exception as e:
         logger.warning(f"Could not estimate model size for {physical_name}: {e}")
         best = all_gpus[0] if all_gpus else {"index": 0}
@@ -207,8 +256,7 @@ def get_model_vram_need(cfg: Dict[str, Any], physical_name: str) -> float:
                 return 4.0
             total_size_gb = _calc_model_size_gb(model_path)
             model_len = int(cfg.get("max_model_len", "40960"))
-            max_seqs = int(cfg.get("max_num_seqs", "8"))
-            kv_cache_overhead = (model_len * max_seqs * 2 * 2) / (1024 ** 3)
+            kv_cache_overhead = _estimate_kv_cache_gb(model_path, model_len, _get_kv_dtype(cfg))
             return total_size_gb * 1.06 + kv_cache_overhead + 1.0
         elif backend == "llama.cpp":
             model_file = cfg.get("model", "")

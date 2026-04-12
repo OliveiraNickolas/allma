@@ -105,6 +105,25 @@ def _find_llama_server() -> str:
 
 LLAMA_CPP_PATH = _find_llama_server()
 
+
+def _find_vllm() -> str:
+    """Find vllm binary: env var → venv next to this package → PATH."""
+    from shutil import which
+    # 1. Explicit env var
+    if (env := os.environ.get("VLLM_PATH")):
+        return env
+    # 2. venv sibling to the core/ package (most common allama setup)
+    venv_bin = SCRIPT_DIR / "venv" / "bin" / "vllm"
+    if venv_bin.exists():
+        return str(venv_bin)
+    # 3. vllm on PATH (activated venv or system install)
+    if (found := which("vllm")):
+        return found
+    # Fallback — will fail at runtime with a clear error
+    return "vllm"
+
+VLLM_PATH = _find_vllm()
+
 # ==============================================================================
 # LOGGING SETUP
 # ==============================================================================

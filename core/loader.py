@@ -8,6 +8,7 @@ import socket
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from core.config import logger, PHYSICAL_MODELS, ALLAMA_LOG_DIR, PATH_TO_ALLAMA
@@ -377,6 +378,11 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
         proc = None
         try:
             subprocess_env = os.environ.copy()
+            # Prepend the venv bin dir so vllm sub-processes (ninja, etc.) are found
+            venv_bin = str(Path(__file__).parent.parent / "venv" / "bin")
+            current_path = subprocess_env.get("PATH", "")
+            if venv_bin not in current_path.split(os.pathsep):
+                subprocess_env["PATH"] = venv_bin + os.pathsep + current_path
             if backend == "vllm":
                 if tp_from_cmd <= 1:
                     subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)

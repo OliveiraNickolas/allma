@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 import psutil
 
-from core.config import logger, PHYSICAL_MODELS, LLAMA_CPP_PATH, ALLAMA_LOG_DIR
+from core.config import logger, PHYSICAL_MODELS, LLAMA_CPP_PATH, VLLM_PATH, ALLAMA_LOG_DIR
 import core.state as state
 
 # ==============================================================================
@@ -115,7 +115,7 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[lis
     tp_size = adj_tp
 
     cmd = [
-        "vllm", "serve", cfg["path"],
+        VLLM_PATH, "serve", cfg["path"],
         "--tokenizer", cfg["tokenizer"],
         "--tensor-parallel-size", str(tp_size),
         "--gpu-memory-utilization", str(cfg.get("gpu_memory_utilization", "0.90")),
@@ -126,6 +126,8 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[lis
         "--host", "127.0.0.1",
         "--api-key", "dummy",
     ]
+    if "max_num_batched_tokens" in cfg:
+        cmd += ["--max-num-batched-tokens", str(cfg["max_num_batched_tokens"])]
     cmd.extend(cfg.get("extra_args", []))
     state.gpu_allocation[physical_name] = selected_gpu
     return cmd, port, selected_gpu

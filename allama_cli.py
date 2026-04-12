@@ -23,7 +23,8 @@ ALLAMA_PORT = int(os.environ.get("ALLAMA_PORT", "9000"))
 BASE_URL    = f"http://127.0.0.1:{ALLAMA_PORT}"
 PID_FILE    = Path(os.environ.get("ALLAMA_PID_FILE", "/tmp/allama_watchdog.pid"))
 LOG_FILE    = ALLAMA_DIR / "logs" / "allama.log"
-PYTHON      = sys.executable
+_VENV_PYTHON = ALLAMA_DIR / "venv" / "bin" / "python"
+PYTHON      = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 SERVER_SCRIPT = str(ALLAMA_DIR / "allama.py")
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -86,9 +87,10 @@ def _run_spinner(stop_event: threading.Event, label_ref: list):
 
 
 def _post(path: str, body: dict, timeout: float = 300.0):
-    """Simple HTTP POST, returns parsed JSON or None."""
+    """Simple HTTP POST, returns parsed JSON or None. Raises RuntimeError on HTTP errors."""
     try:
         import urllib.request as _ur
+        import urllib.error as _ue
         data = json.dumps(body).encode()
         req = _ur.Request(
             f"{BASE_URL}{path}",
@@ -99,6 +101,14 @@ def _post(path: str, body: dict, timeout: float = 300.0):
             return json.loads(r.read())
     except KeyboardInterrupt:
         raise
+    except _ue.HTTPError as e:
+        try:
+            body_bytes = e.read()
+            err_data = json.loads(body_bytes)
+            detail = err_data.get("detail") or err_data.get("error") or str(err_data)
+        except Exception:
+            detail = e.reason
+        raise RuntimeError(f"HTTP {e.code}: {detail}") from None
     except Exception:
         return None
 
@@ -151,7 +161,12 @@ def _run_watchdog(verbose: bool):
     signal.signal(signal.SIGTERM, _sigterm)
 
     restart_count = 0
+    fast_fail_count = 0
+    FAST_FAIL_SECS = 10   # crash within this many seconds = fast fail
+    MAX_FAST_FAILS = 3    # abort after this many consecutive fast fails
+
     while True:
+        start_time = time.monotonic()
         try:
             if verbose:
                 proc = subprocess.run([PYTHON, SERVER_SCRIPT])
@@ -166,9 +181,28 @@ def _run_watchdog(verbose: bool):
             break
 
         code = proc.returncode
+        elapsed = time.monotonic() - start_time
 
         # Clean shutdown (SIGINT / ctrl+c forwarded) — don't restart
         if code in (0, -signal.SIGINT, 130):
+            break
+
+        # Circuit breaker: too many fast crashes in a row → likely a startup error
+        if elapsed < FAST_FAIL_SECS:
+            fast_fail_count += 1
+        else:
+            fast_fail_count = 0  # ran long enough, reset counter
+
+        if fast_fail_count >= MAX_FAST_FAILS:
+            msg = (
+                f"[allama] server crashed {fast_fail_count} times in under {FAST_FAIL_SECS}s "
+                f"(exit code {code}) — aborting. Check logs: {LOG_FILE}"
+            )
+            if verbose:
+                print(msg, flush=True)
+            else:
+                with open(LOG_FILE, "a") as log:
+                    log.write(msg + "\n")
             break
 
         restart_count += 1
@@ -788,7 +822,7 @@ def cmd_launch(args):
         if not _wait_for_server(45):
             stop_spinner.set()
             spinner.join()
-            print("Allama falhou ao iniciar. Veja os logs: allama logs")
+            print("Allama failed to start. Check logs: allama logs")
             sys.exit(1)
 
     # 2 ─ Validate model exists
@@ -797,25 +831,39 @@ def cmd_launch(args):
     if model not in available:
         stop_spinner.set()
         spinner.join()
-        print(f"Modelo '{model}' não encontrado.")
+        print(f"Model '{model}' not found.")
         if available:
-            print("Modelos disponíveis:")
+            print("Available models:")
             for m in sorted(available):
                 print(f"  · {m}")
         sys.exit(1)
 
     # 3 ─ Pre-load model
     phase_ref[0] = "model"
+    load_error = None
     try:
-        _post("/v1/load", {"model": model}, timeout=300.0)
+        result = _post("/v1/load", {"model": model}, timeout=300.0)
     except KeyboardInterrupt:
         stop_spinner.set()
         spinner.join()
-        print("\nCancelado.")
+        print("\nCancelled.")
         sys.exit(0)
+    except RuntimeError as e:
+        load_error = str(e)
+        result = None
 
     stop_spinner.set()
     spinner.join()
+
+    if load_error:
+        print(f"Failed to load model '{model}': {load_error}")
+        print("Check logs: allama backend logs")
+        sys.exit(1)
+
+    if not result or result.get("status") != "loaded":
+        print(f"Failed to load model '{model}': unexpected server response.")
+        print("Check logs: allama backend logs")
+        sys.exit(1)
 
     import random as _random
     print(f"  ▲  {_random.choice(_LLAMA_PHRASES_READY)}")
