@@ -1023,7 +1023,7 @@ def main():
         help="Run in foreground with live logs and rich display",
     )
     p_serve.add_argument(
-        "--be-verbose",
+        "--be-verbose", "-bv",
         action="store_true",
         dest="be_verbose",
         help="Open a new terminal window tailing each backend log as it loads",
@@ -1038,7 +1038,7 @@ def main():
         help="Restart in foreground verbose mode",
     )
     p_restart.add_argument(
-        "--be-verbose",
+        "--be-verbose", "-bv",
         action="store_true",
         dest="be_verbose",
         help="Open a new terminal window tailing each backend log as it loads",
