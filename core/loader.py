@@ -13,7 +13,7 @@ from typing import Optional
 
 from core.config import logger, PHYSICAL_MODELS, ALLAMA_LOG_DIR, PATH_TO_ALLAMA
 import core.state as state
-from core.gpu import get_free_gpu_memory, get_model_vram_need
+from core.gpu import get_free_gpu_memory, get_model_vram_need, get_all_gpus
 from core.process import (
     build_vllm_cmd,
     build_llama_cmd,
@@ -278,9 +278,23 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
     NEEDGB = get_model_vram_need(cfg, physicalname)
     logger.info(f"🧮 {displayname} needs {NEEDGB:.1f}GB VRAM")
 
-    tp_size = int(cfg.get("tensor_parallel", "1"))
-    if tp_size > 1:
-        logger.info(f"🔄 Tensor parallel={tp_size} - using total VRAM")
+    # Determine if this model needs more than one GPU can provide.
+    # We compare NEEDGB against the usable capacity of the best single GPU
+    # (total * gpu_memory_utilization). If it exceeds that, the model will
+    # require tensor parallelism across multiple GPUs and we should check
+    # total VRAM rather than max single-GPU free VRAM.
+    _all_gpus_info = get_all_gpus()
+    _gpu_mem_util = float(cfg.get("gpu_memory_utilization", "0.90"))
+    _max_single_gpu_usable = max(
+        (g["total_gb"] * _gpu_mem_util for g in _all_gpus_info), default=0.0
+    )
+    needs_multi_gpu = backend == "vllm" and NEEDGB > _max_single_gpu_usable
+
+    if needs_multi_gpu:
+        logger.info(
+            f"🔄 {displayname}: needs {NEEDGB:.1f}GB > single GPU usable {_max_single_gpu_usable:.1f}GB "
+            f"— will use multi-GPU (TP>1)"
+        )
 
     maxretries = 3
     no_progress_count = 0
@@ -295,7 +309,7 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
             f"📊 VRAM max single: {max_free_gb:.1f}GB / total: {total_free_gb:.1f}GB - "
             f"Attempt {attempt + 1}/{maxretries} (need {NEEDGB:.1f}GB)"
         )
-        available_gb = total_free_gb if (tp_size > 1 or backend == "llama.cpp") else max_free_gb
+        available_gb = total_free_gb if (needs_multi_gpu or backend == "llama.cpp") else max_free_gb
         if available_gb >= NEEDGB:
             logger.info(f"✅ VRAM sufficient ({available_gb:.1f}GB)")
             break
@@ -338,7 +352,7 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
     gpus = get_free_gpu_memory()
     available_final = (
         sum(g["free_gb"] for g in gpus)
-        if (tp_size > 1 or backend == "llama.cpp")
+        if (needs_multi_gpu or backend == "llama.cpp")
         else max((g["free_gb"] for g in gpus), default=0.0)
     )
     if available_final < NEEDGB:
