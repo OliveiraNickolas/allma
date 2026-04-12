@@ -1,0 +1,14 @@
+# Logical model: Qwen3.5:9b-OCR
+# Sampling otimizado para extração de texto (OCR/transcrição)
+# temperature=0 → greedy decoding: determinístico, mais rápido, sem alucinações
+# penalties zerados → não suprimir palavras repetidas (textos reais repetem muito)
+name = "Qwen3.5:9b-OCR"
+physical = "Qwen3.5-9b"
+
+[sampling]
+temperature = 0.0
+top_p = 1.0
+top_k = -1
+min_p = 0.0
+presence_penalty = 0.0
+repetition_penalty = 1.0

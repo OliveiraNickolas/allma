@@ -1,11 +1,10 @@
 # Physical model: Qwen3.5-35b (vLLM backend)
 # Optimized for: coding + tool calling + long context workflow
-# Hardware: 2x RTX 3090 (48GB VRAM)
+# Hardware: 2x RTX 3090 — TP auto-selecionado em runtime
 
 backend = "vllm"
 path = "/home/nick/AI/Models/Qwen3.5-35B-A3B-GPTQ-Int4"
 tokenizer = "/home/nick/AI/Models/Qwen3.5-35B-A3B-GPTQ-Int4"
-tensor_parallel = "2"
 gpu_memory_utilization = "0.92"
 max_model_len = 131072
 max_num_seqs = 2
