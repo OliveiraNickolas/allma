@@ -526,6 +526,22 @@ def ask(prompt: str, default: str, auto: bool) -> str:
     return val if val else default
 
 
+def ask_int(prompt: str, default: int, auto: bool) -> int:
+    """Pergunta ao usuário por um inteiro com validação."""
+    default_str = str(default)
+    if auto:
+        print(f"  {prompt}: {green(default_str)}")
+        return default
+    while True:
+        val = input(f"  {prompt} [{cyan(default_str)}]: ").strip()
+        if not val:
+            return default
+        try:
+            return int(val)
+        except ValueError:
+            print(f"    {red('✗ Invalid integer')} — try again")
+
+
 def ask_list(prompt: str, default: list, auto: bool) -> list:
     """Pergunta por uma lista JSON. Se vazio, usa o default."""
     default_str = json.dumps(default)
@@ -649,8 +665,8 @@ def main():
 
     # ── Tensor parallel / max_model_len ──────────────────────────────────────
     if backend == "vllm":
-        tp       = int(ask("tensor_parallel", str(tp_suggested), auto))
-        max_len  = int(ask("max_model_len",   str(len_suggested), auto))
+        tp       = ask_int("tensor_parallel", tp_suggested, auto)
+        max_len  = ask_int("max_model_len", len_suggested, auto)
         gpu_util = ask("gpu_memory_utilization", "0.90", auto)
         max_seqs = ask("max_num_seqs", "8", auto)
 
@@ -658,7 +674,7 @@ def main():
         extra_args = ask_list("extra_args vLLM", extra_args_default, auto)
     else:
         tp = 1
-        max_len = int(ask("n_ctx", str(min(len_suggested, 40960)), auto))
+        max_len = ask_int("n_ctx", min(len_suggested, 40960), auto)
         n_threads = ask("n_threads", "16", auto)
         extra_args_default = preset.get("llama_extra_args", [])
         extra_args = ask_list("extra_args llama.cpp", extra_args_default, auto)

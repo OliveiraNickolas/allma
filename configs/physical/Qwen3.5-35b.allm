@@ -16,6 +16,5 @@ extra_args = [
     "--tool-call-parser", "qwen3_coder",
     "--disable-custom-all-reduce",
     "--enable-chunked-prefill",
-    "--enable-prefix-caching",
-    "--kv-cache-dtype", "fp8"
+    "--enable-prefix-caching"
 ]

@@ -134,8 +134,8 @@ class AlamaBenchmarker:
                 data = json.loads(line.decode()[6:])  # Skip "data: "
                 if "choices" in data:
                     token_count += 1
-            except:
-                pass
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                pass  # Ignore malformed SSE lines
 
         total_time = time.time() - start_time
         ttft = first_token_time - start_time if first_token_time else total_time

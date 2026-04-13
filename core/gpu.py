@@ -73,8 +73,12 @@ def get_free_gpu_memory() -> list[dict]:
         for line in result.stdout.strip().split("\n"):
             if line.strip():
                 parts = line.split(",")
-                gpu_id = int(parts[-1].strip()) if len(parts) > 1 else 0
-                free_mb = float(parts[0].strip()) if parts[0].strip() else 0.0
+                try:
+                    gpu_id = int(parts[-1].strip()) if len(parts) > 1 else 0
+                    free_mb = float(parts[0].strip()) if parts[0].strip() else 0.0
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"Failed to parse nvidia-smi line '{line}': {e}")
+                    continue
                 free_mbs.append({"index": gpu_id, "free_mb": free_mb, "free_gb": free_mb / 1024})
         return free_mbs
     except Exception as e:
@@ -98,8 +102,12 @@ def get_all_gpus() -> list[dict]:
     visible_devices = os.environ.get("ALLAMA_VISIBLE_DEVICES", None)
     visible_gpus = None
     if visible_devices:
-        visible_gpus = set(int(x.strip()) for x in visible_devices.split(","))
-        logger.debug(f"🔒 ALLAMA_VISIBLE_DEVICES={visible_devices}, restricting to GPUs: {visible_gpus}")
+        try:
+            visible_gpus = set(int(x.strip()) for x in visible_devices.split(","))
+            logger.debug(f"🔒 ALLAMA_VISIBLE_DEVICES={visible_devices}, restricting to GPUs: {visible_gpus}")
+        except ValueError as e:
+            logger.error(f"Invalid ALLAMA_VISIBLE_DEVICES: {visible_devices}. Must be comma-separated integers. {e}")
+            visible_gpus = None
 
     try:
         result = subprocess.run(
@@ -110,9 +118,13 @@ def get_all_gpus() -> list[dict]:
         for line in result.stdout.strip().split("\n"):
             if line.strip():
                 parts = line.split(",")
-                gpu_id = int(parts[0].strip()) if parts[0].strip() else 0
-                total_mb = float(parts[1].strip()) if parts[1].strip() else 24576
-                free_mb = float(parts[2].strip()) if parts[2].strip() else 0.0
+                try:
+                    gpu_id = int(parts[0].strip()) if parts[0].strip() else 0
+                    total_mb = float(parts[1].strip()) if parts[1].strip() else 24576
+                    free_mb = float(parts[2].strip()) if parts[2].strip() else 0.0
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"Failed to parse nvidia-smi line '{line}': {e}")
+                    continue
                 if visible_gpus is None or gpu_id in visible_gpus:
                     gpus.append({
                         "index": gpu_id,
@@ -143,7 +155,14 @@ def get_gpu_available(model_path: str, tp_size: int, gpu_memory_util: float) -> 
             return all_gpus
 
         gpus = []
-        gpu_memory_util = float(gpu_memory_util)
+        try:
+            gpu_memory_util = float(gpu_memory_util)
+            if not 0.0 <= gpu_memory_util <= 1.0:
+                logger.warning(f"gpu_memory_util={gpu_memory_util} out of range [0.0, 1.0], clamping to 0.9")
+                gpu_memory_util = 0.9
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid gpu_memory_util: {e}. Using default 0.9")
+            gpu_memory_util = 0.9
         for gpu in all_gpus:
             available_per_gpu = (gpu["total_mb"] * gpu_memory_util) / 1024
             can_fit = available_per_gpu >= required_per_gpu

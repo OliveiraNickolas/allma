@@ -100,7 +100,7 @@ from core.gpu import (
 # ==============================================================================
 # COMMAND BUILDERS
 # ==============================================================================
-def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[list, int, int]:
+def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int | None = None) -> tuple[list, int, int]:
     """Build vLLM command with GPU and tensor parallelism configuration."""
     cfg = PHYSICAL_MODELS[physical_name]
 
@@ -108,11 +108,17 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[lis
     while not state.is_port_free(port):
         port = state.get_next_vllm_port()
 
-    tp_size = int(cfg.get("tensor_parallel", "1"))
-    adj_tp, selected_gpu = find_optimal_tp_and_gpus(physical_name, skip_gpu)
-    if adj_tp != tp_size:
-        logger.info(f"🔄 {physical_name}: Adjusting TP from {tp_size} to {adj_tp} for GPU fit")
-    tp_size = adj_tp
+    # If gpu_id is explicitly specified, use it; otherwise auto-select
+    if gpu_id is not None:
+        selected_gpu = gpu_id
+        tp_size = int(cfg.get("tensor_parallel", "1"))
+        logger.info(f"🎯 {physical_name}: Using explicit GPU {gpu_id} (TP={tp_size})")
+    else:
+        tp_size = int(cfg.get("tensor_parallel", "1"))
+        adj_tp, selected_gpu = find_optimal_tp_and_gpus(physical_name, skip_gpu)
+        if adj_tp != tp_size:
+            logger.info(f"🔄 {physical_name}: Adjusting TP from {tp_size} to {adj_tp} for GPU fit")
+        tp_size = adj_tp
 
     cmd = [
         VLLM_PATH, "serve", cfg["path"],
@@ -133,7 +139,7 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None) -> tuple[lis
     return cmd, port, selected_gpu
 
 
-def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
+def build_llama_cmd(physical_name: str, gpu_id: int | None = None) -> tuple[list, int, int]:
     """Build llama.cpp command with GPU configuration."""
     cfg = PHYSICAL_MODELS[physical_name]
 
@@ -141,11 +147,16 @@ def build_llama_cmd(physical_name: str) -> tuple[list, int, int]:
     while not state.is_port_free(port):
         port = state.get_next_llama_port()
 
-    gpu_id = state.gpu_allocation.get(physical_name)
-    if gpu_id is None:
-        gpu_id = get_best_gpu()
+    # If gpu_id is explicitly specified, use it; otherwise auto-select or reuse cached
+    if gpu_id is not None:
         state.gpu_allocation[physical_name] = gpu_id
-    logger.info(f"🎯 {physical_name} -> GPU {gpu_id}")
+        logger.info(f"🎯 {physical_name} → GPU {gpu_id} (explicit)")
+    else:
+        gpu_id = state.gpu_allocation.get(physical_name)
+        if gpu_id is None:
+            gpu_id = get_best_gpu()
+            state.gpu_allocation[physical_name] = gpu_id
+        logger.info(f"🎯 {physical_name} → GPU {gpu_id}")
 
     cmd = [
         LLAMA_CPP_PATH,

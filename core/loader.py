@@ -200,23 +200,24 @@ async def wait_for_model_ready(
                             spinner.stop(success=True)
                             logger.info(f"{displayname}:{port} ready")
                             return True
-                except Exception:
-                    pass
+                except (ConnectionRefusedError, OSError, TimeoutError):
+                    pass  # Server not ready yet
 
             await asyncio.sleep(1)
 
         spinner.stop(success=False)
         logger.error(f"Timeout {timeout}s waiting for {displayname}")
         return False
-    except Exception:
+    except Exception as e:
         spinner.stop(success=False)
+        logger.error(f"Error during model loading: {e}")
         raise
 
 
 # ==============================================================================
 # MODEL LOADING
 # ==============================================================================
-async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = None):
+async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = None, gpu_id: Optional[int] = None):
     if physicalname not in PHYSICAL_MODELS:
         raise RuntimeError(f"Model {physicalname} not configured")
 
@@ -262,7 +263,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
 
     success = False
     try:
-        port = await _load_model_impl(physicalname, cfg, backend, displayname)
+        port = await _load_model_impl(physicalname, cfg, backend, displayname, gpu_id=gpu_id)
         success = True
         return port
     finally:
@@ -273,7 +274,7 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
                 state.server_idle_time.pop(physicalname, None)
 
 
-async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayname: str) -> int:
+async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayname: str, gpu_id: Optional[int] = None) -> int:
     """Internal implementation of model loading."""
     NEEDGB = get_model_vram_need(cfg, physicalname)
     logger.info(f"🧮 {displayname} needs {NEEDGB:.1f}GB VRAM")
@@ -333,8 +334,10 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                 active_procs = [p for p in gpu_procs if p["memory_mb"] > 100]
                 if active_procs:
                     logger.error("🚨 Processes using VRAM:")
+                    with state.global_lock:
+                        active_server_pids = {s["process"].pid for s in state.active_servers.values()}
                     for p in sorted(active_procs, key=lambda x: x["memory_mb"], reverse=True)[:5]:
-                        is_allama = any(p["pid"] == s["process"].pid for s in state.active_servers.values())
+                        is_allama = p["pid"] in active_server_pids
                         marker = "ALLAMA" if is_allama else "external"
                         logger.error(f"  PID {p['pid']} ({p['name']}): {p['memory_mb']//1024:.0f}GB [{marker}]")
                 logger.error(
@@ -377,9 +380,9 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
             raise
 
         if backend == "vllm":
-            cmd, port, current_gpu_id = build_vllm_cmd(physicalname, skip_gpu=skip_gpu)
+            cmd, port, current_gpu_id = build_vllm_cmd(physicalname, skip_gpu=skip_gpu, gpu_id=gpu_id)
         else:
-            cmd, port, current_gpu_id = build_llama_cmd(physicalname)
+            cmd, port, current_gpu_id = build_llama_cmd(physicalname, gpu_id=gpu_id)
 
         tp_from_cmd = 1
         try:
@@ -470,16 +473,8 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                             pass
                     state.active_servers.pop(physicalname, None)
                     state.server_idle_time.pop(physicalname, None)
-            if attempt < max_attempts - 1 and "VRAM allocation" in str(runtime_err):
-                logger.warning(f"💥 Attempt {attempt + 1} failed (GPU {current_gpu_id}), retrying with different GPU...")
-                skip_gpu = current_gpu_id
-                proc = None
-                if logfile and not logfile.closed:
-                    logfile.close()
-                    logfile = open(logfilepath, "a+")
-                    log_start_position = logfile.tell()
-                await asyncio.sleep(3)
-                continue
+            # NOTE: Don't skip GPU on VRAM allocation errors — if TP>1, skipping breaks tensor parallelism
+            # (reduces TP to 1 which also won't fit). User must adjust model parameters instead.
             raise
         finally:
             if logfile and not logfile.closed:

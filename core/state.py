@@ -21,7 +21,6 @@ gpu_allocation: Dict[str, int] = {}
 
 # Health monitor
 _health_monitor_running = threading.Event()
-_health_monitor_thread: Optional[threading.Thread] = None
 
 # HTTP client (managed by server.py)
 httpx_client = None

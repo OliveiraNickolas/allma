@@ -2,8 +2,10 @@
 # Sampling otimizado para extração de texto (OCR/transcrição)
 # temperature=0 → greedy decoding: determinístico, mais rápido, sem alucinações
 # penalties zerados → não suprimir palavras repetidas (textos reais repetem muito)
+# enable_thinking=false → desativa raciocínio oculto do Qwen3.5 (desnecessário para OCR)
 name = "Qwen3.5:9b-OCR"
 physical = "Qwen3.5-9b"
+enable_thinking = false
 
 [sampling]
 temperature = 0.0

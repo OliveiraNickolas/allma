@@ -1,0 +1,18 @@
+# Physical model: LFM2.5-VL-450M (vLLM backend)
+# Vision model otimizado para multimodal (visão + texto)
+# Backend: vLLM 0.19.0 com suporte nativo para modelos de visão
+# Configuração segue recomendações Liquid.ai
+
+backend = "vllm"
+path = "/home/nick/AI/Models/LFM2.5-VL"
+tokenizer = "/home/nick/AI/Models/LFM2.5-VL"
+gpu_memory_utilization = "0.9"
+max_model_len = 1024
+max_num_seqs = 8
+max_num_batched_tokens = 16384
+dtype = "auto"
+
+extra_args = [
+    "--trust-remote-code",
+    "--enable-prefix-caching"
+]

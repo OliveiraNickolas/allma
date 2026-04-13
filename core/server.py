@@ -85,9 +85,6 @@ async def chat_completions(request: Request, body: dict = Body(...)):
 
     port = await ensure_physical_model(physical_name, model_name)
 
-    client = None
-    url = None
-
     if backend == "vllm":
         body["model"] = cfg["path"]
         url = f"http://127.0.0.1:{port}/v1/chat/completions"
@@ -120,8 +117,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
             content={"choices": [{"message": {"content": ""}}]},
         )
 
-    if not client:
-        client = await get_http_client()
+    client = await get_http_client()
     try:
         if body.get("stream", False):
             async def generate():
@@ -574,6 +570,7 @@ async def shutdown_endpoint():
 async def load_model(body: dict = Body(...)):
     """Pre-load a model without generating any tokens."""
     model_name = body.get("model", "")
+    gpu_id = body.get("gpu_id")  # Optional: force specific GPU
     if model_name not in LOGICAL_MODELS:
         return JSONResponse(
             status_code=404,
@@ -583,7 +580,7 @@ async def load_model(body: dict = Body(...)):
     physical_name = logical_cfg["physical"]
     cfg = PHYSICAL_MODELS[physical_name]
     backend = cfg.get("backend", "vllm")
-    await ensure_physical_model(physical_name, model_name)
+    await ensure_physical_model(physical_name, model_name, gpu_id=gpu_id)
     return JSONResponse({"status": "loaded", "model": model_name, "backend": backend})
 
 

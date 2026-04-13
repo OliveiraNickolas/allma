@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import os
+import queue
 import signal
 import subprocess
 import sys
@@ -16,6 +17,10 @@ from pathlib import Path
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
+
+# ── Globals ───────────────────────────────────────────────────────────────────
+# Queue to communicate which models are being loaded (for -bv terminal opening)
+_models_loading_queue = queue.Queue()
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 ALLAMA_DIR  = Path(__file__).parent
@@ -42,8 +47,29 @@ def _is_running() -> bool:
     return _get("/health") is not None
 
 
+def _limit_line_width(spinner_part: str, content: str, time_part: str, term_width: int = 80) -> str:
+    """Ensure a line doesn't exceed terminal width with spinner + content + time."""
+    # Calculate available space for content
+    min_width = len(spinner_part) + len(time_part)
+    available = max(term_width - min_width - 2, 20)  # Leave 2 char margin, min 20
+
+    # Truncate content if too long
+    if len(content) > available:
+        content = content[:available-3] + "..."
+
+    line = f"{spinner_part}{content}{time_part}"
+
+    # Final safety check: don't exceed terminal width
+    if len(line) > term_width - 1:
+        line = line[:term_width-1]
+
+    return line
+
+
 def _run_spinner(stop_event: threading.Event, label_ref: list):
     """3-row parallax Andes spinner with running llama."""
+    import shutil
+
     ci = si = ni = 0
     last_c = last_s = last_n = 0
     start = time.time()
@@ -52,6 +78,12 @@ def _run_spinner(stop_event: threading.Event, label_ref: list):
     sys.stdout.write("\n\n")  # reserve 3 lines
 
     while not stop_event.is_set():
+        # Get terminal width dynamically (detects window resize)
+        try:
+            term_width = shutil.get_terminal_size().columns
+        except Exception:
+            term_width = 80
+
         elapsed = time.time() - start
         cview = (_SPINNER_CLOUDS    * 2)[ci % len(_SPINNER_CLOUDS):    ci % len(_SPINNER_CLOUDS)    + _WINDOW]
         sview = (_SPINNER_SKY       * 2)[si % len(_SPINNER_SKY):       si % len(_SPINNER_SKY)       + _WINDOW]
@@ -60,7 +92,11 @@ def _run_spinner(stop_event: threading.Event, label_ref: list):
 
         cloud_line = f"  {cview}"
         sky_line   = f"  {sview}"
-        near_line  = f"  {nview}  {label_ref[0]}{elapsed:.1f}s"
+        spinner_part = f"  {nview}  "
+        time_part = f"{elapsed:.1f}s"
+        label = label_ref[0]
+
+        near_line = _limit_line_width(spinner_part, label, time_part, term_width)
 
         sys.stdout.write(f"\033[2A\r{' ' * last_c}\r{cloud_line}\n")
         sys.stdout.write(f"\r{' ' * last_s}\r{sky_line}\n")
@@ -121,6 +157,47 @@ def _wait_for_server(timeout: int = 30) -> bool:
             return True
         time.sleep(0.5)
     return False
+
+
+def _kill_port_user(port: int = 9000) -> bool:
+    """Kill any process occupying the given port. Returns True if killed, False otherwise."""
+    import subprocess
+    import os
+
+    killed = False
+
+    # Try lsof first (most reliable)
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        pids = [p.strip() for p in result.stdout.strip().split('\n') if p.strip()]
+        for pid in pids:
+            try:
+                os.kill(int(pid), 9)  # SIGKILL
+                logger.info(f"Killed process {pid} on port {port}")
+                killed = True
+            except (ValueError, ProcessLookupError, OSError) as e:
+                logger.debug(f"Failed to kill {pid}: {e}")
+    except FileNotFoundError:
+        # lsof not available, try fuser
+        try:
+            subprocess.run(
+                ["fuser", "-k", "-9", f"{port}/tcp"],
+                capture_output=True,
+                timeout=5
+            )
+            logger.info(f"Killed process on port {port} using fuser")
+            killed = True
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug(f"lsof failed: {e}")
+
+    return killed
 
 
 def _start_daemon() -> bool:
@@ -232,53 +309,123 @@ def _open_terminal_tail(logfile: str):
         try:
             subprocess.Popen(cmd, start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Write to a marker file instead of stderr (daemon redirects stderr)
+            marker_file = Path(logfile).parent / ".terminal-opened"
+            with open(marker_file, "a") as m:
+                m.write(f"{Path(logfile).name}\n")
             return
         except FileNotFoundError:
             continue
-    print(f"[be-verbose] No terminal emulator found. Run manually: tail -f {logfile}",
-          file=sys.stderr)
+        except Exception as e:
+            continue
 
 
-def _be_verbose_watcher(log_dir: Path, stop_event: threading.Event):
-    """Watch logs/ for new backend log files and open a terminal for each one."""
-    EXCLUDE = {"allama.log"}
-    opened: set[Path] = set()
-    start_time = time.time()
+def _be_verbose_watcher(log_dir: Path, stop_event: threading.Event, models_queue: queue.Queue):
+    """Watch allama.log for model loading messages and open terminals for each model."""
+    import re
+
+    allama_log = log_dir / "allama.log"
+    opened_models: set[str] = set()
+    log_position = None  # Will be set to end-of-file on first read
+
+    # Regex to remove ANSI color/control codes and other junk
+    ansi_escape = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\r|[^\x20-\x7E\n]')
 
     while not stop_event.is_set():
         try:
-            for logfile in sorted(log_dir.glob("*.log")):
-                if logfile.name in EXCLUDE or logfile in opened:
-                    continue
-                st = logfile.stat()
-                # Only react to files created/written after this watcher started
-                # and that already have content (backend has begun logging)
-                if st.st_mtime > start_time and st.st_size > 128:
-                    opened.add(logfile)
-                    _open_terminal_tail(str(logfile))
+            if not allama_log.exists():
+                stop_event.wait(0.5)
+                continue
+
+            with open(allama_log, "r", errors="replace") as f:
+                # On first read, jump to end of file (ignore past logs)
+                if log_position is None:
+                    f.seek(0, 2)  # 0, 2 = seek to end
+                    log_position = f.tell()
+                    continue  # Skip first iteration, just initialize position
+
+                f.seek(log_position)
+                new_content = f.read()
+                log_position = f.tell()
+
+            # Clean everything except ASCII printable + newline
+            clean_content = ansi_escape.sub('', new_content)
+
+            # Look for "Loading <model>" — split by lines and search each line
+            for line in clean_content.split('\n'):
+                if 'Loading' in line:
+                    # Extract model name: "Loading Qwen3.5:9b" → "Qwen3.5:9b"
+                    parts = line.split('Loading')
+                    if len(parts) > 1:
+                        # Get everything after "Loading", strip whitespace, take first token
+                        after_loading = parts[1].strip().split()[0] if parts[1].strip() else None
+                        if after_loading:
+                            model_name = after_loading
+
+                            if model_name not in opened_models:
+                                opened_models.add(model_name)
+
+                                # Find the corresponding log file
+                                model_for_file = model_name.replace(":", "-")
+                                logfile = log_dir / f"{model_for_file}.log"
+
+                                if not logfile.exists():
+                                    for candidate in log_dir.glob(f"*{model_for_file}*.log"):
+                                        logfile = candidate
+                                        break
+
+                                if logfile.exists():
+                                    _open_terminal_tail(str(logfile))
         except Exception:
             pass
-        stop_event.wait(1.5)
+        stop_event.wait(0.5)
 
 
 def cmd_serve(args):
     """Start the Allama daemon."""
     be_verbose = getattr(args, "be_verbose", False)
+    force = getattr(args, "force", False)
     be_verbose_stop = threading.Event()
+
+    # Kill any process on port 9000 if --force is used
+    if force:
+        if _kill_port_user(ALLAMA_PORT):
+            print(f"Killed process on port {ALLAMA_PORT}")
+            time.sleep(0.5)  # Brief pause to let port release
 
     if be_verbose:
         watcher = threading.Thread(
             target=_be_verbose_watcher,
-            args=(ALLAMA_DIR / "logs", be_verbose_stop),
+            args=(ALLAMA_DIR / "logs", be_verbose_stop, _models_loading_queue),
             daemon=True,
         )
         watcher.start()
 
     try:
         if args.verbose:
+            # --verbose: foreground with server logs (runs allama.py directly, not as daemon)
             print("Starting Allama (verbose mode — Ctrl+C to stop)...")
             _run_watchdog(verbose=True)
+        elif be_verbose:
+            # --be-verbose only: silent daemon mode but keep watcher alive
+            if _is_running():
+                print("Allama is already running.")
+                return
+            label = ["Starting Allama with backend logs...  "]
+            stop_spinner = threading.Event()
+            spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
+            spinner.start()
+            _start_daemon()
+            ok = _wait_for_server(30)
+            stop_spinner.set()
+            spinner.join()
+            if ok:
+                print("Allama ready. Backend terminals will open automatically.")
+            else:
+                print("Allama timed out. Check logs: allama logs")
+            # Don't wait — let the watcher thread continue in background
         else:
+            # Background daemon mode (no verbose, no be_verbose)
             if _is_running():
                 print("Allama is already running.")
                 return
@@ -499,7 +646,12 @@ def cmd_run(args):
 
     # Pre-load model (triggers ensure_physical_model server-side)
     try:
-        _post("/v1/load", {"model": model}, timeout=300.0)
+        # Notify the -bv watcher which model we're loading
+        _models_loading_queue.put(model)
+        load_data = {"model": model}
+        if args.gpu is not None:
+            load_data["gpu_id"] = args.gpu
+        _post("/v1/load", load_data, timeout=300.0)
     except KeyboardInterrupt:
         stop_spinner.set()
         spinner.join()
@@ -797,6 +949,8 @@ def _inject_llama(cview: str, sview: str, nview: str, tick: int):
 def _run_llama_spinner(stop_event: threading.Event, phase_ref: list):
     """3-row parallax spinner with running llama and rotating phrases."""
     import random
+    import shutil
+
     phrases = _LLAMA_PHRASES_LOADING[:]
     random.shuffle(phrases)
 
@@ -812,6 +966,12 @@ def _run_llama_spinner(stop_event: threading.Event, phase_ref: list):
     sys.stdout.write("\n\n")
 
     while not stop_event.is_set():
+        # Get terminal width dynamically (detects window resize)
+        try:
+            term_width = shutil.get_terminal_size().columns
+        except Exception:
+            term_width = 80
+
         elapsed = time.time() - start
         phrase = phrases[phrase_idx % len(phrases)]
 
@@ -822,7 +982,10 @@ def _run_llama_spinner(stop_event: threading.Event, phase_ref: list):
 
         cloud_line = f"  {cview}"
         sky_line   = f"  {sview}"
-        near_line  = f"  {nview}  {phrase}  {elapsed:.1f}s"
+        spinner_part = f"  {nview}  "
+        time_part = f"{elapsed:.1f}s"
+
+        near_line = _limit_line_width(spinner_part, phrase, time_part, term_width)
 
         sys.stdout.write(f"\033[2A\r{' ' * last_c}\r{cloud_line}\n")
         sys.stdout.write(f"\r{' ' * last_s}\r{sky_line}\n")
@@ -1028,6 +1191,11 @@ def main():
         dest="be_verbose",
         help="Open a new terminal window tailing each backend log as it loads",
     )
+    p_serve.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Kill any process occupying port 9000 before starting",
+    )
     p_serve.set_defaults(func=cmd_serve)
 
     # restart
@@ -1070,6 +1238,8 @@ def main():
     # run
     p_run = sub.add_parser("run", help="Chat with a model interactively")
     p_run.add_argument("model", help="Model name (e.g. 'Qwen3.5:27b')")
+    p_run.add_argument("--gpu", type=int, default=None, metavar="N",
+                      help="Pin model to GPU N (0-based). If not specified, auto-select by available VRAM")
     p_run.set_defaults(func=cmd_run)
 
     # ui

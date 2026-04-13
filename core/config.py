@@ -69,13 +69,21 @@ class ColoredFormatter(logging.Formatter):
 # ==============================================================================
 # CONSTANTS (environment variables override defaults)
 # ==============================================================================
-ALLAMA_PORT = int(os.environ.get("ALLAMA_PORT", "9000"))
-VLLM_BASE_PORT = int(os.environ.get("VLLM_BASE_PORT", "8000"))
-LLAMA_BASE_PORT = int(os.environ.get("LLAMA_BASE_PORT", "9001"))
-KEEP_ALIVE_SECONDS = int(os.environ.get("KEEP_ALIVE_SECONDS", "600"))
-HEALTH_CHECK_INTERVAL = int(os.environ.get("HEALTH_CHECK_INTERVAL", "60"))
+def _parse_int(key: str, default: int) -> int:
+    """Parse env var as int with validation."""
+    try:
+        return int(os.environ.get(key, str(default)))
+    except ValueError:
+        print(f"ERROR: {key}={os.environ.get(key)} is not a valid integer. Using default: {default}")
+        return default
+
+ALLAMA_PORT = _parse_int("ALLAMA_PORT", 9000)
+VLLM_BASE_PORT = _parse_int("VLLM_BASE_PORT", 8000)
+LLAMA_BASE_PORT = _parse_int("LLAMA_BASE_PORT", 9001)
+KEEP_ALIVE_SECONDS = _parse_int("KEEP_ALIVE_SECONDS", 600)
+HEALTH_CHECK_INTERVAL = _parse_int("HEALTH_CHECK_INTERVAL", 60)
 AUTO_SWAP_ENABLED = os.environ.get("AUTO_SWAP_ENABLED", "true").lower() == "true"
-MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", "15"))
+MAX_MESSAGES = _parse_int("MAX_MESSAGES", 15)
 
 SCRIPT_DIR = Path(__file__).parent.parent  # allama/ root
 ALLAMA_LOG_DIR = Path(os.environ.get("ALLAMA_LOG_DIR", str(SCRIPT_DIR / "logs")))
