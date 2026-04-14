@@ -1,11 +1,10 @@
 name = "Qwen3.5:27b-Claude-Opus"
 physical = "Qwen3.5-27b-Claude-Opus-gguf"
-# Distillation on Claude Opus traces — no thinking tokens in this model
-enable_thinking = false
+# Reasoning distillation from Claude Opus — thinking ON
 
 [sampling]
-temperature = 0.7
-top_p = 0.8
+temperature = 0.6
+top_p = 0.95
 top_k = 20
 min_p = 0.0
 presence_penalty = 0.0
