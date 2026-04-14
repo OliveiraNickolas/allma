@@ -1,0 +1,9 @@
+name = "LFM2.5-VL:450M"
+physical = "LFM2.5-VL-450M"
+
+[sampling]
+temperature = 0.1
+top_p = 1.0
+top_k = -1
+min_p = 0.15
+repetition_penalty = 1.0
