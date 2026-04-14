@@ -1,9 +1,0 @@
-# Logical model: Qwen3.5:35b-Uncensored
-name = "Qwen3.5:35b-Uncensored"
-physical = "Qwen3.5-35b-Uncensored-gguf"
-
-[sampling]
-temperature = 0.6
-top_p = 0.95
-top_k = 20
-min_p = 0.0
