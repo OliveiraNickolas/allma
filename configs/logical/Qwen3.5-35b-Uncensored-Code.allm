@@ -1,0 +1,11 @@
+name = "Qwen3.5:35b-Uncensored-Code"
+physical = "Qwen3.5-35b-Uncensored-gguf"
+enable_thinking = false
+
+[sampling]
+temperature = 0.2
+top_p = 0.9
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repetition_penalty = 1.0
