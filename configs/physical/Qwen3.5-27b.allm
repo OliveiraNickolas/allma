@@ -1,7 +1,3 @@
-# Physical model: Qwen3.5-27b (vLLM backend)
-# Hardware: 2x RTX 3090 — TP auto-selecionado em runtime
-# Workload: coding, tool calling, long context
-
 backend = "vllm"
 path = "/home/nick/AI/Models/Qwen3.5-27B-GPTQ-Int4"
 tokenizer = "/home/nick/AI/Models/Qwen3.5-27B-GPTQ-Int4"

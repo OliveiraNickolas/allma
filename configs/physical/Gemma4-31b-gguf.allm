@@ -1,9 +1,3 @@
-# Physical model: Gemma4-31b-gguf (llama.cpp backend)
-# Hardware: 2x RTX 3090 (no NVLink) + Ryzen 9950X3D + 64GB DDR5
-# Architecture: Dense 30.7B, 60 layers, GQA 16 kv heads, sliding window 1024
-# Native context: 256K (no rope scaling needed)
-# Features: multimodal (vision), native tool calling, thinking mode
-
 backend = "llama.cpp"
 model = "/home/nick/AI/Models/Gemma-4-31B-GGUF/gemma-4-31B-it-UD-Q8_K_XL.gguf"
 mmproj = "/home/nick/AI/Models/Gemma-4-31B-GGUF/mmproj-BF16.gguf"

@@ -114,10 +114,7 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int 
         tp_size = int(cfg.get("tensor_parallel", "1"))
         logger.info(f"🎯 {physical_name}: Using explicit GPU {gpu_id} (TP={tp_size})")
     else:
-        tp_size = int(cfg.get("tensor_parallel", "1"))
         adj_tp, selected_gpu = find_optimal_tp_and_gpus(physical_name, skip_gpu)
-        if adj_tp != tp_size:
-            logger.info(f"🔄 {physical_name}: Adjusting TP from {tp_size} to {adj_tp} for GPU fit")
         tp_size = adj_tp
 
     cmd = [
