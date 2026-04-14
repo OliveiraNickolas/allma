@@ -46,7 +46,8 @@ def _estimate_kv_cache_gb(model_path: str, max_model_len: int, kv_dtype: str = "
             num_kv_layers = max(1, num_layers // full_attn_interval)
         else:
             num_kv_layers = num_layers
-        dtype_bytes = 1 if kv_dtype == "fp8" else 2
+        # q8_0 and fp8 = 1 byte/element; fp16/bf16/auto = 2 bytes/element
+        dtype_bytes = 1 if kv_dtype in ("fp8", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1") else 2
         # Sliding window attention (e.g. Gemma4): local attention layers only cache
         # `sliding_window` tokens, while global attention layers cache the full context.
         # Typical pattern: ~1/6 of layers are global, rest are local sliding window.
