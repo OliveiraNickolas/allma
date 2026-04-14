@@ -2,7 +2,7 @@ backend = "llama.cpp"
 model = "/home/nick/AI/Models/Gemma-4-26B-A4B-GGUF/gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf"
 mmproj = "/home/nick/AI/Models/Gemma-4-26B-A4B-GGUF/mmproj-BF16.gguf"
 
-n_ctx = 131072
+n_ctx = 32768
 n_batch = "4096"
 n_gpu_layers = "-1"
 n_threads = "8"

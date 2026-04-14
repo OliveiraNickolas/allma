@@ -47,6 +47,15 @@ def _estimate_kv_cache_gb(model_path: str, max_model_len: int, kv_dtype: str = "
         else:
             num_kv_layers = num_layers
         dtype_bytes = 1 if kv_dtype == "fp8" else 2
+        # Sliding window attention (e.g. Gemma4): local attention layers only cache
+        # `sliding_window` tokens, while global attention layers cache the full context.
+        # Typical pattern: ~1/6 of layers are global, rest are local sliding window.
+        sliding_window = tc.get("sliding_window")
+        if sliding_window and sliding_window < max_model_len:
+            n_global = max(1, round(num_kv_layers / 6))
+            n_local = num_kv_layers - n_global
+            kv_bytes = (n_global * max_model_len + n_local * sliding_window) * 2 * num_kv_heads * head_dim * dtype_bytes
+            return kv_bytes / (1024 ** 3)
         kv_bytes_per_token = 2 * num_kv_heads * head_dim * num_kv_layers * dtype_bytes
         return max_model_len * kv_bytes_per_token / (1024 ** 3)
     except Exception:
@@ -227,7 +236,7 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
             int(cfg.get("max_model_len", "40960")),
             _get_kv_dtype(cfg),
         )
-        required_gb = total_size_gb + kv_cache_gb + 1.0
+        required_gb = total_size_gb * 1.06 + kv_cache_gb + 1.0
     except Exception as e:
         logger.warning(f"Could not estimate model size for {physical_name}: {e}")
         best = all_gpus[0] if all_gpus else {"index": 0}
@@ -282,9 +291,20 @@ def get_model_vram_need(cfg: Dict[str, Any], physical_name: str) -> float:
             if not model_file or not os.path.isfile(model_file):
                 return 4.0
             size_gb = os.path.getsize(model_file) / (1024 ** 3)
+            mmproj_file = cfg.get("mmproj", "")
+            mmproj_gb = os.path.getsize(mmproj_file) / (1024 ** 3) if mmproj_file and os.path.isfile(mmproj_file) else 0.0
             n_ctx = int(cfg.get("n_ctx", "40960"))
-            context_overhead = (n_ctx * 2 * 16) / (1024 ** 3)
-            return size_gb * 1.06 + context_overhead + 0.5
+            # Estimate KV cache from model config.json (same logic as vLLM path)
+            model_dir = str(Path(model_file).parent)
+            kv_dtype = "q8_0" if "--cache-type-k" in cfg.get("extra_args", []) else "auto"
+            # q8_0 = 1 byte per element, fp16 = 2 bytes
+            kv_dtype_bytes = 1 if kv_dtype == "q8_0" else 2
+            kv_cache_gb = _estimate_kv_cache_gb(model_dir, n_ctx, kv_dtype)
+            # If config.json not found in GGUF dir, fall back to a conservative formula
+            if kv_cache_gb == n_ctx * 65536 / (1024 ** 3):
+                # fallback path was hit — use safer per-token estimate
+                kv_cache_gb = (n_ctx * 2 * 32 * 128 * kv_dtype_bytes) / (1024 ** 3)
+            return size_gb * 1.06 + mmproj_gb + kv_cache_gb + 0.5
     except Exception as e:
         logger.error(f"Error estimating VRAM for {physical_name}: {e}")
     return 4.0

@@ -1,6 +1,7 @@
 backend = "vllm"
 path = "/home/nick/AI/Models/Qwen3.5-9b"
 tokenizer = "/home/nick/AI/Models/Qwen3.5-9b"
+tensor_parallel = 2
 gpu_memory_utilization = "0.90"
 max_model_len = 65536
 max_num_seqs = 12
