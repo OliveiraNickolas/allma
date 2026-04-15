@@ -1,0 +1,22 @@
+backend = "llama.cpp"
+model = "/home/nick/AI/Models/Qwen3.5-27B-Uncensored-HauhauCS-GGUF/Qwen3.5-27B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
+mmproj = "/home/nick/AI/Models/Qwen3.5-27B-Uncensored-HauhauCS-GGUF/mmproj-Qwen3.5-27B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+
+# Dense 27B Q4_K_M (~16GB), single GPU 1 — 32K ctx ~1.9GB KV → ~18GB total
+pinned_gpu = 1
+n_ctx = 32768
+n_batch = "4096"
+n_gpu_layers = "-1"
+n_threads = "8"
+
+extra_args = [
+    "--jinja",
+    "--flash-attn", "on",
+    "--cache-type-k", "q8_0",
+    "--cache-type-v", "q8_0",
+    "--ubatch-size", "1024",
+    "--threads-batch", "16",
+    "--cont-batching",
+    "--defrag-thold", "0.1",
+    "--mlock"
+]
