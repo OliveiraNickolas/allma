@@ -1,7 +1,8 @@
 backend = "vllm"
 path = "/home/nick/AI/Models/Qwopus3.5-4B-abliterated"
 tokenizer = "/home/nick/AI/Models/Qwopus3.5-4B-abliterated"
-gpu_memory_utilization = "0.60"
+gpu_memory_utilization = "0.80"
+pinned_gpu = 1
 max_model_len = 131072
 max_num_seqs = 8
 max_num_batched_tokens = 32768

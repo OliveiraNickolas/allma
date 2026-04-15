@@ -222,6 +222,10 @@ async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = 
         raise RuntimeError(f"Model {physicalname} not configured")
 
     cfg = PHYSICAL_MODELS[physicalname]
+    # Honour pinned_gpu from config if caller did not specify a gpu_id
+    if gpu_id is None and "pinned_gpu" in cfg:
+        gpu_id = int(cfg["pinned_gpu"])
+        logger.info(f"📌 {physicalname}: pinned_gpu={gpu_id} from config")
     backend = cfg.get("backend", "vllm")
     displayname = logicalname or physicalname
 
