@@ -1,0 +1,11 @@
+name = "Qwopus3.5:4B-Instruct"
+physical = "Qwopus3.5-4B-abliterated"
+enable_thinking = false
+
+[sampling]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.0
+presence_penalty = 1.5
+repetition_penalty = 1.0
