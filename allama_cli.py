@@ -745,6 +745,9 @@ def _repl(model: str):
     """Interactive chat REPL for a model."""
     try:
         import httpx
+        import logging as _logging
+        _logging.getLogger("httpx").setLevel(_logging.WARNING)
+        _logging.getLogger("httpcore").setLevel(_logging.WARNING)
     except ImportError:
         print("httpx not installed. Run: pip install httpx")
         sys.exit(1)
@@ -793,11 +796,11 @@ def _repl(model: str):
                 "stream": True,
             }
 
-            spin_label = [""]
+            spin_label = ["thinking..."]
             full_response = ""
             stop_spinner = threading.Event()
             spinner = threading.Thread(
-                target=_run_spinner,
+                target=_run_simple_spinner,
                 args=(stop_spinner, spin_label),
                 daemon=True,
             )
