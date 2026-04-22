@@ -1,5 +1,5 @@
 name = "Qwen3.5:27b-Claude-Opus-Code"
-physical = "Qwen3.5-27b-Claude-Opus-gguf"
+base = "Qwen3.5-27b-Claude-Opus-gguf"
 # thinking ON, precise coding
 
 [sampling]

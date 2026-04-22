@@ -1,5 +1,5 @@
-name = "Qwen3.5:27b-Instruct"
-physical = "Qwen3.5-27b"
+name = "Qwen3.5:35b-Instruct"
+base = "Qwen3.5-35b"
 enable_thinking = false
 # thinking OFF, general chat — Qwen3.5 official
 

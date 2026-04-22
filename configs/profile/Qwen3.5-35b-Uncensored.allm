@@ -1,6 +1,6 @@
-name = "Qwen3.5:27b-Instruct-Reasoning"
-physical = "Qwen3.5-27b"
-enable_thinking = false
+name = "Qwen3.5:35b-Uncensored"
+base = "Qwen3.5-35b-Uncensored-gguf"
+# thinking ON, general
 
 [sampling]
 temperature = 1.0

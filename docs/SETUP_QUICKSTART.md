@@ -1,4 +1,4 @@
-# 🚀 Quick Start: Your Personalized Allama Setup
+# 🚀 Quick Start: Your Personalized Allma Setup
 
 This document gets you running in 5 minutes. For deep understanding, read `YOUR_SETUP_GUIDE.md`.
 
@@ -20,7 +20,7 @@ configs/profiles/
 ### 📊 Integration Examples
 ```
 integration/
-└── comfyui_example.py  → Control Allama from ComfyUI workflows
+└── comfyui_example.py  → Control Allma from ComfyUI workflows
 ```
 
 ### 🔧 Tools
@@ -54,7 +54,7 @@ mkdir -p /path/to/models
 ### Step 2: Update Profile Paths
 Edit each profile file and replace `/path/to/models/`:
 ```bash
-cd /home/nick/AI/allama/configs/profiles/
+cd /home/nick/AI/allma/configs/profiles/
 
 # Edit all .allm files to point to your actual model paths
 sed -i 's|/path/to/models/|/your/actual/path/|g' *.allm
@@ -62,10 +62,10 @@ sed -i 's|/path/to/models/|/your/actual/path/|g' *.allm
 
 ### Step 3: Start Server
 ```bash
-cd /home/nick/AI/allama
+cd /home/nick/AI/allma
 
-# Start Allama server
-allama serve
+# Start Allma server
+allma serve
 ```
 
 ### Step 4: Test Each Profile
@@ -73,13 +73,13 @@ allama serve
 # In another terminal
 
 # Test coding profile
-allama run --profile coding "Write a quicksort algorithm"
+allma run --profile coding "Write a quicksort algorithm"
 
 # Test OCR profile (with an image)
-allama run --profile ocr --file document.png
+allma run --profile ocr --file document.png
 
 # Test research profile
-allama run --profile research "What is retrieval augmented generation?"
+allma run --profile research "What is retrieval augmented generation?"
 ```
 
 ### Step 5: Calibrate Your Setup
@@ -99,28 +99,28 @@ python3 scripts/benchmark.py --profile all --output YOUR_BENCHMARKS.json
 
 ### Auto-Detect Profile (Recommended)
 ```bash
-# Allama automatically picks the right profile
-allama run "optimize this code"
+# Allma automatically picks the right profile
+allma run "optimize this code"
 # → Detects "optimize" + "code" → uses 'coding' profile
 
-allama run "extract text from this document"
+allma run "extract text from this document"
 # → Detects "extract" + "document" → uses 'ocr' profile
 
-allama run "analyze this video"
+allma run "analyze this video"
 # → Detects "analyze" + "video" → uses 'video' profile
 ```
 
 ### Explicit Profile
 ```bash
 # Force a specific profile
-allama run --profile coding "your query here"
-allama run --profile ocr --file document.pdf
-allama run --profile video --file movie.mp4
+allma run --profile coding "your query here"
+allma run --profile ocr --file document.pdf
+allma run --profile video --file movie.mp4
 ```
 
 ### With ComfyUI
 ```bash
-# Use Allama to analyze ComfyUI-generated images
+# Use Allma to analyze ComfyUI-generated images
 python3 integration/comfyui_example.py analyze /path/to/image.png
 
 # Auto-refine generated images
@@ -163,7 +163,7 @@ What's your task?
 └─ "Research" or "Use tools/websearch"?
    └─ → research (balanced, good for tool calling, 1-2s)
 
-Unsure? → Just ask, Allama will auto-detect!
+Unsure? → Just ask, Allma will auto-detect!
 ```
 
 ---
@@ -174,7 +174,7 @@ Unsure? → Just ask, Allama will auto-detect!
 ```bash
 # Your GPU is using more memory than available
 # Solution 1: Reduce model size (use smaller profile)
-allama run --profile research (instead of coding)
+allma run --profile research (instead of coding)
 
 # Solution 2: Reduce context length
 # Edit the .allm file, change max_model_len
@@ -189,7 +189,7 @@ nvidia-smi  # See what's using VRAM
 nvidia-smi  # Should show both GPUs active for coding profile
 
 # Check 2: Is wrong model loading?
-allama ps  # See which model is active
+allma ps  # See which model is active
 
 # Check 3: CPU bottleneck?
 top -p $(pgrep vllm)  # Check CPU usage
@@ -198,12 +198,12 @@ top -p $(pgrep vllm)  # Check CPU usage
 ### "Auto-detect didn't pick the right profile"
 ```bash
 # Use explicit profile:
-allama run --profile coding "your query"
+allma run --profile coding "your query"
 
 # File extension detection:
-allama run --file code.py  # Auto-detects coding
-allama run --file doc.pdf  # Auto-detects ocr
-allama run --file video.mp4  # Auto-detects video
+allma run --file code.py  # Auto-detects coding
+allma run --file doc.pdf  # Auto-detects ocr
+allma run --file video.mp4  # Auto-detects video
 ```
 
 ---
@@ -229,9 +229,9 @@ This was the quick start. For detailed info:
 
 **You're ready to go! Start with:**
 ```bash
-allama serve
+allma serve
 # Then in another terminal:
-allama run "optimize this algorithm"
+allma run "optimize this algorithm"
 ```
 
 Enjoy! 🚀

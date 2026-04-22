@@ -16,7 +16,7 @@ server_idle_time: Dict[str, float] = {}
 global_lock = threading.Lock()
 loading_models: set = set()
 running = True
-ALLAMA_PID = os.getpid()
+ALLMA_PID = os.getpid()
 gpu_allocation: Dict[str, int] = {}
 
 # Health monitor
@@ -26,13 +26,13 @@ _health_monitor_running = threading.Event()
 httpx_client = None
 
 # Error detection & auto-resolution
-last_error_analysis: Dict[str, Any] = {}  # {physical_name: ErrorAnalysis}
-auto_fix_attempt_count: Dict[str, int] = {}  # {physical_name: attempt_count}
+last_error_analysis: Dict[str, Any] = {}  # {base_name: ErrorAnalysis}
+auto_fix_attempt_count: Dict[str, int] = {}  # {base_name: attempt_count}
 
 # Hardware detection & calibration (bootstrap)
 hardware_profile: Any = None  # HardwareProfile or None
 hardware_detected_at: Any = None  # ISO timestamp
-bootstrap_calibrations: Dict[str, Any] = {}  # {physical_name: CalibrationResult}
+bootstrap_calibrations: Dict[str, Any] = {}  # {base_name: CalibrationResult}
 
 # ==============================================================================
 # PORT ALLOCATION

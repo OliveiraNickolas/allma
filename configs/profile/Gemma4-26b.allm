@@ -1,5 +1,5 @@
-name = "Gemma4:31b"
-physical = "Gemma4-31b-gguf"
+name = "Gemma4:26b"
+base = "Gemma4-26b-A4B-gguf"
 
 [sampling]
 temperature = 1.0

@@ -1,6 +1,6 @@
-name = "Qwen3.5:35b-Uncensored"
-physical = "Qwen3.5-35b-Uncensored-gguf"
-# thinking ON, general
+name = "Qwen3.5:27b"
+base = "Qwen3.5-27b"
+# thinking ON, general — Qwen3.5 official
 
 [sampling]
 temperature = 1.0

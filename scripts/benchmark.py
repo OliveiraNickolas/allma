@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Allama Benchmark Tool: Calibrate your setup for optimal performance
+Allma Benchmark Tool: Calibrate your setup for optimal performance
 Measures: latency, throughput, VRAM usage, accuracy per profile
 """
 
@@ -14,10 +14,10 @@ from datetime import datetime
 
 
 class AlamaBenchmarker:
-    """Benchmark Allama performance on your hardware."""
+    """Benchmark Allma performance on your hardware."""
 
-    def __init__(self, allama_host: str = "http://127.0.0.1", allama_port: int = 9000):
-        self.base_url = f"{allama_host}:{allama_port}"
+    def __init__(self, allma_host: str = "http://127.0.0.1", allma_port: int = 9000):
+        self.base_url = f"{allma_host}:{allma_port}"
         self.session = requests.Session()
         self.results = {}
 
@@ -295,7 +295,7 @@ def full_benchmark():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Allama Benchmark Tool")
+    parser = argparse.ArgumentParser(description="Allma Benchmark Tool")
     parser.add_argument(
         "--profile",
         choices=["coding", "ocr", "video", "research", "all"],

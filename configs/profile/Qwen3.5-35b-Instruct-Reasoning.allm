@@ -1,6 +1,6 @@
-name = "Qwen3.6:35b"
-physical = "Qwen3.6-35B-A3B-fp8"
-# thinking ON, general — Qwen3.6 official
+name = "Qwen3.5:35b-Instruct-Reasoning"
+base = "Qwen3.5-35b"
+enable_thinking = false
 
 [sampling]
 temperature = 1.0

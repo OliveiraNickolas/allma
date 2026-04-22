@@ -1,1 +1,1 @@
-"""Config directory for Allama models."""
+"""Config directory for Allma models."""

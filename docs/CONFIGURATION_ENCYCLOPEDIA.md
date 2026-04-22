@@ -1,4 +1,4 @@
-# 📚 Allama Configuration Encyclopedia
+# 📚 Allma Configuration Encyclopedia
 ## Non-Technical Guide to Model Parameters
 
 Welcome! This encyclopedia explains what each configuration parameter does in simple, everyday language. Think of these parameters as "knobs and dials" you can turn to adjust how your AI model behaves and performs.
@@ -360,7 +360,7 @@ n_threads = 12             # Set to your CPU core count
 - vLLM: 20-24GB (FP8 quantized)
 - llama.cpp (GGUF 8-bit): 15-18GB
 
-**Special Note:** Qwen3.5 has "thinking mode" enabled by default. Set `enable_thinking: false` in logical model config to disable it for faster inference.
+**Special Note:** Qwen3.5 has "thinking mode" enabled by default. Set `enable_thinking: false` in profile config to disable it for faster inference.
 
 ---
 
@@ -530,7 +530,7 @@ A: Sometimes your model doesn't fit on GPU; llama.cpp lets you run it (slowly) o
 A: Rough estimate: TP=2 → ~1.5x faster. TP=4 → ~2.5x faster. (Not perfectly linear.)
 
 **Q: Can I change parameters while the server is running?**
-A: No. Edit the config file and restart Allama: `allama stop && allama serve`
+A: No. Edit the config file and restart Allma: `allma stop && allma serve`
 
 ---
 
@@ -560,7 +560,7 @@ This section covers **advanced command-line flags** that unlock specialized feat
 
 **Where they go:**
 ```ini
-# In physical model config (.allm files)
+# In base model config (.allm files)
 extra_args = ["--flag1", "value1", "--flag2", "value2"]
 
 # Example from your Qwen 35B setup:

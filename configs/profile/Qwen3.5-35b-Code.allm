@@ -1,5 +1,5 @@
 name = "Qwen3.5:35b-Code"
-physical = "Qwen3.5-35b"
+base = "Qwen3.5-35b"
 # thinking ON, precise coding — Qwen3.5 official
 
 [sampling]
