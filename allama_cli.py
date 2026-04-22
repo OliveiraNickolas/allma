@@ -710,7 +710,7 @@ def _print_repl_header(console, model: str):
     cmds_tbl.add_column()
     cmds = Text(style=_S)
     cmds.append("  ", style=f"on {C_BG}")
-    for i, cmd in enumerate(["/exit", "/clear"]):
+    for i, cmd in enumerate(["/exit", "/clear", "/model"]):
         cmds.append(cmd, style=f"bold {C_ACCENT} on {C_BG}")
         cmds.append("  ·  ", style=f"{C_DIM} on {C_BG}")
     cmds.append("Ctrl+C", style=f"bold {C_FG} on {C_BG}")
@@ -740,6 +740,105 @@ def _print_repl_header(console, model: str):
     console.print()
     console.print(main_win)
     console.print()
+
+
+def _repl_switch_model(current_model: str, console) -> str | None:
+    """Show a picker of logical models sharing the same physical backend. Returns new model name or None."""
+    from core.config import LOGICAL_MODELS
+
+    current_physical = LOGICAL_MODELS.get(current_model, {}).get("physical")
+    if not current_physical:
+        print(f"  [modelo '{current_model}' não encontrado na config]")
+        return None
+
+    siblings = sorted(
+        name for name, cfg in LOGICAL_MODELS.items()
+        if cfg.get("physical") == current_physical
+    )
+
+    if len(siblings) <= 1:
+        print(f"  [nenhum outro perfil para {current_physical}]")
+        return None
+
+    if console:
+        from rich import box as _box
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+        import shutil as _shutil
+
+        C_BG = "#e8dfc8"; C_SCREEN = "#d0c4a8"; C_FG = "#1a1408"
+        C_DIM = "#6a5a48"; C_ACCENT = "#007878"; C_BORDER = "#008888"
+        W = min(max(_shutil.get_terminal_size().columns - 4, 40), 90)
+        _S = f"on {C_BG}"
+
+        tbl = Table.grid(padding=(0, 2))
+        tbl.add_column(justify="right", style=f"bold {C_ACCENT} on {C_BG}", width=3)
+        tbl.add_column()
+
+        for i, name in enumerate(siblings, 1):
+            is_current = name == current_model
+            marker = Text("▸ ", style=f"bold {C_ACCENT} on {C_BG}") if is_current else Text("  ", style=f"on {C_BG}")
+            label = Text(style=f"on {C_BG}")
+            label.append(marker)
+            label.append(name, style=f"bold {C_ACCENT} on {C_BG}" if is_current else f"{C_FG} on {C_BG}")
+            if is_current:
+                label.append("  (atual)", style=f"{C_DIM} on {C_BG}")
+            tbl.add_row(Text(str(i), style=f"bold {C_ACCENT} on {C_BG}"), label)
+
+        hint = Text(style=f"on {C_BG}")
+        hint.append("\n  número para trocar", style=f"{C_DIM} on {C_BG}")
+        hint.append("  ·  ", style=f"{C_DIM} on {C_BG}")
+        hint.append("Enter", style=f"bold {C_FG} on {C_BG}")
+        hint.append(" para cancelar", style=f"{C_DIM} on {C_BG}")
+
+        def section(name):
+            t = Text(); t.append("[ ", style=C_DIM); t.append(name, style=f"bold {C_ACCENT}"); t.append(" ]", style=C_DIM); return t
+
+        body_tbl = Table.grid(padding=(0, 1)); body_tbl.add_column()
+        phys_line = Text(style=_S)
+        phys_line.append("  physical  ", style=f"{C_DIM} on {C_BG}")
+        phys_line.append("▸  ", style=f"{C_DIM} on {C_BG}")
+        phys_line.append(current_physical, style=f"bold {C_ACCENT} on {C_BG}")
+        body_tbl.add_row(phys_line)
+        body_tbl.add_row(Text("", style=_S))
+        body_tbl.add_row(tbl)
+        body_tbl.add_row(hint)
+
+        panel = Panel(
+            Panel(body_tbl, box=_box.SQUARE, border_style=C_DIM, style=_S, padding=(0, 1),
+                  title=section("Switch Model"), title_align="left"),
+            box=_box.DOUBLE, border_style=C_BORDER, style=f"on {C_SCREEN}", padding=(0, 0), width=W,
+        )
+        console.print(); console.print(panel); console.print()
+    else:
+        print(f"\n  physical: {current_physical}\n")
+        for i, name in enumerate(siblings, 1):
+            mark = "▸" if name == current_model else " "
+            print(f"  {mark} {i}. {name}")
+        print()
+
+    try:
+        choice = input("  → ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+    if not choice:
+        return None
+
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(siblings):
+            return siblings[idx]
+        print("  [fora do range]")
+        return None
+
+    if choice in LOGICAL_MODELS and LOGICAL_MODELS[choice].get("physical") == current_physical:
+        return choice
+
+    print("  [modelo inválido ou de outro backend]")
+    return None
 
 
 def _repl(model: str):
@@ -787,6 +886,12 @@ def _repl(model: str):
             if user_input == "/clear":
                 history.clear()
                 print("History cleared.")
+                continue
+            if user_input == "/model":
+                switched = _repl_switch_model(model, _rich_console if _use_rich else None)
+                if switched and switched != model:
+                    model = switched
+                    print(f"  ✓ {model}")
                 continue
 
             history.append({"role": "user", "content": user_input})
