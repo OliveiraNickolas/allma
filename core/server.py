@@ -839,39 +839,33 @@ def show_banner():
         t.append(" ]", style=C_DIM)
         return t
 
-    def build_logo() -> list[str]:
-        CHARS = {
-            'A': ["  █  ", " █ █ ", "█   █", "█   █", "█████", "█   █", "█   █"],
-            'L': ["█    ", "█    ", "█    ", "█    ", "█    ", "█    ", "█████"],
-            'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █", "█   █", "█   █"],
-        }
-        word, starts = list("ALLMA"), [0, 6, 12, 18, 24]
-        canvas = [[0] * 30 for _ in range(7)]
-        for ch, col in zip(word, starts):
-            for r, row in enumerate(CHARS[ch]):
-                for c, px in enumerate(row):
-                    if px == "█":
-                        canvas[r][col + c] = 1
-            if ch == "L":
-                for r, row in enumerate(CHARS[ch]):
-                    for c, px in enumerate(row):
-                        if px == "█":
-                            sc = col + c + 1
-                            if sc < 30 and canvas[r][sc] == 0:
-                                canvas[r][sc] = 2
-        return ["".join("█" if v == 1 else "▒" if v == 2 else " " for v in row)
-                for row in canvas]
+    LOGO_ROWS = [
+        " █████╗ ██╗     ██╗     ███╗   ███╗ █████╗ ",
+        "██╔══██╗██║     ██║     ████╗ ████║██╔══██╗",
+        "███████║██║     ██║     ██╔████╔██║███████║",
+        "██╔══██║██║     ██║     ██║╚██╔╝██║██╔══██║",
+        "██║  ██║███████╗███████╗██║ ╚═╝ ██║██║  ██║",
+        "╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝",
+    ]
 
     # ── logo panel ────────────────────────────────────────────────────────────
-    LOGO_COLORS = [C_RED, C_RED, C_ORG, C_YELL, C_GRN, C_BLUE, C_BLUE]
+    # cols 8-23 = the two L's; box-drawing chars there are rendered dim (shadow)
+    # box-drawing chars on A and M are rendered bold to keep letters solid
+    _BOX  = set("╗╔╚╝═║")
+    _L_COLS = range(8, 24)
+    LOGO_COLORS = [C_RED, C_ORG, C_YELL, C_GRN, C_BLUE, C_BLUE]
     logo_text   = Text(justify="center")
-    for i, row in enumerate(build_logo()):
-        color = LOGO_COLORS[i % len(LOGO_COLORS)]
-        for ch in row:
-            if ch == "█":   logo_text.append(ch, style=f"bold {color}")
-            elif ch == "▒": logo_text.append(ch, style=f"dim {color}")
-            else:            logo_text.append(ch)
-        if i < 6:
+    for i, row in enumerate(LOGO_ROWS):
+        color = LOGO_COLORS[i]
+        for j, ch in enumerate(row):
+            if ch == "█":
+                logo_text.append(ch, style=f"bold {color}")
+            elif ch in _BOX:
+                style = f"dim {color}" if j in _L_COLS else f"bold {color}"
+                logo_text.append(ch, style=style)
+            else:
+                logo_text.append(ch)
+        if i < 5:
             logo_text.append("\n")
     # ── configuration summary ─────────────────────────────────────────────────
     cfg_line = Text()

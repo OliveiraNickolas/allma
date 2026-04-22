@@ -27,43 +27,32 @@ ALLMA_URL = "http://127.0.0.1:9000"
 # ──────────────────────────────────────────────────────────────────────────────
 # Logo
 # ──────────────────────────────────────────────────────────────────────────────
-_LOGO_COLORS = ["#e52529", "#e52529", "#f7941d", "#f7d000", "#43b047", "#009ddc", "#009ddc"]
-
-def _build_logo_rows() -> list[str]:
-    CHARS = {
-        'A': ["  █  ", " █ █ ", "█   █", "█   █", "█████", "█   █", "█   █"],
-        'L': ["█    ", "█    ", "█    ", "█    ", "█    ", "█    ", "█████"],
-        'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █", "█   █", "█   █"],
-    }
-    word, starts = list("ALLMA"), [0, 6, 12, 18, 24]
-    canvas = [[0] * 30 for _ in range(7)]
-    for ch, col in zip(word, starts):
-        for r, row in enumerate(CHARS[ch]):
-            for c, px in enumerate(row):
-                if px == "█":
-                    canvas[r][col + c] = 1
-        if ch == "L":
-            for r, row in enumerate(CHARS[ch]):
-                for c, px in enumerate(row):
-                    if px == "█" and col + c + 1 < 30 and canvas[r][col + c + 1] == 0:
-                        canvas[r][col + c + 1] = 2
-    return ["".join("█" if v == 1 else "▒" if v == 2 else " " for v in row)
-            for row in canvas]
+_LOGO_COLORS = ["#e52529", "#f7941d", "#f7d000", "#43b047", "#009ddc", "#009ddc"]
+_LOGO_ROWS = [
+    " █████╗ ██╗     ██╗     ███╗   ███╗ █████╗ ",
+    "██╔══██╗██║     ██║     ████╗ ████║██╔══██╗",
+    "███████║██║     ██║     ██╔████╔██║███████║",
+    "██╔══██║██║     ██║     ██║╚██╔╝██║██╔══██║",
+    "██║  ██║███████╗███████╗██║ ╚═╝ ██║██║  ██║",
+    "╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝",
+]
+_BOX_CHARS = set("╗╔╚╝═║")
+_L_COLS    = range(8, 24)  # cols where the two L's live
 
 def _build_logo_markup():
     from rich.text import Text
     t = Text(justify="center")
-    rows = _build_logo_rows()
-    for i, row in enumerate(rows):
-        color = _LOGO_COLORS[i % len(_LOGO_COLORS)]
-        for ch in row:
+    for i, row in enumerate(_LOGO_ROWS):
+        color = _LOGO_COLORS[i]
+        for j, ch in enumerate(row):
             if ch == "█":
                 t.append(ch, style=f"bold {color}")
-            elif ch == "▒":
-                t.append(ch, style=f"dim {color}")
+            elif ch in _BOX_CHARS:
+                style = f"dim {color}" if j in _L_COLS else f"bold {color}"
+                t.append(ch, style=style)
             else:
                 t.append(ch)
-        if i < len(rows) - 1:
+        if i < len(_LOGO_ROWS) - 1:
             t.append("\n")
     return t
 
