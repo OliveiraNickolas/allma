@@ -665,6 +665,7 @@ def _print_repl_header(console, model: str):
     from rich.table import Table
     from rich.text import Text
 
+    import shutil as _shutil
     # Same warm cream / teal palette as the main server banner
     C_BG     = "#e8dfc8"
     C_SCREEN = "#d0c4a8"
@@ -672,7 +673,7 @@ def _print_repl_header(console, model: str):
     C_DIM    = "#6a5a48"
     C_ACCENT = "#007878"
     C_BORDER = "#008888"
-    W = 64
+    W = min(max(_shutil.get_terminal_size().columns - 4, 40), 90)
     _S = f"on {C_BG}"
 
     def section(name: str) -> Text:
@@ -709,7 +710,7 @@ def _print_repl_header(console, model: str):
     cmds_tbl.add_column()
     cmds = Text(style=_S)
     cmds.append("  ", style=f"on {C_BG}")
-    for i, cmd in enumerate(["/bye", "/clear", "/exit"]):
+    for i, cmd in enumerate(["/exit", "/clear"]):
         cmds.append(cmd, style=f"bold {C_ACCENT} on {C_BG}")
         cmds.append("  ·  ", style=f"{C_DIM} on {C_BG}")
     cmds.append("Ctrl+C", style=f"bold {C_FG} on {C_BG}")
