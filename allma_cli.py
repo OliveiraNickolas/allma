@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Allama CLI — allama serve / run / list / ps / stop / logs / launch
+Allma CLI — allma serve / run / list / ps / stop / logs / launch
 """
 import argparse
 import json
@@ -23,14 +23,14 @@ logger = logging.getLogger(__name__)
 _models_loading_queue = queue.Queue()
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-ALLAMA_DIR  = Path(__file__).parent
-ALLAMA_PORT = int(os.environ.get("ALLAMA_PORT", "9000"))
-BASE_URL    = f"http://127.0.0.1:{ALLAMA_PORT}"
-PID_FILE    = Path(os.environ.get("ALLAMA_PID_FILE", "/tmp/allama_watchdog.pid"))
-LOG_FILE    = ALLAMA_DIR / "logs" / "allama.log"
-_VENV_PYTHON = ALLAMA_DIR / "venv" / "bin" / "python"
+ALLMA_DIR  = Path(__file__).parent
+ALLMA_PORT = int(os.environ.get("ALLMA_PORT", "9000"))
+BASE_URL    = f"http://127.0.0.1:{ALLMA_PORT}"
+PID_FILE    = Path(os.environ.get("ALLMA_PID_FILE", "/tmp/allma_watchdog.pid"))
+LOG_FILE    = ALLMA_DIR / "logs" / "allma.log"
+_VENV_PYTHON = ALLMA_DIR / "venv" / "bin" / "python"
 PYTHON      = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
-SERVER_SCRIPT = str(ALLAMA_DIR / "allama.py")
+SERVER_SCRIPT = str(ALLMA_DIR / "allma.py")
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _get(path: str, timeout: float = 3.0):
@@ -67,7 +67,7 @@ def _limit_line_width(spinner_part: str, content: str, time_part: str, term_widt
 
 
 def _run_simple_spinner(stop_event: threading.Event, label_ref: list):
-    """Single-line braille spinner for allama run."""
+    """Single-line braille spinner for allma run."""
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     start = time.time()
     i = 0
@@ -247,7 +247,7 @@ def _read_pid() -> int | None:
 # ── Watchdog (internal, not user-facing) ───────────────────────────────────────
 def _run_watchdog(verbose: bool):
     """
-    Loop forever restarting allama.py if it dies.
+    Loop forever restarting allma.py if it dies.
     Called internally when this script is run as __watchdog__.
     """
     PID_FILE.write_text(str(os.getpid()))
@@ -292,7 +292,7 @@ def _run_watchdog(verbose: bool):
 
         if fast_fail_count >= MAX_FAST_FAILS:
             msg = (
-                f"[allama] server crashed {fast_fail_count} times in under {FAST_FAIL_SECS}s "
+                f"[allma] server crashed {fast_fail_count} times in under {FAST_FAIL_SECS}s "
                 f"(exit code {code}) — aborting. Check logs: {LOG_FILE}"
             )
             if verbose:
@@ -303,7 +303,7 @@ def _run_watchdog(verbose: bool):
             break
 
         restart_count += 1
-        msg = f"[allama] process exited (code {code}), restarting in 3s... (#{restart_count})"
+        msg = f"[allma] process exited (code {code}), restarting in 3s... (#{restart_count})"
         if verbose:
             print(msg, flush=True)
         else:
@@ -341,10 +341,10 @@ def _open_terminal_tail(logfile: str):
 
 
 def _be_verbose_watcher(log_dir: Path, stop_event: threading.Event, models_queue: queue.Queue):
-    """Watch allama.log for model loading messages and open terminals for each model."""
+    """Watch allma.log for model loading messages and open terminals for each model."""
     import re
 
-    allama_log = log_dir / "allama.log"
+    allma_log = log_dir / "allma.log"
     opened_models: set[str] = set()
     log_position = None  # Will be set to end-of-file on first read
 
@@ -353,11 +353,11 @@ def _be_verbose_watcher(log_dir: Path, stop_event: threading.Event, models_queue
 
     while not stop_event.is_set():
         try:
-            if not allama_log.exists():
+            if not allma_log.exists():
                 stop_event.wait(0.5)
                 continue
 
-            with open(allama_log, "r", errors="replace") as f:
+            with open(allma_log, "r", errors="replace") as f:
                 # On first read, jump to end of file (ignore past logs)
                 if log_position is None:
                     f.seek(0, 2)  # 0, 2 = seek to end
@@ -402,36 +402,36 @@ def _be_verbose_watcher(log_dir: Path, stop_event: threading.Event, models_queue
 
 
 def cmd_serve(args):
-    """Start the Allama daemon."""
+    """Start the Allma daemon."""
     be_verbose = getattr(args, "be_verbose", False)
     force = getattr(args, "force", False)
     be_verbose_stop = threading.Event()
 
     # Kill any process on port 9000 if --force is used
     if force:
-        if _kill_port_user(ALLAMA_PORT):
-            print(f"Killed process on port {ALLAMA_PORT}")
+        if _kill_port_user(ALLMA_PORT):
+            print(f"Killed process on port {ALLMA_PORT}")
             time.sleep(0.5)  # Brief pause to let port release
 
     if be_verbose:
         watcher = threading.Thread(
             target=_be_verbose_watcher,
-            args=(ALLAMA_DIR / "logs", be_verbose_stop, _models_loading_queue),
+            args=(ALLMA_DIR / "logs", be_verbose_stop, _models_loading_queue),
             daemon=True,
         )
         watcher.start()
 
     try:
         if args.verbose:
-            # --verbose: foreground with server logs (runs allama.py directly, not as daemon)
-            print("Starting Allama (verbose mode — Ctrl+C to stop)...")
+            # --verbose: foreground with server logs (runs allma.py directly, not as daemon)
+            print("Starting Allma (verbose mode — Ctrl+C to stop)...")
             _run_watchdog(verbose=True)
         elif be_verbose:
             # --be-verbose only: silent daemon mode but keep watcher alive
             if _is_running():
-                print("Allama is already running.")
+                print("Allma is already running.")
                 return
-            label = ["Starting Allama with backend logs...  "]
+            label = ["Starting Allma with backend logs...  "]
             stop_spinner = threading.Event()
             spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
             spinner.start()
@@ -440,16 +440,16 @@ def cmd_serve(args):
             stop_spinner.set()
             spinner.join()
             if ok:
-                print("Allama ready. Backend terminals will open automatically.")
+                print("Allma ready. Backend terminals will open automatically.")
             else:
-                print("Allama timed out. Check logs: allama logs")
+                print("Allma timed out. Check logs: allma logs")
             # Don't wait — let the watcher thread continue in background
         else:
             # Background daemon mode (no verbose, no be_verbose)
             if _is_running():
-                print("Allama is already running.")
+                print("Allma is already running.")
                 return
-            label = ["Starting Allama...  "]
+            label = ["Starting Allma...  "]
             stop_spinner = threading.Event()
             spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
             spinner.start()
@@ -458,15 +458,15 @@ def cmd_serve(args):
             stop_spinner.set()
             spinner.join()
             if ok:
-                print("Allama ready.")
+                print("Allma ready.")
             else:
-                print("Allama timed out. Check logs: allama logs")
+                print("Allma timed out. Check logs: allma logs")
     finally:
         be_verbose_stop.set()
 
 
 def cmd_restart(args):
-    """Stop and restart the Allama server."""
+    """Stop and restart the Allma server."""
     cmd_stop(args)
     time.sleep(1)
     # Clear the "already running" guard so cmd_serve proceeds
@@ -476,9 +476,9 @@ def cmd_restart(args):
 
 
 def _kill_leftover_backends() -> int:
-    """Kill any allama-managed vllm/llama-server processes still alive.
+    """Kill any allma-managed vllm/llama-server processes still alive.
 
-    Uses command-line fingerprints specific to allama-spawned backends
+    Uses command-line fingerprints specific to allma-spawned backends
     (--host 127.0.0.1 --api-key dummy for vllm, --host 127.0.0.1 for llama)
     to avoid hitting unrelated instances.
     """
@@ -507,9 +507,9 @@ def _kill_leftover_backends() -> int:
 
 
 def cmd_stop(args):
-    """Stop the Allama daemon and all backend processes."""
+    """Stop the Allma daemon and all backend processes."""
     if not _is_running() and not _read_pid():
-        print("Allama is not running.")
+        print("Allma is not running.")
         return
 
     # Step 1: ask the FastAPI server to gracefully shut down (kills backends via lifespan)
@@ -537,7 +537,7 @@ def cmd_stop(args):
         print(f"Cleaned up {killed} orphaned backend process(es).")
 
     if _is_running():
-        print("Allama did not stop cleanly. Check: allama logs")
+        print("Allma did not stop cleanly. Check: allma logs")
     else:
         print("Stopped.")
 
@@ -546,11 +546,11 @@ def cmd_status(args):
     """Show server status and loaded models."""
     health = _get("/health")
     if not health:
-        print("● Allama is not running")
+        print("● Allma is not running")
         return
 
     active = health.get("active_servers", 0)
-    print(f"● Allama is running  (port {ALLAMA_PORT})")
+    print(f"● Allma is running  (port {ALLMA_PORT})")
     print(f"  Loaded models: {active}")
 
     ps_data = _get("/v1/models")
@@ -563,10 +563,10 @@ def cmd_status(args):
 
 
 def cmd_list(args):
-    """List available logical models."""
+    """List available profile models."""
     data = _get("/v1/models")
     if data is None:
-        print("Allama is not running. Start with: allama serve")
+        print("Allma is not running. Start with: allma serve")
         return
     models = [m["id"] for m in data.get("data", [])]
     if not models:
@@ -580,7 +580,7 @@ def cmd_ps(args):
     """Show currently loaded (running) models."""
     health = _get("/health")
     if not health:
-        print("Allama is not running.")
+        print("Allma is not running.")
         return
     active = health.get("active_servers", 0)
     if active == 0:
@@ -590,7 +590,7 @@ def cmd_ps(args):
 
 
 def cmd_logs(args):
-    """Tail the Allama log file."""
+    """Tail the Allma log file."""
     if not LOG_FILE.exists():
         print(f"Log file not found: {LOG_FILE}")
         return
@@ -610,7 +610,7 @@ def cmd_run(args):
 
     already_running = _is_running()
 
-    label = ["Loading model..." if already_running else "Starting Allama..."]
+    label = ["Loading model..." if already_running else "Starting Allma..."]
     stop_spinner = threading.Event()
     spinner = threading.Thread(target=_run_simple_spinner, args=(stop_spinner, label), daemon=True)
     spinner.start()
@@ -620,7 +620,7 @@ def cmd_run(args):
         if not _wait_for_server(30):
             stop_spinner.set()
             spinner.join()
-            print("Allama failed to start. Check logs: allama logs")
+            print("Allma failed to start. Check logs: allma logs")
             sys.exit(1)
         label[0] = "Loading model..."
 
@@ -637,7 +637,7 @@ def cmd_run(args):
                 print(f"  {m}")
         sys.exit(1)
 
-    # Pre-load model (triggers ensure_physical_model server-side)
+    # Pre-load model (triggers ensure_base_model server-side)
     try:
         # Notify the -bv watcher which model we're loading
         _models_loading_queue.put(model)
@@ -692,7 +692,7 @@ def _print_repl_header(console, model: str):
     info.append(model, style=f"bold {C_ACCENT} on {C_BG}")
     info.append("   port  ", style=f"{C_DIM} on {C_BG}")
     info.append("▸  ", style=f"{C_DIM} on {C_BG}")
-    info.append(str(ALLAMA_PORT), style=f"bold {C_ACCENT} on {C_BG}")
+    info.append(str(ALLMA_PORT), style=f"bold {C_ACCENT} on {C_BG}")
     session_tbl.add_row(info)
 
     session_panel = Panel(
@@ -743,21 +743,21 @@ def _print_repl_header(console, model: str):
 
 
 def _repl_switch_model(current_model: str, console) -> str | None:
-    """Show a picker of logical models sharing the same physical backend. Returns new model name or None."""
-    from core.config import LOGICAL_MODELS
+    """Show a picker of profile models sharing the same base backend. Returns new model name or None."""
+    from core.config import PROFILE_MODELS
 
-    current_physical = LOGICAL_MODELS.get(current_model, {}).get("physical")
-    if not current_physical:
+    current_base = PROFILE_MODELS.get(current_model, {}).get("base")
+    if not current_base:
         print(f"  [modelo '{current_model}' não encontrado na config]")
         return None
 
     siblings = sorted(
-        name for name, cfg in LOGICAL_MODELS.items()
-        if cfg.get("physical") == current_physical
+        name for name, cfg in PROFILE_MODELS.items()
+        if cfg.get("base") == current_base
     )
 
     if len(siblings) <= 1:
-        print(f"  [nenhum outro perfil para {current_physical}]")
+        print(f"  [nenhum outro perfil para {current_base}]")
         return None
 
     if console:
@@ -798,9 +798,9 @@ def _repl_switch_model(current_model: str, console) -> str | None:
 
         body_tbl = Table.grid(padding=(0, 1)); body_tbl.add_column()
         phys_line = Text(style=_S)
-        phys_line.append("  physical  ", style=f"{C_DIM} on {C_BG}")
+        phys_line.append("  base  ", style=f"{C_DIM} on {C_BG}")
         phys_line.append("▸  ", style=f"{C_DIM} on {C_BG}")
-        phys_line.append(current_physical, style=f"bold {C_ACCENT} on {C_BG}")
+        phys_line.append(current_base, style=f"bold {C_ACCENT} on {C_BG}")
         body_tbl.add_row(phys_line)
         body_tbl.add_row(Text("", style=_S))
         body_tbl.add_row(tbl)
@@ -813,7 +813,7 @@ def _repl_switch_model(current_model: str, console) -> str | None:
         )
         console.print(); console.print(panel); console.print()
     else:
-        print(f"\n  physical: {current_physical}\n")
+        print(f"\n  base: {current_base}\n")
         for i, name in enumerate(siblings, 1):
             mark = "▸" if name == current_model else " "
             print(f"  {mark} {i}. {name}")
@@ -834,7 +834,7 @@ def _repl_switch_model(current_model: str, console) -> str | None:
         print("  [fora do range]")
         return None
 
-    if choice in LOGICAL_MODELS and LOGICAL_MODELS[choice].get("physical") == current_physical:
+    if choice in PROFILE_MODELS and PROFILE_MODELS[choice].get("base") == current_base:
         return choice
 
     print("  [modelo inválido ou de outro backend]")
@@ -866,7 +866,7 @@ def _repl(model: str):
     else:
         print(f"\n{'─'*50}")
         print(f"  Model : {model}")
-        print(f"  Port  : {ALLAMA_PORT}")
+        print(f"  Port  : {ALLMA_PORT}")
         print(f"  /bye or Ctrl+C to exit")
         print(f"{'─'*50}\n")
 
@@ -957,7 +957,7 @@ def _repl(model: str):
             except httpx.ConnectError:
                 stop_spinner.set()
                 spinner.join()
-                print("[connection error — is Allama running?]")
+                print("[connection error — is Allma running?]")
                 break
             finally:
                 stop_spinner.set()
@@ -1185,7 +1185,7 @@ def _apply_claude_local_fix():
 
 
 def cmd_launch(args):
-    """Start allama, load a model, and open Claude Code pointed at it."""
+    """Start allma, load a model, and open Claude Code pointed at it."""
     model = args.model
 
     stop_spinner = threading.Event()
@@ -1195,13 +1195,13 @@ def cmd_launch(args):
     )
     spinner.start()
 
-    # 1 ─ Ensure allama is running
+    # 1 ─ Ensure allma is running
     if not _is_running():
         _start_daemon()
         if not _wait_for_server(45):
             stop_spinner.set()
             spinner.join()
-            print("Allama failed to start. Check logs: allama logs")
+            print("Allma failed to start. Check logs: allma logs")
             sys.exit(1)
 
     # 2 ─ Validate model exists
@@ -1239,12 +1239,12 @@ def cmd_launch(args):
 
     if load_error:
         print(f"Failed to load model '{model}': {load_error}")
-        print("Check logs: allama backend logs")
+        print("Check logs: allma backend logs")
         sys.exit(1)
 
     if not result or result.get("status") != "loaded":
         print(f"Failed to load model '{model}': unexpected server response.")
-        print("Check logs: allama backend logs")
+        print("Check logs: allma backend logs")
         sys.exit(1)
 
     import random as _random
@@ -1255,7 +1255,7 @@ def cmd_launch(args):
 
     # 5 ─ Launch claude with model env vars
     env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{ALLAMA_PORT}"
+    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{ALLMA_PORT}"
     env["ANTHROPIC_AUTH_TOKEN"] = "dummy"
     env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
     env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
@@ -1270,7 +1270,7 @@ def cmd_launch(args):
 def cmd_backend_logs(args):
     """Tail the log of the currently running backend process."""
     if not _is_running():
-        print("Allama is not running.")
+        print("Allma is not running.")
         return
 
     data = _get("/v1/ps")
@@ -1296,7 +1296,7 @@ def cmd_backend_logs(args):
     else:
         print("Multiple backends running — specify one:")
         for s in alive:
-            print(f"  · {s['name']} ({s['backend']})  →  allama backend logs {s['name']}")
+            print(f"  · {s['name']} ({s['backend']})  →  allma backend logs {s['name']}")
         return
 
     logfile = target.get("logfile", "")
@@ -1341,23 +1341,23 @@ def cmd_hardware_detect(args):
         else:
             print("No hardware profile detected.")
     else:
-        print("Allama server is not running.")
-        print("Start with: allama serve")
+        print("Allma server is not running.")
+        print("Start with: allma serve")
 
 
 def cmd_calibrate(args):
     """Pre-calibrate a model without loading it."""
     import asyncio
 
-    sys.path.insert(0, str(ALLAMA_DIR))
+    sys.path.insert(0, str(ALLMA_DIR))
     from core.bootstrap import BootstrapDetector
-    from core.config import PHYSICAL_MODELS
+    from core.config import BASE_MODELS
     from core.gpu import get_model_vram_need
 
-    if args.model not in PHYSICAL_MODELS:
+    if args.model not in BASE_MODELS:
         print(f"❌ Model '{args.model}' not found in configs.")
-        print("Available physical models:")
-        for name in sorted(PHYSICAL_MODELS.keys()):
+        print("Available base models:")
+        for name in sorted(BASE_MODELS.keys()):
             print(f"   · {name}")
         return
 
@@ -1368,14 +1368,14 @@ def cmd_calibrate(args):
         print(f"❌ Hardware detection failed: {e}")
         return
 
-    cfg = PHYSICAL_MODELS[args.model]
+    cfg = BASE_MODELS[args.model]
     model_size_gb = get_model_vram_need(cfg, args.model)
 
     print(f"📊 Calibrating {args.model}...")
     try:
         calib = asyncio.run(
             BootstrapDetector.calibrate_for_model(
-                physical_name=args.model,
+                base_name=args.model,
                 model_size_gb=model_size_gb,
                 hardware_profile=profile,
                 config=cfg,
@@ -1412,14 +1412,14 @@ def main():
         return
 
     parser = argparse.ArgumentParser(
-        prog="allama",
-        description="Allama — local LLM manager",
+        prog="allma",
+        description="Allma — local LLM manager",
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     sub.required = True
 
     # serve
-    p_serve = sub.add_parser("serve", help="Start the Allama server")
+    p_serve = sub.add_parser("serve", help="Start the Allma server")
     p_serve.add_argument(
         "--verbose", "-v",
         action="store_true",
@@ -1439,7 +1439,7 @@ def main():
     p_serve.set_defaults(func=cmd_serve)
 
     # restart
-    p_restart = sub.add_parser("restart", help="Stop and restart the Allama server")
+    p_restart = sub.add_parser("restart", help="Stop and restart the Allma server")
     p_restart.add_argument(
         "--verbose", "-v",
         action="store_true",
@@ -1454,7 +1454,7 @@ def main():
     p_restart.set_defaults(func=cmd_restart)
 
     # stop
-    p_stop = sub.add_parser("stop", help="Stop the Allama server")
+    p_stop = sub.add_parser("stop", help="Stop the Allma server")
     p_stop.set_defaults(func=cmd_stop)
 
     # status
@@ -1470,7 +1470,7 @@ def main():
     p_ps.set_defaults(func=cmd_ps)
 
     # logs
-    p_logs = sub.add_parser("logs", help="Show Allama logs")
+    p_logs = sub.add_parser("logs", help="Show Allma logs")
     p_logs.add_argument("-f", "--follow", action="store_true", help="Follow log output")
     p_logs.add_argument("-n", "--lines", type=int, default=50, metavar="N", help="Lines to show (default: 50)")
     p_logs.set_defaults(func=cmd_logs)
@@ -1488,7 +1488,7 @@ def main():
     launch_sub.required = True
 
     p_lc = launch_sub.add_parser("claude", help="Open Claude Code with a local model")
-    p_lc.add_argument("model", help="Logical model name (e.g. 'Qwen3.5:27b-Code')")
+    p_lc.add_argument("model", help="Profile model name (e.g. 'Qwen3.5:27b-Code')")
     p_lc.add_argument("--gpu", type=int, default=None, metavar="ID",
                       help="Force model onto a specific GPU (0-indexed)")
     p_lc.add_argument("claude_args", nargs=argparse.REMAINDER,
@@ -1501,7 +1501,7 @@ def main():
 
     # calibrate
     p_calib = sub.add_parser("calibrate", help="Pre-calibrate a model")
-    p_calib.add_argument("model", help="Physical model name (e.g. 'Qwen3.5-27b')")
+    p_calib.add_argument("model", help="Base model name (e.g. 'Qwen3.5-27b')")
     p_calib.set_defaults(func=cmd_calibrate)
 
     # backend

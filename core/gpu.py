@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
-from core.config import logger, PHYSICAL_MODELS
+from core.config import logger, BASE_MODELS
 
 
 def _calc_model_size_gb(model_path: str) -> float:
@@ -108,15 +108,15 @@ def get_best_gpu() -> int:
 
 
 def get_all_gpus() -> list[dict]:
-    """Get all GPUs with their VRAM info, respecting ALLAMA_VISIBLE_DEVICES env var."""
-    visible_devices = os.environ.get("ALLAMA_VISIBLE_DEVICES", None)
+    """Get all GPUs with their VRAM info, respecting ALLMA_VISIBLE_DEVICES env var."""
+    visible_devices = os.environ.get("ALLMA_VISIBLE_DEVICES", None)
     visible_gpus = None
     if visible_devices:
         try:
             visible_gpus = set(int(x.strip()) for x in visible_devices.split(","))
-            logger.debug(f"🔒 ALLAMA_VISIBLE_DEVICES={visible_devices}, restricting to GPUs: {visible_gpus}")
+            logger.debug(f"🔒 ALLMA_VISIBLE_DEVICES={visible_devices}, restricting to GPUs: {visible_gpus}")
         except ValueError as e:
-            logger.error(f"Invalid ALLAMA_VISIBLE_DEVICES: {visible_devices}. Must be comma-separated integers. {e}")
+            logger.error(f"Invalid ALLMA_VISIBLE_DEVICES: {visible_devices}. Must be comma-separated integers. {e}")
             visible_gpus = None
 
     try:
@@ -144,7 +144,7 @@ def get_all_gpus() -> list[dict]:
                         "total_gb": total_mb / 1024,
                     })
         if visible_gpus is not None:
-            logger.info(f"🔍 Found {len(gpus)} GPU(s) visible to ALLAMA: {[g['index'] for g in gpus]}")
+            logger.info(f"🔍 Found {len(gpus)} GPU(s) visible to ALLMA: {[g['index'] for g in gpus]}")
         return gpus
     except Exception as e:
         logger.error(f"Error getting GPU info: {e}")
@@ -189,12 +189,12 @@ def get_gpu_available(model_path: str, tp_size: int, gpu_memory_util: float) -> 
         return []
 
 
-def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) -> tuple[int, int]:
+def find_optimal_tp_and_gpus(base_name: str, skip_gpu: int | None = None) -> tuple[int, int]:
     """
     Find the optimal tensor parallel size and GPU allocation for a model.
     Returns (adjusted_tp, selected_gpu).
     """
-    cfg = PHYSICAL_MODELS[physical_name]
+    cfg = BASE_MODELS[base_name]
     backend = cfg.get("backend", "vllm")
 
     if backend != "vllm":
@@ -239,7 +239,7 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
         )
         required_gb = total_size_gb * 1.06 + kv_cache_gb + 1.0
     except Exception as e:
-        logger.warning(f"Could not estimate model size for {physical_name}: {e}")
+        logger.warning(f"Could not estimate model size for {base_name}: {e}")
         best = all_gpus[0] if all_gpus else {"index": 0}
         return requested_tp, best["index"]
 
@@ -249,13 +249,13 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
 
     if effective_tp > requested_tp:
         logger.info(
-            f"🔼 {physical_name}: Auto-upgrading TP {requested_tp}→{effective_tp} "
+            f"🔼 {base_name}: Auto-upgrading TP {requested_tp}→{effective_tp} "
             f"(model needs {required_gb:.1f}GB, single GPU has {usable_per_gpu_gb:.1f}GB usable)"
         )
 
     if len(all_gpus) < effective_tp:
         logger.error(
-            f"❌ {physical_name}: Need TP={effective_tp} but only {len(all_gpus)} GPU(s) available. "
+            f"❌ {base_name}: Need TP={effective_tp} but only {len(all_gpus)} GPU(s) available. "
             f"Model requires {required_gb:.1f}GB, system has {total_free_gb:.1f}GB free total."
         )
         best = all_gpus[0] if all_gpus else {"index": 0}
@@ -271,12 +271,12 @@ def find_optimal_tp_and_gpus(physical_name: str, skip_gpu: int | None = None) ->
                 continue
             return effective_tp, indices[0]
 
-    logger.warning(f"⚠️ {physical_name}: No consecutive GPU group found for TP={effective_tp}, using GPU 0")
+    logger.warning(f"⚠️ {base_name}: No consecutive GPU group found for TP={effective_tp}, using GPU 0")
     best = all_gpus[0] if all_gpus else {"index": 0}
     return effective_tp, best["index"]
 
 
-def get_model_vram_need(cfg: Dict[str, Any], physical_name: str) -> float:
+def get_model_vram_need(cfg: Dict[str, Any], base_name: str) -> float:
     backend = cfg.get("backend", "vllm")
     try:
         if backend == "vllm":
@@ -307,5 +307,5 @@ def get_model_vram_need(cfg: Dict[str, Any], physical_name: str) -> float:
                 kv_cache_gb = (n_ctx * 2 * 32 * 128 * kv_dtype_bytes) / (1024 ** 3)
             return size_gb * 1.06 + mmproj_gb + kv_cache_gb + 0.5
     except Exception as e:
-        logger.error(f"Error estimating VRAM for {physical_name}: {e}")
+        logger.error(f"Error estimating VRAM for {base_name}: {e}")
     return 4.0

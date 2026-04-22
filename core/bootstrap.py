@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List
 
-from core.config import logger, PHYSICAL_MODELS, ALLAMA_LOG_DIR
+from core.config import logger, BASE_MODELS, ALLMA_LOG_DIR
 from core.gpu import (
     get_all_gpus,
     _estimate_kv_cache_gb,
@@ -205,7 +205,7 @@ class BootstrapDetector:
 
     @staticmethod
     async def calibrate_for_model(
-        physical_name: str,
+        base_name: str,
         model_size_gb: float,
         hardware_profile: HardwareProfile,
         config: dict,
@@ -214,10 +214,10 @@ class BootstrapDetector:
         Generates calibration recommendations for a model.
 
         Args:
-            physical_name: Model name (e.g., "Qwen3.5-27b")
+            base_name: Model name (e.g., "Qwen3.5-27b")
             model_size_gb: Model weights + KV cache estimate
             hardware_profile: Result from detect_hardware()
-            config: Physical config dict
+            config: Base config dict
 
         Returns:
             CalibrationResult with recommendations
@@ -321,7 +321,7 @@ class BootstrapDetector:
             estimated_load_time += 5
 
         return CalibrationResult(
-            model_name=physical_name,
+            model_name=base_name,
             backend=backend,
             recommended_tp=recommended_tp,
             recommended_ubatch_size=recommended_ubatch_size,
@@ -366,7 +366,7 @@ class BootstrapDetector:
             Path to saved file
         """
         if path is None:
-            path = str(ALLAMA_LOG_DIR / "bootstrap-profile.json")
+            path = str(ALLMA_LOG_DIR / "bootstrap-profile.json")
 
         Path(path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -404,7 +404,7 @@ class BootstrapDetector:
             Path to saved file
         """
         if path is None:
-            path = str(ALLAMA_LOG_DIR / "bootstrap-calibrations.json")
+            path = str(ALLMA_LOG_DIR / "bootstrap-calibrations.json")
 
         Path(path).parent.mkdir(parents=True, exist_ok=True)
 

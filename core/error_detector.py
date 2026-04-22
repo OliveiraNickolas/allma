@@ -88,7 +88,7 @@ class ErrorDetector:
         "cuda_allocation_failed": [
             "GPU pode estar fragilizada, reinicie o servidor",
             "Verificar se há outros processos usando GPU (nvidia-smi)",
-            "Reduzir gpu_memory_utilization em physical config",
+            "Reduzir gpu_memory_utilization em base config",
             "Reiniciar NVIDIA driver: sudo systemctl restart nvidia-persistenced",
         ],
         "tensor_parallel_failed": [
@@ -104,7 +104,7 @@ class ErrorDetector:
         ],
         "context_too_large": [
             "Contexto muito grande para GPU",
-            "Reduzir n_ctx em physical config",
+            "Reduzir n_ctx em base config",
             "Usar --yarn-scale-factor para extensão com YaRN",
         ],
         "vram_fragmentation": [
@@ -113,12 +113,12 @@ class ErrorDetector:
             "Reiniciar server para limpar fragmentação",
         ],
         "invalid_model_path": [
-            "Verificar path do modelo em physical config",
+            "Verificar path do modelo em base config",
             "Confirmar arquivo existe em /home/nick/AI/Models/",
             "Verificar permissões: ls -la /path/to/model",
         ],
         "tokenizer_load_failed": [
-            "Verificar tokenizer path em physical config",
+            "Verificar tokenizer path em base config",
             "Confirmar arquivo tokenizer.model ou tokenizer.json existe",
             "Usar chat_template-file correto",
         ],
@@ -191,7 +191,7 @@ class ErrorDetector:
             ),
             "tokenizer_load_failed": (
                 "Tokenizer não encontrado ou falhou ao carregar. "
-                "Verificar path do tokenizer em physical config."
+                "Verificar path do tokenizer em base config."
             ),
             "compute_capability_mismatch": (
                 "GPU não suporta compilação CUDA necessária para este modelo."

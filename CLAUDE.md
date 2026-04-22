@@ -1,8 +1,8 @@
-# Allama — Contexto do Projeto
+# Allma — Contexto do Projeto
 
-## O que é Allama?
+## O que é Allma?
 
-**Allama** é um gerenciador de modelos LLM pessoal com suporte a múltiplos backends (vLLM + llama.cpp) e carga dinâmica.
+**Allma** é um gerenciador de modelos LLM pessoal com suporte a múltiplos backends (vLLM + llama.cpp) e carga dinâmica.
 
 ### Funcionalidades Principais
 - ✅ Carregamento automático de modelos sob demanda
@@ -10,7 +10,7 @@
 - ✅ Descarregamento automático de modelos ociosos
 - ✅ API compatível com OpenAI (`/v1/chat/completions`) e Anthropic (`/v1/messages`)
 - ✅ Suporte completo a tool calling (traduzido entre formatos)
-- ✅ Múltiplos "logical models" podem compartilhar um "physical model" com sampling diferente
+- ✅ Múltiplos "profiles" podem compartilhar um "base model" com sampling diferente
 - ✅ CLI com REPL interativo
 - ✅ Daemon watchdog (auto-restart em crashes)
 
@@ -19,10 +19,10 @@
 ## Estrutura do Projeto
 
 ```
-allama/
-├── allama.py                  # Entry point (uvicorn + signal handlers)
-├── allama_cli.py              # CLI completo (serve, stop, run, etc)
-├── allama_tui.py              # TUI Textual (interface interativa)
+allma/
+├── allma.py                  # Entry point (uvicorn + signal handlers)
+├── allma_cli.py              # CLI completo (serve, stop, run, etc)
+├── allma_tui.py              # TUI Textual (interface interativa)
 ├── create_config.py           # Helper para criar configs .allm
 │
 ├── core/                      # Núcleo da aplicação
@@ -30,18 +30,18 @@ allama/
 │   ├── state.py               # Globals mutáveis (active_servers, port counters, etc)
 │   ├── gpu.py                 # Gerenciamento GPU (free memory, TP selection, VRAM calc)
 │   ├── process.py             # Build commands, kill process trees, shutdown
-│   ├── loader.py              # LoadingSpinner, wait_for_model_ready(), ensure_physical_model()
+│   ├── loader.py              # LoadingSpinner, wait_for_model_ready(), ensure_base_model()
 │   ├── health.py              # Health monitor (idle timeout + crash detection)
 │   └── server.py              # FastAPI app + todas as rotas
 │
 ├── configs/
-│   ├── physical/              # Configs de modelos físicos (*.allm)
+│   ├── base/                  # Configs de base models (*.allm)
 │   │   ├── Qwen3.5-9b.allm
 │   │   ├── Qwen3.5-27b.allm
 │   │   ├── Qwen3.5-35b.allm
 │   │   └── LFM2.5-VL-450M.allm
 │   │
-│   └── logical/               # Configs de modelos lógicos (*.allm)
+│   └── profile/               # Configs de perfis (*.allm)
 │       ├── Qwen3.5-27b-Instruct.allm
 │       ├── Qwen3.5-27b-Claude-4.6.allm
 │       ├── Qwen3.5-9b-OCR.allm
@@ -50,14 +50,14 @@ allama/
 ├── integration/               # Integrações (Claude Code, etc)
 ├── docs/                      # Documentação
 ├── scripts/                   # Utilitários
-└── logs/                      # Logs (allama.log, backends/)
+└── logs/                      # Logs (allma.log, backends/)
 ```
 
 ---
 
-## Conceitos: Physical vs Logical Models
+## Conceitos: Base Models vs Profiles
 
-### Physical Models (`configs/physical/*.allm`)
+### Base Models (`configs/base/*.allm`)
 Define uma **instalação real** de modelo — files + backend configuration.
 
 ```ini
@@ -87,12 +87,12 @@ n_gpu_layers = "-1"
 extra_args = ["--jinja", "--flash-attn", "on"]
 ```
 
-### Logical Models (`configs/logical/*.allm`)
-Define **como interagir** com um physical model — qual model + sampling overrides.
+### Profile Models (`configs/profile/*.allm`)
+Define **como interagir** com um base model — qual model + sampling overrides.
 
 ```ini
 name = "Qwen3.5:27b-Instruct"
-physical = "Qwen3.5-27b"
+base = "Qwen3.5-27b"
 enable_thinking = false
 
 [sampling]
@@ -113,7 +113,7 @@ repetition_penalty = 1.0
 ### Environment Variables (em `.env`)
 | Variável | Default | Uso |
 |----------|---------|-----|
-| `ALLAMA_PORT` | `9000` | Porta do API Allama |
+| `ALLMA_PORT` | `9000` | Porta do API Allma |
 | `VLLM_BASE_PORT` | `8000` | Primeira porta dos backends vLLM |
 | `LLAMA_BASE_PORT` | `9001` | Primeira porta dos backends llama.cpp |
 | `LLAMA_CPP_PATH` | auto-detected | Path para binary `llama-server` |
@@ -128,27 +128,27 @@ repetition_penalty = 1.0
 
 ```bash
 # Servidor
-allama serve              # Background daemon
-allama serve -v           # Foreground com logs ao vivo
-allama stop               # Para server + backends
+allma serve              # Background daemon
+allma serve -v           # Foreground com logs ao vivo
+allma stop               # Para server + backends
 
 # Status
-allama status             # Server status
-allama list               # Listar logical models disponíveis
-allama ps                 # Modelos carregados (running)
+allma status             # Server status
+allma list               # Listar profiles disponíveis
+allma ps                 # Modelos carregados (running)
 
 # Logs
-allama logs -f            # Tail allama logs
-allama backend logs       # Tail backend logs
+allma logs -f            # Tail allma logs
+allma backend logs       # Tail backend logs
 
 # Interativo
-allama run <model>        # Carregar model e abrir chat interativo
+allma run <model>        # Carregar model e abrir chat interativo
 ```
 
 ### Workflow Típico
-1. `allama serve` — inicia daemon
-2. `allama run Qwen3.5:27b-Instruct` — abre chat
-3. `allama stop` — para tudo
+1. `allma serve` — inicia daemon
+2. `allma run Qwen3.5:27b-Instruct` — abre chat
+3. `allma stop` — para tudo
 
 ---
 
@@ -156,13 +156,13 @@ allama run <model>        # Carregar model e abrir chat interativo
 
 ### Após editar código:
 ```bash
-allama stop && allama serve
+allma stop && allma serve
 ```
 Sempre reiniciar o server após mudanças no código (vide memory: feedback_restart_after_edit).
 
-### Criando novo config (physical + logical):
+### Criando novo config (base + profile):
 
-**Physical** (`configs/physical/Model-Name.allm`):
+**Base** (`configs/base/Model-Name.allm`):
 ```ini
 backend = "vllm"
 path = "/home/nick/AI/Models/Model-Name"
@@ -173,10 +173,10 @@ max_num_seqs = 12
 max_num_batched_tokens = 32768
 ```
 
-**Logical** (`configs/logical/Model-Name-Variant.allm`):
+**Profile** (`configs/profile/Model-Name-Variant.allm`):
 ```ini
 name = "Model-Name:Variant"
-physical = "Model-Name"
+base = "Model-Name"
 
 [sampling]
 temperature = 0.7
@@ -210,7 +210,7 @@ response = client.chat.completions.create(
 Compatível com Anthropic API — tool calling é traduzido automaticamente para llama.cpp.
 
 ### Admin
-- `GET /v1/models` — Lista logical models
+- `GET /v1/models` — Lista profiles
 - `POST /v1/load?model=<name>` — Pré-carregar model
 - `GET /v1/ps` — Processos ativos
 - `GET /health` — Health check
@@ -247,12 +247,12 @@ Compatível com Anthropic API — tool calling é traduzido automaticamente para
 
 **Modelo não carrega**
 - Verificar `/home/nick/AI/Models/` — arquivo existe?
-- `allama ps` — qual GPU está usando?
-- `allama logs -f` — erros?
+- `allma ps` — qual GPU está usando?
+- `allma logs -f` — erros?
 
 **VRAM alta**
-- `allama ps` — qual model está rodando?
-- `allama stop` — descarrega tudo
+- `allma ps` — qual model está rodando?
+- `allma stop` — descarrega tudo
 - Editar `KEEP_ALIVE_SECONDS` para descarregar mais rápido
 
 **Erro "port already in use"**
@@ -276,8 +276,8 @@ No settings.json do Claude Code:
 
 ## Notas para Futuras Conversas
 
-- **Memory**: Consultar `/home/nick/.claude/projects/-home-nick-AI-allama/memory/MEMORY.md`
-- **Restart rule**: Sempre `allama stop && allama serve` após editar code
-- **Config pattern**: Physical tem backend/path; Logical tem sampling overrides
+- **Memory**: Consultar `/home/nick/.claude/projects/-home-nick-AI-allma/memory/MEMORY.md`
+- **Restart rule**: Sempre `allma stop && allma serve` após editar code
+- **Config pattern**: Base tem backend/path; Profile tem sampling overrides
 - **OCR configs**: temperature=0, repetition_penalty=1.05, sem top_k/top_p truncation
 - **Models path**: `/home/nick/AI/Models/<ModelName>/`

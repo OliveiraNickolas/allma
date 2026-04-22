@@ -1,5 +1,5 @@
 name = "Qwen3.5:27b-Claude-Opus"
-physical = "Qwen3.5-27b-Claude-Opus-gguf"
+base = "Qwen3.5-27b-Claude-Opus-gguf"
 # thinking ON, general — reasoning distillation from Claude Opus
 
 [sampling]

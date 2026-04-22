@@ -11,13 +11,13 @@ from typing import Any, Dict, Optional
 
 import psutil
 
-from core.config import logger, PHYSICAL_MODELS, LLAMA_CPP_PATH, VLLM_PATH, ALLAMA_LOG_DIR
+from core.config import logger, BASE_MODELS, LLAMA_CPP_PATH, VLLM_PATH, ALLMA_LOG_DIR
 import core.state as state
 
 # ==============================================================================
 # PID REGISTRY — persist backend PIDs to disk for orphan recovery
 # ==============================================================================
-_PID_REGISTRY = ALLAMA_LOG_DIR / "backends.json"
+_PID_REGISTRY = ALLMA_LOG_DIR / "backends.json"
 
 
 def _load_registry() -> dict:
@@ -28,7 +28,7 @@ def _load_registry() -> dict:
 
 
 def _save_registry(data: dict):
-    ALLAMA_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ALLMA_LOG_DIR.mkdir(parents=True, exist_ok=True)
     _PID_REGISTRY.write_text(json.dumps(data, indent=2))
 
 
@@ -53,7 +53,7 @@ def clear_backend_registry():
 
 
 def cleanup_orphaned_backends():
-    """Kill backend processes left over from a previous allama session."""
+    """Kill backend processes left over from a previous allma session."""
     reg = _load_registry()
     if not reg:
         return
@@ -100,9 +100,9 @@ from core.gpu import (
 # ==============================================================================
 # COMMAND BUILDERS
 # ==============================================================================
-def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int | None = None, calib: Any | None = None) -> tuple[list, int, int]:
+def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | None = None, calib: Any | None = None) -> tuple[list, int, int]:
     """Build vLLM command with GPU and tensor parallelism configuration."""
-    cfg = PHYSICAL_MODELS[physical_name]
+    cfg = BASE_MODELS[base_name]
 
     port = state.get_next_vllm_port()
     while not state.is_port_free(port):
@@ -112,9 +112,9 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int 
     if gpu_id is not None:
         selected_gpu = gpu_id
         tp_size = int(cfg.get("tensor_parallel", "1"))
-        logger.info(f"🎯 {physical_name}: Using explicit GPU {gpu_id} (TP={tp_size})")
+        logger.info(f"🎯 {base_name}: Using explicit GPU {gpu_id} (TP={tp_size})")
     else:
-        adj_tp, selected_gpu = find_optimal_tp_and_gpus(physical_name, skip_gpu)
+        adj_tp, selected_gpu = find_optimal_tp_and_gpus(base_name, skip_gpu)
         tp_size = adj_tp
 
     # Use calibrated TP if available
@@ -148,13 +148,13 @@ def build_vllm_cmd(physical_name: str, skip_gpu: int | None = None, gpu_id: int 
     if "max_num_batched_tokens" in cfg:
         cmd += ["--max-num-batched-tokens", str(cfg["max_num_batched_tokens"])]
     cmd.extend(cfg.get("extra_args", []))
-    state.gpu_allocation[physical_name] = selected_gpu
+    state.gpu_allocation[base_name] = selected_gpu
     return cmd, port, selected_gpu
 
 
-def build_llama_cmd(physical_name: str, gpu_id: int | None = None, calib: Any | None = None) -> tuple[list, int, int]:
+def build_llama_cmd(base_name: str, gpu_id: int | None = None, calib: Any | None = None) -> tuple[list, int, int]:
     """Build llama.cpp command with GPU configuration."""
-    cfg = PHYSICAL_MODELS[physical_name]
+    cfg = BASE_MODELS[base_name]
 
     port = state.get_next_llama_port()
     while not state.is_port_free(port):
@@ -162,14 +162,14 @@ def build_llama_cmd(physical_name: str, gpu_id: int | None = None, calib: Any | 
 
     # If gpu_id is explicitly specified, use it; otherwise auto-select or reuse cached
     if gpu_id is not None:
-        state.gpu_allocation[physical_name] = gpu_id
-        logger.info(f"🎯 {physical_name} → GPU {gpu_id} (explicit)")
+        state.gpu_allocation[base_name] = gpu_id
+        logger.info(f"🎯 {base_name} → GPU {gpu_id} (explicit)")
     else:
-        gpu_id = state.gpu_allocation.get(physical_name)
+        gpu_id = state.gpu_allocation.get(base_name)
         if gpu_id is None:
             gpu_id = get_best_gpu()
-            state.gpu_allocation[physical_name] = gpu_id
-        logger.info(f"🎯 {physical_name} → GPU {gpu_id}")
+            state.gpu_allocation[base_name] = gpu_id
+        logger.info(f"🎯 {base_name} → GPU {gpu_id}")
 
     # Determine n_batch (use calibrated if available)
     n_batch = cfg.get("n_batch", "1024")
@@ -232,23 +232,23 @@ def kill_process_tree(pid: int, timeout: int = 2) -> bool:
         return False
 
 
-def shutdown_server(physicalname: str, reason: str = "user", fast: bool = False):
+def shutdown_server(basename: str, reason: str = "user", fast: bool = False):
     proc = None
     port = None
     backend = None
 
     with state.global_lock:
-        if physicalname not in state.active_servers:
-            logger.warning(f"{physicalname} not active")
+        if basename not in state.active_servers:
+            logger.warning(f"{basename} not active")
             return
-        server = state.active_servers[physicalname]
+        server = state.active_servers[basename]
         proc = server["process"]
         pid = proc.pid
         port = server["port"]
         backend = server.get("backend", "unknown")
 
-    remove_backend_pid(physicalname)
-    logger.info(f"📤 Unload {physicalname}:{port} ({reason})")
+    remove_backend_pid(basename)
+    logger.info(f"📤 Unload {basename}:{port} ({reason})")
 
     if proc and proc.poll() is None:
         logger.info(f"💀 Killing PID {pid} ({backend})")
@@ -262,13 +262,13 @@ def shutdown_server(physicalname: str, reason: str = "user", fast: bool = False)
         time.sleep(1 if fast else 3)
 
     with state.global_lock:
-        state.active_servers.pop(physicalname, None)
-        state.server_idle_time.pop(physicalname, None)
-        state.gpu_allocation.pop(physicalname, None)
+        state.active_servers.pop(basename, None)
+        state.server_idle_time.pop(basename, None)
+        state.gpu_allocation.pop(basename, None)
 
     gpus = get_free_gpu_memory()
     freegb = sum(g["free_gb"] for g in gpus)
-    logger.info(f"🗑️  {physicalname} unloaded. VRAM free: {freegb:.1f}GB")
+    logger.info(f"🗑️  {basename} unloaded. VRAM free: {freegb:.1f}GB")
 
 
 def list_gpu_processes(gpu_ids: Optional[list[int]] = None) -> list[Dict[str, Any]]:
@@ -297,7 +297,7 @@ def list_gpu_processes(gpu_ids: Optional[list[int]] = None) -> list[Dict[str, An
 
 
 def kill_vram_fast():
-    """Kill only processes managed by Allama (active_servers)."""
+    """Kill only processes managed by Allma (active_servers)."""
     logger.info("🔨 Aggressive VRAM shutdown initiated...")
     pids_killed = []
 
@@ -324,11 +324,11 @@ def kill_vram_fast():
             pid = int(parts[0].strip())
             procname = parts[1].strip().lower()
 
-            if pid == state.ALLAMA_PID:
-                logger.debug(f"Skipping ALLAMA itself (PID {state.ALLAMA_PID})")
+            if pid == state.ALLMA_PID:
+                logger.debug(f"Skipping ALLMA itself (PID {state.ALLMA_PID})")
                 continue
             if pid not in known_pids:
-                logger.debug(f"Skipping external process {pid} ({procname}) - not managed by Allama")
+                logger.debug(f"Skipping external process {pid} ({procname}) - not managed by Allma")
                 continue
 
             logger.info(f"Killing managed PID {pid} ({procname})")
@@ -340,13 +340,13 @@ def kill_vram_fast():
                 logger.error(f"Error killing {pid}: {e}")
 
         if pids_killed:
-            logger.info(f"Shutdown complete: {len(pids_killed)} ALLAMA-managed processes")
+            logger.info(f"Shutdown complete: {len(pids_killed)} ALLMA-managed processes")
             time.sleep(2)
             gpus = get_free_gpu_memory()
             freegb = sum(g["free_gb"] for g in gpus)
             logger.info(f"VRAM Free after shutdown: {freegb:.1f}GB")
         else:
-            logger.info("No ALLAMA-managed processes to shutdown")
+            logger.info("No ALLMA-managed processes to shutdown")
     except Exception as e:
         logger.error(f"Error in killvramfast: {e}")
         logger.error(traceback.format_exc())

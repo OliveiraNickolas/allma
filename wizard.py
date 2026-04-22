@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Allama TUI — Model Import Wizard
-Multi-step wizard for adding physical + logical model configs.
+Allma TUI — Model Import Wizard
+Multi-step wizard for adding base + profile model configs.
 """
 import json
 import re
@@ -19,8 +19,8 @@ from textual.widgets import Button, Input, Label, Select, Static
 from create_config import (
     FAMILY_PRESETS,
     detect_model,
-    generate_logical_allm,
-    generate_physical_allm,
+    generate_profile_allm,
+    generate_base_allm,
     suggest_max_len,
     suggest_tp,
     get_gpus,
@@ -56,7 +56,7 @@ class WizardState:
     n_threads:    str  = "16"
     n_gpu_layers: str  = "-1"
     extra_args:   list = field(default_factory=list)
-    logical_profiles: list = field(default_factory=list)
+    profiles: list = field(default_factory=list)
 
 
 def _nav_panel(current: int) -> str:
@@ -120,7 +120,7 @@ class WizardStep1Screen(Screen):
                             yield Static("", id="detect-status")
                         with Container(id="tip-box"):
                             yield Static(
-                                "  O Allama procurará arquivos de pesos nesta pasta (GGUF, SafeTensors).",
+                                "  O Allma procurará arquivos de pesos nesta pasta (GGUF, SafeTensors).",
                                 id="tip-text",
                             )
                         with Horizontal(id="wizard-nav"):
@@ -201,7 +201,7 @@ class WizardStep2Screen(Screen):
                         yield Static(_nav_panel(2), id="nav-text")
                     with Vertical(id="step-content"):
                         with ScrollableContainer(id="wizard-container"):
-                            yield _section("Allama analisou o diretório")
+                            yield _section("Allma analisou o diretório")
                             yield Static(self._summary_text(info, gpus, preset), id="detect-summary")
 
                             yield _section("Escolha o backend de inferência:")
@@ -368,8 +368,8 @@ class WizardStep3Screen(Screen):
                                 yield Label("  Nome do modelo físico:")
                                 yield Input(value=d["phys_name"], id="phys-name")
                                 yield _hint(
-                                    "Nome interno no Allama.\n"
-                                    "  Vira o arquivo: configs/physical/<nome>.allm"
+                                    "Nome interno no Allma.\n"
+                                    "  Vira o arquivo: configs/base/<nome>.allm"
                                 )
 
                             if backend == "vllm":
@@ -495,7 +495,7 @@ class WizardStep4Screen(Screen):
         base = phys[:m.start()] + ":" + phys[m.start() + 1:] if m else phys
 
         variants = []
-        for key, override in preset.get("logical_variants", {"default": {}}).items():
+        for key, override in preset.get("profile_variants", {"default": {}}).items():
             sampling = {**preset["sampling"], **override}
             name     = base if key == "default" else f"{base}-{key}"
             variants.append({"key": key, "name": name, "sampling": sampling})
@@ -589,7 +589,7 @@ class WizardStep4Screen(Screen):
             profiles.append({"name": name, "sampling": sampling})
 
         state = deepcopy(self._state)
-        state.logical_profiles = profiles
+        state.profiles = profiles
         self.app.push_screen(WizardStep5Screen(state))
 
     def action_back(self) -> None:
@@ -617,7 +617,7 @@ class WizardStep5Screen(Screen):
         else:
             preset["llama_extra_args"] = s.extra_args
 
-        content = generate_physical_allm(
+        content = generate_base_allm(
             name        = s.phys_name,
             info        = {**info, "backend": s.backend},
             preset      = preset,
@@ -644,16 +644,16 @@ class WizardStep5Screen(Screen):
         lines = [
             "",
             "  ══ FÍSICO ════════════════════════════════════════",
-            f"  configs/physical/{s.phys_name}.allm",
+            f"  configs/base/{s.phys_name}.allm",
             "  ──────────────────────────────────────────────────",
         ]
         for line in phys.splitlines():
             lines.append(f"  {line}")
         lines.append("")
-        for p in s.logical_profiles:
-            lc = generate_logical_allm(p["name"], s.phys_name, p["sampling"])
+        for p in s.profiles:
+            lc = generate_profile_allm(p["name"], s.phys_name, p["sampling"])
             lines.append(f"  ══ LÓGICO: {p['name']} ══════════════════════════")
-            lines.append(f"  configs/logical/{p['name'].replace(':', '-')}.allm")
+            lines.append(f"  configs/profile/{p['name'].replace(':', '-')}.allm")
             lines.append("  ──────────────────────────────────────────────────")
             for line in lc.splitlines():
                 lines.append(f"  {line}")
@@ -670,13 +670,13 @@ class WizardStep5Screen(Screen):
                         with ScrollableContainer(id="wizard-container"):
                             yield _section("Verifique os arquivos que serão criados")
                             yield _hint(
-                                "Após salvar, reinicie o Allama para carregar o novo modelo."
+                                "Após salvar, reinicie o Allma para carregar o novo modelo."
                             )
                             yield Static(self._preview_text(), id="preview-text", classes="wizard-preview")
                             yield Static("", id="save-status")
                         with Container(id="tip-box"):
                             yield Static(
-                                "  Este modelo aparecerá na lista principal após salvar e reiniciar o Allama.",
+                                "  Este modelo aparecerá na lista principal após salvar e reiniciar o Allma.",
                                 id="tip-text",
                             )
                         with Horizontal(id="wizard-nav"):
@@ -697,8 +697,8 @@ class WizardStep5Screen(Screen):
     def _do_save(self) -> None:
         s        = self._state
         status   = self.query_one("#save-status", Static)
-        phys_dir = CONFIG_DIR / "physical"
-        log_dir  = CONFIG_DIR / "logical"
+        phys_dir = CONFIG_DIR / "base"
+        log_dir  = CONFIG_DIR / "profile"
         phys_dir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -706,8 +706,8 @@ class WizardStep5Screen(Screen):
             phys_file.write_text(self._phys_content())
             saved = [str(phys_file)]
 
-            for p in s.logical_profiles:
-                content  = generate_logical_allm(p["name"], s.phys_name, p["sampling"])
+            for p in s.profiles:
+                content  = generate_profile_allm(p["name"], s.phys_name, p["sampling"])
                 log_file = log_dir / f"{p['name'].replace(':', '-')}.allm"
                 log_file.write_text(content)
                 saved.append(str(log_file))
@@ -715,7 +715,7 @@ class WizardStep5Screen(Screen):
             self._saved = True
             msg = "  [#007878]✔ Arquivos salvos com sucesso:[/#007878]\n"
             msg += "\n".join(f"    {f}" for f in saved)
-            msg += "\n\n  [#007878]Reinicie o Allama para carregar o novo modelo.[/#007878]"
+            msg += "\n\n  [#007878]Reinicie o Allma para carregar o novo modelo.[/#007878]"
             status.update(msg)
             btn = self.query_one("#save-btn", Button)
             btn.label    = "SALVO  ✔"

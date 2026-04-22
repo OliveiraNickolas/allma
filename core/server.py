@@ -8,16 +8,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.config import (
     logger,
-    LOGICAL_MODELS,
-    PHYSICAL_MODELS,
+    PROFILE_MODELS,
+    BASE_MODELS,
     MAX_MESSAGES,
     KEEP_ALIVE_SECONDS,
-    ALLAMA_PORT,
+    ALLMA_PORT,
     RICH_AVAILABLE,
     format_user_agent,
 )
 import core.state as state
-from core.loader import ensure_physical_model
+from core.loader import ensure_base_model
 from core.process import shutdown_server
 from core.error_detector import ErrorDetector
 
@@ -27,7 +27,7 @@ from core.error_detector import ErrorDetector
 import os as _os
 
 def _get_template_file(cfg: dict) -> str | None:
-    """Extract --chat-template-file path from physical config extra_args."""
+    """Extract --chat-template-file path from base config extra_args."""
     args = cfg.get("extra_args", [])
     for i, arg in enumerate(args):
         if arg == "--chat-template-file" and i + 1 < len(args):
@@ -95,7 +95,7 @@ async def close_http_client():
 # ==============================================================================
 async def lifespan(app: FastAPI):
     yield
-    logger.info("🛑 Shutting down Allama...")
+    logger.info("🛑 Shutting down Allma...")
     with state.global_lock:
         names = list(state.active_servers.keys())
     for name in names:
@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):
     await close_http_client()
 
 
-app = FastAPI(title="Allama - LLM API", lifespan=lifespan)
+app = FastAPI(title="Allma - LLM API", lifespan=lifespan)
 
 
 @app.post("/v1/chat/completions")
@@ -116,7 +116,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})"
     )
 
-    if model_name not in LOGICAL_MODELS:
+    if model_name not in PROFILE_MODELS:
         return JSONResponse(
             status_code=404,
             content={"error": f"Model '{model_name}' not found"},
@@ -125,12 +125,12 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     if "messages" in body and MAX_MESSAGES > 0:
         body["messages"] = body["messages"][-MAX_MESSAGES:]
 
-    logical_cfg = LOGICAL_MODELS[model_name]
-    physical_name = logical_cfg["physical"]
-    cfg = PHYSICAL_MODELS[physical_name]
+    logical_cfg = PROFILE_MODELS[model_name]
+    base_name = logical_cfg["base"]
+    cfg = BASE_MODELS[base_name]
     backend = cfg.get("backend", "vllm")
 
-    port = await ensure_physical_model(physical_name, model_name)
+    port = await ensure_base_model(base_name, model_name)
 
     if backend == "vllm":
         body["model"] = cfg["path"]
@@ -155,7 +155,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     if backend == "llama.cpp" and (logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower()):
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
-    logger.debug(f"{model_name} -> {physical_name}:{port} ({backend})")
+    logger.debug(f"{model_name} -> {base_name}:{port} ({backend})")
 
     if "messages" not in body or not body["messages"]:
         logger.warning("⚠️  Empty messages request")
@@ -255,7 +255,7 @@ async def messages(request: Request, body: dict = Body(...)):
 
     logger.info(f"📤 [HTTP] {request.method} {request.url.path} from {client_host} (🖥️  {format_user_agent(user_agent)})")
 
-    if model_name not in LOGICAL_MODELS:
+    if model_name not in PROFILE_MODELS:
         with state.global_lock:
             loaded = [
                 name
@@ -263,25 +263,25 @@ async def messages(request: Request, body: dict = Body(...)):
                 if srv.get("process") and srv["process"].poll() is None
             ]
         if loaded:
-            physical = loaded[0]
+            base = loaded[0]
             model_name = next(
-                (k for k, v in LOGICAL_MODELS.items() if v["physical"] == physical),
+                (k for k, v in PROFILE_MODELS.items() if v["base"] == base),
                 None,
             )
             if model_name and model_name != body.get("model"):
-                logger.info(f"🔄 Auto-switch: {body.get('model')} -> {model_name} (using loaded {physical})")
-        if not model_name or model_name not in LOGICAL_MODELS:
+                logger.info(f"🔄 Auto-switch: {body.get('model')} -> {model_name} (using loaded {base})")
+        if not model_name or model_name not in PROFILE_MODELS:
             return JSONResponse(
                 status_code=404,
                 content={"error": f"Model '{body.get('model')}' not found"},
             )
 
-    logical_cfg = LOGICAL_MODELS[model_name]
-    physical_name = logical_cfg["physical"]
-    cfg = PHYSICAL_MODELS[physical_name]
+    logical_cfg = PROFILE_MODELS[model_name]
+    base_name = logical_cfg["base"]
+    cfg = BASE_MODELS[base_name]
     backend = cfg.get("backend", "vllm")
 
-    port = await ensure_physical_model(physical_name, model_name)
+    port = await ensure_base_model(base_name, model_name)
 
     max_model_len = int(cfg.get("max_model_len") or cfg.get("n_ctx") or "40960")
     max_output_cap = max_model_len // 4
@@ -290,7 +290,7 @@ async def messages(request: Request, body: dict = Body(...)):
         logger.info(f"⚠️  max_tokens {requested} -> {max_output_cap}")
         body["max_tokens"] = max_output_cap
 
-    logger.debug(f"{model_name} -> {physical_name}:{port} ({backend})")
+    logger.debug(f"{model_name} -> {base_name}:{port} ({backend})")
 
     client = await get_http_client()
 
@@ -646,7 +646,7 @@ async def messages(request: Request, body: dict = Body(...)):
 async def models_list():
     return {
         "object": "list",
-        "data": [{"id": k, "object": "model"} for k in sorted(LOGICAL_MODELS.keys())],
+        "data": [{"id": k, "object": "model"} for k in sorted(PROFILE_MODELS.keys())],
     }
 
 
@@ -770,16 +770,16 @@ async def load_model(body: dict = Body(...)):
     """Pre-load a model without generating any tokens."""
     model_name = body.get("model", "")
     gpu_id = body.get("gpu_id")  # Optional: force specific GPU
-    if model_name not in LOGICAL_MODELS:
+    if model_name not in PROFILE_MODELS:
         return JSONResponse(
             status_code=404,
             content={"error": f"Model '{model_name}' not found"},
         )
-    logical_cfg = LOGICAL_MODELS[model_name]
-    physical_name = logical_cfg["physical"]
-    cfg = PHYSICAL_MODELS[physical_name]
+    logical_cfg = PROFILE_MODELS[model_name]
+    base_name = logical_cfg["base"]
+    cfg = BASE_MODELS[base_name]
     backend = cfg.get("backend", "vllm")
-    await ensure_physical_model(physical_name, model_name, gpu_id=gpu_id)
+    await ensure_base_model(base_name, model_name, gpu_id=gpu_id)
     return JSONResponse({"status": "loaded", "model": model_name, "backend": backend})
 
 
@@ -789,15 +789,15 @@ async def load_model(body: dict = Body(...)):
 def show_banner():
     if not RICH_AVAILABLE:
         logger.info("=" * 60)
-        logger.info("Allama Started")
+        logger.info("Allma Started")
         logger.info("=" * 60)
-        for name in PHYSICAL_MODELS:
-            from core.config import ALLAMA_LOG_DIR
-            logger.info(f"   - {name} - tail -f {ALLAMA_LOG_DIR}/{name}.log")
+        for name in BASE_MODELS:
+            from core.config import ALLMA_LOG_DIR
+            logger.info(f"   - {name} - tail -f {ALLMA_LOG_DIR}/{name}.log")
         logger.info("=" * 60)
-        logger.info(f"Models configured: {len(PHYSICAL_MODELS)} physical, {len(LOGICAL_MODELS)} logical")
+        logger.info(f"Models configured: {len(BASE_MODELS)} base, {len(PROFILE_MODELS)} profile")
         logger.info(f"Keep-alive: {KEEP_ALIVE_SECONDS}s")
-        logger.info(f"API: http://127.0.0.1:{ALLAMA_PORT}")
+        logger.info(f"API: http://127.0.0.1:{ALLMA_PORT}")
         logger.info("=" * 60)
         return
 
@@ -845,7 +845,7 @@ def show_banner():
             'L': ["█    ", "█    ", "█    ", "█    ", "█████"],
             'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
         }
-        word, starts = list("ALLAMA"), [0, 6, 12, 18, 24, 30]
+        word, starts = list("ALLMA"), [0, 6, 12, 18, 24, 30]
         canvas = [[0] * 36 for _ in range(5)]
         for ch, col in zip(word, starts):
             for r, row in enumerate(CHARS[ch]):
@@ -875,13 +875,13 @@ def show_banner():
             logo_text.append("\n")
     # ── configuration summary ─────────────────────────────────────────────────
     cfg_line = Text()
-    cfg_line.append(f"  {len(PHYSICAL_MODELS)}", style=f"bold {C_FG}")
-    cfg_line.append(" phys  ·  " if _narrow else " physical model(s)  ·  ", style=C_DIM)
-    cfg_line.append(f"{len(LOGICAL_MODELS)}", style=f"bold {C_FG}")
-    cfg_line.append(" logical  ·  keep-alive: " if _narrow else " logical model(s)  ·  keep-alive: ", style=C_DIM)
+    cfg_line.append(f"  {len(BASE_MODELS)}", style=f"bold {C_FG}")
+    cfg_line.append(" phys  ·  " if _narrow else " base model(s)  ·  ", style=C_DIM)
+    cfg_line.append(f"{len(PROFILE_MODELS)}", style=f"bold {C_FG}")
+    cfg_line.append(" profile  ·  keep-alive: " if _narrow else " profile model(s)  ·  keep-alive: ", style=C_DIM)
     cfg_line.append(f"{KEEP_ALIVE_SECONDS}s", style=f"bold {C_FG}")
 
-    # ── physical models table — sorted by backend group then size desc ───────
+    # ── base models table — sorted by backend group then size desc ───────
     import re as _re
 
     def _param_b(model_name: str) -> float:
@@ -889,7 +889,7 @@ def show_banner():
         return float(m.group(1)) if m else 0.0
 
     sorted_phys = sorted(
-        PHYSICAL_MODELS.items(),
+        BASE_MODELS.items(),
         key=lambda kv: (
             0 if kv[1].get("backend", "vllm") == "vllm" else 1,  # vllm first
             -_param_b(kv[0]),                                      # larger first
@@ -928,21 +928,21 @@ def show_banner():
             phys_tbl.add_row(_name, _label, str(_ctx), _gpu_str,
                              end_section=_end_sec)
 
-    # ── logical models table — grouped by physical backend, sorted by size ───
+    # ── profile models table — grouped by base backend, sorted by size ───
     def _log_sort_key(kv):
         _lname, _lcfg = kv
-        _phys_name = _lcfg.get("physical", "")
-        _phys_cfg  = PHYSICAL_MODELS.get(_phys_name, {})
+        _phys_name = _lcfg.get("base", "")
+        _phys_cfg  = BASE_MODELS.get(_phys_name, {})
         _backend   = _phys_cfg.get("backend", "vllm")
         _group     = 0 if _backend == "vllm" else 1
         return (_group, -_param_b(_phys_name), _phys_name.lower(), _lname.lower())
 
-    sorted_log = sorted(LOGICAL_MODELS.items(), key=_log_sort_key)
+    sorted_log = sorted(PROFILE_MODELS.items(), key=_log_sort_key)
 
-    # group by physical backend for separator
+    # group by base backend for separator
     _log_groups: dict[str, list] = {}
     for _n, _c in sorted_log:
-        _phys_cfg = PHYSICAL_MODELS.get(_c.get("physical", ""), {})
+        _phys_cfg = BASE_MODELS.get(_c.get("base", ""), {})
         _g = "vllm" if _phys_cfg.get("backend", "vllm") == "vllm" else "gguf"
         _log_groups.setdefault(_g, []).append((_n, _c))
 
@@ -966,7 +966,7 @@ def show_banner():
             _end_sec  = (_i == len(_items) - 1) and not _is_last_group
             log_tbl.add_row(
                 _lname,
-                _lcfg.get("physical", "—"),
+                _lcfg.get("base", "—"),
                 str(_sampling.get("temperature", "—")),
                 str(_sampling.get("top_p",       "—")),
                 str(_sampling.get("top_k",       "—")),
@@ -994,14 +994,14 @@ def show_banner():
 
     phys_panel = Panel(
         phys_tbl,
-        title=_sec_title("Physical Models"), title_align="left",
+        title=_sec_title("Base Models"), title_align="left",
         box=_box.SQUARE, border_style=C_DIM,
         style=_S, padding=_inner_pad,
     )
 
     log_panel = Panel(
         log_tbl,
-        title=_sec_title("Logical Models"), title_align="left",
+        title=_sec_title("Profile Models"), title_align="left",
         box=_box.SQUARE, border_style=C_DIM,
         style=_S, padding=_inner_pad,
     )
@@ -1012,9 +1012,9 @@ def show_banner():
     status_line.append("READY", style=f"bold {C_OK}")
     status_line.append("  ·  ", style=C_DIM)
     if _narrow:
-        status_line.append(f":{ALLAMA_PORT}", style=C_ACCENT)
+        status_line.append(f":{ALLMA_PORT}", style=C_ACCENT)
     else:
-        status_line.append(f"http://127.0.0.1:{ALLAMA_PORT}", style=C_ACCENT)
+        status_line.append(f"http://127.0.0.1:{ALLMA_PORT}", style=C_ACCENT)
         status_line.append("  ·  Ctrl+C to stop", style=C_DIM)
 
     status_panel = Panel(

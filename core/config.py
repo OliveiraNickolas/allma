@@ -77,7 +77,7 @@ def _parse_int(key: str, default: int) -> int:
         print(f"ERROR: {key}={os.environ.get(key)} is not a valid integer. Using default: {default}")
         return default
 
-ALLAMA_PORT = _parse_int("ALLAMA_PORT", 9000)
+ALLMA_PORT = _parse_int("ALLMA_PORT", 9000)
 VLLM_BASE_PORT = _parse_int("VLLM_BASE_PORT", 8000)
 LLAMA_BASE_PORT = _parse_int("LLAMA_BASE_PORT", 9001)
 KEEP_ALIVE_SECONDS = _parse_int("KEEP_ALIVE_SECONDS", 600)
@@ -86,9 +86,9 @@ AUTO_SWAP_ENABLED = os.environ.get("AUTO_SWAP_ENABLED", "true").lower() == "true
 MAX_MESSAGES = _parse_int("MAX_MESSAGES", 15)
 
 SCRIPT_DIR = Path(__file__).parent.parent  # allama/ root
-ALLAMA_LOG_DIR = Path(os.environ.get("ALLAMA_LOG_DIR", str(SCRIPT_DIR / "logs")))
-CONFIG_DIR = Path(os.environ.get("ALLAMA_CONFIG_DIR", str(SCRIPT_DIR / "configs")))
-PATH_TO_ALLAMA = os.environ.get("PATH_TO_ALLAMA", str(SCRIPT_DIR.parent))
+ALLMA_LOG_DIR = Path(os.environ.get("ALLMA_LOG_DIR", str(SCRIPT_DIR / "logs")))
+CONFIG_DIR = Path(os.environ.get("ALLMA_CONFIG_DIR", str(SCRIPT_DIR / "configs")))
+PATH_TO_ALLMA = os.environ.get("PATH_TO_ALLMA", str(SCRIPT_DIR.parent))
 def _find_llama_server() -> str:
     """Find llama-server binary: env var → PATH → common locations."""
     from shutil import which
@@ -120,7 +120,7 @@ def _find_vllm() -> str:
     # 1. Explicit env var
     if (env := os.environ.get("VLLM_PATH")):
         return env
-    # 2. venv sibling to the core/ package (most common allama setup)
+    # 2. venv sibling to the core/ package (most common allma setup)
     venv_bin = SCRIPT_DIR / "venv" / "bin" / "vllm"
     if venv_bin.exists():
         return str(venv_bin)
@@ -135,10 +135,10 @@ VLLM_PATH = _find_vllm()
 # ==============================================================================
 # LOGGING SETUP
 # ==============================================================================
-ALLAMA_LOG_DIR.mkdir(exist_ok=True)
+ALLMA_LOG_DIR.mkdir(exist_ok=True)
 
 file_handler = logging.handlers.RotatingFileHandler(
-    str(ALLAMA_LOG_DIR / "allama.log"),
+    str(ALLMA_LOG_DIR / "allma.log"),
     maxBytes=10_485_760,
     backupCount=5,
     encoding="utf-8",
@@ -154,7 +154,7 @@ root_logger.addHandler(file_handler)
 root_logger.addHandler(console_handler)
 root_logger.setLevel(logging.INFO)
 
-logger = logging.getLogger("Allama")
+logger = logging.getLogger("Allma")
 
 for _uv in ["uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.info"]:
     _uv_log = logging.getLogger(_uv)
@@ -224,4 +224,4 @@ def load_models_from_configs() -> tuple[dict, dict]:
         return {}, {}
 
 
-PHYSICAL_MODELS, LOGICAL_MODELS = load_models_from_configs()
+BASE_MODELS, PROFILE_MODELS = load_models_from_configs()

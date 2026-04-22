@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Allama Config Creator — gera arquivos .allm para modelos baixados.
+Allma Config Creator — gera arquivos .allm para modelos baixados.
 
 Uso:
     python create_config.py /path/to/model
@@ -58,7 +58,7 @@ FAMILY_PRESETS = {
             "min_p": "0.0",
             "presence_penalty": "1.5",
         },
-        "logical_variants": {
+        "profile_variants": {
             "default":   {"temperature": "0.7", "top_p": "0.8",  "top_k": "20", "presence_penalty": "1.5"},
             "Instruct":  {"temperature": "0.7", "top_p": "0.8",  "top_k": "20"},
             "Reasoning": {"temperature": "0.6", "top_p": "0.95", "top_k": "20"},
@@ -90,7 +90,7 @@ FAMILY_PRESETS = {
             "min_p": "0.0",
             "presence_penalty": "1.5",
         },
-        "logical_variants": {
+        "profile_variants": {
             "default": {"temperature": "0.7", "top_p": "0.8",  "top_k": "20", "presence_penalty": "1.5"},
             "Caption": {"temperature": "0.3", "top_p": "0.9",  "top_k": "20"},
         },
@@ -110,7 +110,7 @@ FAMILY_PRESETS = {
             "top_k": "20",
             "min_p": "0.0",
         },
-        "logical_variants": {
+        "profile_variants": {
             "default":   {"temperature": "0.7", "top_p": "0.8",  "top_k": "20"},
             "Reasoning": {"temperature": "0.6", "top_p": "0.95", "top_k": "20"},
         },
@@ -130,7 +130,7 @@ FAMILY_PRESETS = {
             "top_k": "40",
             "min_p": "0.0",
         },
-        "logical_variants": {
+        "profile_variants": {
             "default":   {"temperature": "0.6", "top_p": "0.95", "top_k": "40"},
             "Reasoning": {"temperature": "0.5", "top_p": "0.95", "top_k": "20"},
         },
@@ -149,7 +149,7 @@ FAMILY_PRESETS = {
             "top_k": "40",
             "min_p": "0.0",
         },
-        "logical_variants": {
+        "profile_variants": {
             "default": {"temperature": "0.7", "top_p": "0.9", "top_k": "40"},
             "Code":    {"temperature": "0.3", "top_p": "0.9", "top_k": "20"},
         },
@@ -168,7 +168,7 @@ FAMILY_PRESETS = {
             "top_k": "40",
             "min_p": "0.0",
         },
-        "logical_variants": {
+        "profile_variants": {
             "default": {"temperature": "0.7", "top_p": "0.9", "top_k": "40"},
         },
     },
@@ -183,7 +183,7 @@ FAMILY_PRESETS = {
             "top_k": "64",
             "min_p": "0.0",
         },
-        "logical_variants": {
+        "profile_variants": {
             "default": {"temperature": "1.0", "top_p": "0.95", "top_k": "64"},
         },
     },
@@ -200,7 +200,7 @@ FAMILY_PRESETS = {
             "top_k": "0",
             "min_p": "0.0",
         },
-        "logical_variants": {
+        "profile_variants": {
             "default": {"temperature": "0.0", "top_p": "1.0"},
         },
     },
@@ -215,7 +215,7 @@ FAMILY_PRESETS = {
             "top_k": "40",
             "min_p": "0.0",
         },
-        "logical_variants": {
+        "profile_variants": {
             "default": {"temperature": "0.7", "top_p": "0.9", "top_k": "40"},
         },
     },
@@ -449,7 +449,7 @@ def render_extra_args(args: list) -> str:
     return f"[\n\t{items}\n]"
 
 
-def generate_physical_allm(
+def generate_base_allm(
     name: str,
     info: dict,
     preset: dict,
@@ -459,7 +459,7 @@ def generate_physical_allm(
     mmproj_path: str | None,
 ) -> str:
     """Gera o conteúdo do arquivo .allm físico."""
-    lines = [f"# Physical model: {name} ({info['backend']} backend)\n"]
+    lines = [f"# Base model: {name} ({info['backend']} backend)\n"]
 
     if info["backend"] == "vllm":
         extra_args = render_extra_args(preset.get("vllm_extra_args", []))
@@ -496,16 +496,16 @@ def generate_physical_allm(
     return "\n".join(lines) + "\n"
 
 
-def generate_logical_allm(
-    logical_name: str,
-    physical_name: str,
+def generate_profile_allm(
+    profile_name: str,
+    base_name: str,
     sampling: dict,
 ) -> str:
     """Gera o conteúdo do arquivo .allm lógico."""
     lines = [
-        f"# Logical model: {logical_name}",
-        f'name = "{logical_name}"',
-        f'physical = "{physical_name}"',
+        f"# Profile model: {profile_name}",
+        f'name = "{profile_name}"',
+        f'base = "{base_name}"',
         "",
         "[sampling]",
     ]
@@ -590,7 +590,7 @@ def pick_gguf(gguf_files: list, auto: bool) -> str | None:
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Gerador de configs .allm para modelos Allama",
+        description="Gerador de configs .allm para modelos Allma",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=dedent("""\
             Exemplos:
@@ -601,7 +601,7 @@ def main():
     parser.add_argument("model_path", help="Pasta do modelo baixado")
     parser.add_argument("--name", "-n", help="Nome base para os configs (ex: Qwen3.5-9b)")
     parser.add_argument("--yes",  "-y", action="store_true", help="Aceitar todos os defaults sem perguntar")
-    parser.add_argument("--config-dir", default="configs", help="Diretório de configs do Allama (default: configs)")
+    parser.add_argument("--config-dir", default="configs", help="Diretório de configs do Allma (default: configs)")
     args = parser.parse_args()
 
     auto = args.yes
@@ -613,7 +613,7 @@ def main():
         sys.exit(1)
 
     print(bold(f"\n{'═'*60}"))
-    print(bold(f"  Allama Config Creator"))
+    print(bold(f"  Allma Config Creator"))
     print(bold(f"{'═'*60}"))
     print(f"  Pasta: {cyan(str(model_path))}")
 
@@ -643,7 +643,7 @@ def main():
     default_name = default_name.replace("/", "-").replace(" ", "-")
 
     print(f"\n{bold('⚙️  Configuração do modelo físico:')}")
-    phys_name = ask("Nome físico (arquivo em configs/physical/)", default_name, auto)
+    phys_name = ask("Nome físico (arquivo em configs/base/)", default_name, auto)
 
     # ── Backend ──────────────────────────────────────────────────────────────
     backend = ask("Backend (vllm / llama.cpp)", info["backend"], auto)
@@ -686,8 +686,8 @@ def main():
     else:
         preset_copy["llama_extra_args"] = extra_args
 
-    # ── Gera physical.allm ───────────────────────────────────────────────────
-    phys_content = generate_physical_allm(
+    # ── Gera base.allm ───────────────────────────────────────────────────
+    phys_content = generate_base_allm(
         name=phys_name,
         info={**info, "backend": backend},
         preset=preset_copy,
@@ -713,22 +713,22 @@ def main():
 
     # ── Variantes lógicas ────────────────────────────────────────────────────
     print(f"\n{bold('🧩 Modelos lógicos (samplings):')}")
-    variants = preset.get("logical_variants", {"default": preset["sampling"]})
+    variants = preset.get("profile_variants", {"default": preset["sampling"]})
 
     # Deriva nome base lógico do nome físico (ex: "Qwen3.5-9b" → "Qwen3.5:9b")
     import re
     m = re.search(r"-(\d+\.?\d*[bBmM])", phys_name)
-    logical_base = phys_name[:m.start()] + ":" + phys_name[m.start() + 1:] if m else phys_name
+    profile_base = phys_name[:m.start()] + ":" + phys_name[m.start() + 1:] if m else phys_name
 
-    logical_configs = []
+    profile_configs = []
     for variant_key, variant_sampling in variants.items():
         if variant_key == "default":
-            default_logical = logical_base
+            default_profile = profile_base
         else:
-            default_logical = f"{logical_base}-{variant_key}"
+            default_profile = f"{profile_base}-{variant_key}"
 
         print(f"\n  {bold(f'Variante: {variant_key}')}")
-        log_name = ask("  Nome lógico", default_logical, auto)
+        log_name = ask("  Nome do perfil", default_profile, auto)
 
         # Sampling
         sampling = dict(preset["sampling"])
@@ -741,16 +741,16 @@ def main():
                 if new_v:
                     sampling[k] = new_v
 
-        log_content = generate_logical_allm(log_name, phys_name, sampling)
-        logical_configs.append((log_name, log_content))
+        log_content = generate_profile_allm(log_name, phys_name, sampling)
+        profile_configs.append((log_name, log_content))
 
     # ── Preview ───────────────────────────────────────────────────────────────
-    print(f"\n{bold('📄 Preview — physical:')}")
+    print(f"\n{bold('📄 Preview — base:')}")
     for line in phys_content.splitlines():
         print(f"  {dim(line)}")
 
-    for log_name, log_content in logical_configs:
-        print(f"\n{bold(f'📄 Preview — logical ({log_name}):')}")
+    for log_name, log_content in profile_configs:
+        print(f"\n{bold(f'📄 Preview — profile ({log_name}):')}")
         for line in log_content.splitlines():
             print(f"  {dim(line)}")
 
@@ -760,8 +760,8 @@ def main():
         print(yellow("  Cancelado."))
         sys.exit(0)
 
-    phys_dir = config_dir / "physical"
-    log_dir  = config_dir / "logical"
+    phys_dir = config_dir / "base"
+    log_dir  = config_dir / "profile"
     phys_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -776,7 +776,7 @@ def main():
         phys_file.write_text(phys_content)
         print(green(f"  ✔ {phys_file}"))
 
-    for log_name, log_content in logical_configs:
+    for log_name, log_content in profile_configs:
         log_file = log_dir / f"{log_name.replace(':', '-')}.allm"
         if log_file.exists() and not auto:
             if not ask_yes(f"  {log_file} já existe — sobrescrever?", auto):
@@ -785,7 +785,7 @@ def main():
         log_file.write_text(log_content)
         print(green(f"  ✔ {log_file}"))
 
-    print(f"\n{green(bold('✅ Concluído!'))} Reinicie o Allama para carregar os novos configs.\n")
+    print(f"\n{green(bold('✅ Concluído!'))} Reinicie o Allma para carregar os novos configs.\n")
 
 
 if __name__ == "__main__":

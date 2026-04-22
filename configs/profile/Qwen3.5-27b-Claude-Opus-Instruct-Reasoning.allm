@@ -1,5 +1,5 @@
-name = "Qwen3.5:35b-Uncensored-Instruct-Reasoning"
-physical = "Qwen3.5-35b-Uncensored-gguf"
+name = "Qwen3.5:27b-Claude-Opus-Instruct-Reasoning"
+base = "Qwen3.5-27b-Claude-Opus-gguf"
 enable_thinking = false
 
 [sampling]

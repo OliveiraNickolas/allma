@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Allama — entry point.
+Allma — entry point.
 """
 import asyncio
 import os
@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import uvicorn
 
-from core.config import ALLAMA_PORT, logger
+from core.config import ALLMA_PORT, logger
 from core.server import app, close_http_client, show_banner
 from core.health import health_monitor
 from core.process import kill_process_tree, cleanup_orphaned_backends, clear_backend_registry
@@ -89,7 +89,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    uvicorn.run(app, host="127.0.0.1", port=ALLAMA_PORT)
+    uvicorn.run(app, host="127.0.0.1", port=ALLMA_PORT)
 
 
 if __name__ == "__main__":

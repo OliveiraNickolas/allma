@@ -1,6 +1,6 @@
-name = "Qwen3.6:35b-Code"
-physical = "Qwen3.6-35B-A3B-fp8"
-# thinking ON, precise coding — Qwen3.6 official
+name = "Qwen3.5:35b-Uncensored-Code"
+base = "Qwen3.5-35b-Uncensored-gguf"
+# thinking ON, precise coding
 
 [sampling]
 temperature = 0.6

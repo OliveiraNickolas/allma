@@ -1,4 +1,4 @@
-# 🎬 Your Personalized Allama Setup Guide
+# 🎬 Your Personalized Allma Setup Guide
 ## 2x RTX 3090 + Ryzen 9950X3D
 
 This guide is tailored specifically to **your hardware and workloads**. Use this as your reference for optimal configuration, benchmarking, and decision-making.
@@ -21,15 +21,15 @@ You have 5 pre-configured profiles optimized for your exact setup:
 
 ```bash
 # Auto-detect based on your query
-allama run "optimize this algorithm"
+allma run "optimize this algorithm"
 # → Automatically uses 'coding' profile
 
 # Or explicitly specify
-allama run --profile ocr --file my_apostila.pdf
-allama run --profile video --file movie.mp4
+allma run --profile ocr --file my_apostila.pdf
+allma run --profile video --file movie.mp4
 
 # Fallback to manual if unsure
-allama run --profile research "search for latest AI news"
+allma run --profile research "search for latest AI news"
 ```
 
 ---
@@ -87,7 +87,7 @@ Step 1: Check if you need multimodal
    └─ YES → Use 'research' profile instead (Vision 7B understands code + images)
 
 Step 2: Load Qwen 35B with TP=2
-   allama serve --profile coding
+   allma serve --profile coding
 
 Step 3: Keep Vision 7B unloaded
    → Don't use OCR during coding (GPU1 is busy)
@@ -114,11 +114,11 @@ Step 1: Check image quality
    └─ Low quality (blurry) → Use 512px (slower, better)
 
 Step 2: Load Vision 7B alone
-   allama serve --profile ocr
+   allma serve --profile ocr
 
 Step 3: Batch your PDFs
    for file in *.pdf; do
-     allama run --profile ocr --file "$file" > "$file.txt"
+     allma run --profile ocr --file "$file" > "$file.txt"
    done
 
 Expected Performance:
@@ -145,10 +145,10 @@ Step 1: Prepare video
    └─ FPS: Any (will be sampled at 1 FPS)
 
 Step 2: Load Vision 7B with video config
-   allama serve --profile video
+   allma serve --profile video
 
 Step 3: Process with chunking
-   allama run --profile video \
+   allma run --profile video \
      --file my_video.mp4 \
      --chunk-duration 300 \
      --output analysis.json
@@ -184,11 +184,11 @@ Step 1: Prepare images
    └─ Quality: Clear, good contrast
 
 Step 2: Load Vision 7B with comics config
-   allama serve --profile comics
+   allma serve --profile comics
 
 Step 3: Process panels
    for image in *.jpg; do
-     allama run --profile comics --file "$image" \
+     allma run --profile comics --file "$image" \
        --extract-speech-bubbles \
        --output "$image.txt"
    done
@@ -218,10 +218,10 @@ Step 1: Setup tool integration
    └─ Tools: Enable tool calling in config
 
 Step 2: Load Qwen 27B (balanced model)
-   allama serve --profile research
+   allma serve --profile research
 
 Step 3: Ask questions with tools
-   allama run --profile research \
+   allma run --profile research \
      --enable-tools \
      "Find the latest trends in AI and summarize"
 
@@ -247,7 +247,7 @@ Tips:
 
 ```bash
 # Start coding server
-allama serve --profile coding
+allma serve --profile coding
 
 # In another terminal, measure latency
 time curl -X POST http://localhost:9000/v1/chat/completions \
@@ -269,7 +269,7 @@ Expected output:
 
 ```bash
 # Time a single page OCR
-time allama run --profile ocr --file page.png
+time allma run --profile ocr --file page.png
 
 Expected output:
    ├─ Preprocessing: 0.2-0.5s
@@ -285,7 +285,7 @@ Expected output:
 watch -n 0.5 'nvidia-smi dmon -s pcum'
 
 # In another terminal, run a task
-allama run --profile coding "Complex algorithm"
+allma run --profile coding "Complex algorithm"
 
 Expected output:
    ├─ GPU0 + GPU1 TP=2: 26-28GB
@@ -301,14 +301,14 @@ Expected output:
 ### ❌ Don't try to parallelize coding + OCR
 ```
 WRONG:
-  allama run --profile coding "optimize this"
-  allama run --profile ocr --file doc.pdf  [waits forever]
+  allma run --profile coding "optimize this"
+  allma run --profile ocr --file doc.pdf  [waits forever]
          ↑
     Both GPUs busy with coding model
 
 RIGHT:
   # Finish coding first
-  # Then: allama run --profile ocr --file doc.pdf
+  # Then: allma run --profile ocr --file doc.pdf
 ```
 
 ### ❌ Don't use default TP=1 for 35B on single GPU
@@ -352,9 +352,9 @@ Solution:
   4. Use smaller model (Vision 7B instead of 27B)
 
 Quick fix:
-  allama stop
+  allma stop
   # Edit config, reduce one parameter
-  allama serve --profile coding
+  allma serve --profile coding
 ```
 
 ### Problem: "Model loads but is very slow"
@@ -445,7 +445,7 @@ Your setup is perfect for **generative content pipelines**:
 # Example: Generate image → Analyze with Vision → Refine
 
 1. ComfyUI generates image (on GPU0)
-2. Allama Vision 7B analyzes on GPU1 (11GB free)
+2. Allma Vision 7B analyzes on GPU1 (11GB free)
 3. Send feedback to ComfyUI
 4. Iterate for best version
 
@@ -469,8 +469,8 @@ curl http://localhost:9000/v1/chat/completions \
 
 - [ ] Download all 4 models (35B, 27B, Vision 7B, Gemma4)
 - [ ] Edit profile files with your actual model paths
-- [ ] Run `allama serve --profile coding` (warmup)
-- [ ] Test `allama run --profile ocr --file test.png`
+- [ ] Run `allma serve --profile coding` (warmup)
+- [ ] Test `allma run --profile ocr --file test.png`
 - [ ] Calibrate benchmarks (measure your actual latencies)
 - [ ] Monitor VRAM (nvidia-smi dmon) during first run
 - [ ] Setup ComfyUI webhook (if using)
@@ -483,7 +483,7 @@ curl http://localhost:9000/v1/chat/completions \
 1. ✅ Read this guide (you're here!)
 2. ⬜ Download models to `/path/to/models/`
 3. ⬜ Edit profile files with correct paths
-4. ⬜ Test each profile: `allama run --profile <name> "test query"`
+4. ⬜ Test each profile: `allma run --profile <name> "test query"`
 5. ⬜ Calibrate benchmarks
 6. ⬜ Integrate with your workflow (ComfyUI, scripts, etc)
 

@@ -25,7 +25,7 @@ This document shows **your actual models** with recommended configurations based
 
 **Current Physical Config:**
 ```ini
-[/home/nick/AI/allama/configs/physical/Qwen3.5-35b.allm]
+[/home/nick/AI/allma/configs/base/Qwen3.5-35b.allm]
 backend = "vllm"
 path = "/home/nick/AI/Models/Qwen3.5-35B-A3B-FP8"
 tensor_parallel = "2"          ✅ Correct for your 2x RTX 3090
@@ -47,7 +47,7 @@ extra_args = [
     "--disable-custom-all-reduce"            # GPU sync fix
 ]
 
-# Then in logical model, use:
+# Then in profile, use:
 [sampling]
 temperature = 0.6        # Balanced reasoning
 top_p = 0.95
@@ -371,7 +371,7 @@ For your actual workloads:
 
 ## Action Items
 
-- [ ] Review your actual `configs/physical/*.allm` files
+- [ ] Review your actual `configs/base/*.allm` files
 - [ ] Test **with reasoning** vs **without** and note speed difference
 - [ ] If OCR-primary: add `--limit-mm-per-prompt.video 0` to Vision config (saves 2GB!)
 - [ ] If using GGUF: verify llama.cpp supports `--flash-attn` (check `llama-cli --help`)

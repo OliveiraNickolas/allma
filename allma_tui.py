@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ALLAMA · FILE & CONFIG UTILITY
+ALLMA · FILE & CONFIG UTILITY
 """
 
 import json
@@ -22,7 +22,7 @@ from textual.widgets import Button, DataTable, Static
 # ──────────────────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
 CONFIG_DIR = BASE_DIR / "configs"
-ALLAMA_URL = "http://127.0.0.1:9000"
+ALLMA_URL = "http://127.0.0.1:9000"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Logo
@@ -35,7 +35,7 @@ def _build_logo_rows() -> list[str]:
         'L': ["█    ", "█    ", "█    ", "█    ", "█████"],
         'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
     }
-    word, starts = list("ALLAMA"), [0, 6, 12, 18, 24, 30]
+    word, starts = list("ALLMA"), [0, 6, 12, 18, 24, 30]
     canvas = [[0] * 36 for _ in range(5)]
     for ch, col in zip(word, starts):
         for r, row in enumerate(CHARS[ch]):
@@ -68,7 +68,7 @@ def _build_logo_markup():
     return t
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Editable column specs for logical models
+# Editable column specs for profile models
 # (col_idx, col_key, header, param_key, min, max, big_step, small_step, is_int, default)
 # ──────────────────────────────────────────────────────────────────────────────
 _LOG_EDITABLE = {
@@ -315,11 +315,11 @@ def get_gpus() -> list[dict]:
         return []
 
 
-def check_allama_server() -> tuple[bool, dict]:
+def check_allma_server() -> tuple[bool, dict]:
     try:
         import urllib.request
-        req = urllib.request.Request(f"{ALLAMA_URL}/health", method="GET")
-        req.add_header("User-Agent", "AllamaTUI/1.0")
+        req = urllib.request.Request(f"{ALLMA_URL}/health", method="GET")
+        req.add_header("User-Agent", "AllmaTUI/1.0")
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read())
             return True, data
@@ -327,9 +327,9 @@ def check_allama_server() -> tuple[bool, dict]:
         return False, {}
 
 
-def scan_physical_models(config_dir: Path) -> list[dict]:
+def scan_base_models(config_dir: Path) -> list[dict]:
     models = []
-    phys_dir = config_dir / "physical"
+    phys_dir = config_dir / "base"
     if not phys_dir.exists():
         return models
     for f in sorted(phys_dir.glob("*.allm")):
@@ -354,20 +354,20 @@ def scan_physical_models(config_dir: Path) -> list[dict]:
     return models
 
 
-def scan_logical_models(config_dir: Path) -> list[dict]:
+def scan_profile_models(config_dir: Path) -> list[dict]:
     models = []
-    log_dir = config_dir / "logical"
+    log_dir = config_dir / "profile"
     if not log_dir.exists():
         return models
     for f in sorted(log_dir.glob("*.allm")):
         try:
             from configs.loader import parse_all_file
             cfg = parse_all_file(f.read_text())
-            if "physical" not in cfg:
+            if "base" not in cfg:
                 continue
             models.append({
                 "name":     cfg.get("name") or f.stem,
-                "physical": cfg["physical"],
+                "base": cfg["base"],
                 "cfg":      cfg,
                 "file":     f,
             })
@@ -469,9 +469,9 @@ class BootScreen(Screen):
 
     def on_mount(self) -> None:
         self._gpus    = get_gpus()
-        self._online, self._srv = check_allama_server()
-        self._phys    = scan_physical_models(CONFIG_DIR)
-        self._logical = scan_logical_models(CONFIG_DIR)
+        self._online, self._srv = check_allma_server()
+        self._base    = scan_base_models(CONFIG_DIR)
+        self._profiles = scan_profile_models(CONFIG_DIR)
         self._step, self._blink_on, self._display_lines, self._done = 0, True, [], False
         self.set_interval(0.08, self._tick)
         self.set_interval(0.5,  self._blink)
@@ -504,7 +504,7 @@ class BootScreen(Screen):
             self.query_one("#boot-bar").update("")
 
     def _build_messages(self) -> list[str]:
-        msgs = ["ALLAMA · FILE & CONFIG UTILITY  v1.0", "(c) 2025", "",
+        msgs = ["ALLMA · FILE & CONFIG UTILITY  v1.0", "(c) 2025", "",
                 "─" * 50, "INITIALIZING HARDWARE SUBSYSTEMS..."]
         if self._gpus:
             for g in self._gpus:
@@ -512,20 +512,20 @@ class BootScreen(Screen):
         else:
             msgs.append("  NO CUDA DEVICES FOUND  [CPU MODE]")
         msgs += ["SCANNING CONFIGURATION FILES...",
-                 f"  PHYSICAL MODELS : {len(self._phys):3d}  LOADED",
-                 f"  LOGICAL MODELS  : {len(self._logical):3d}  LOADED",
-                 "CONNECTING TO ALLAMA SERVER..."]
+                 f"  BASE MODELS : {len(self._base):3d}  LOADED",
+                 f"  PROFILE MODELS  : {len(self._profiles):3d}  LOADED",
+                 "CONNECTING TO ALLMA SERVER..."]
         if self._online:
-            msgs.append(f"  {ALLAMA_URL}  ...  ONLINE  [{self._srv.get('active_servers', 0)} active]")
+            msgs.append(f"  {ALLMA_URL}  ...  ONLINE  [{self._srv.get('active_servers', 0)} active]")
         else:
-            msgs.append(f"  {ALLAMA_URL}  ...  OFFLINE")
+            msgs.append(f"  {ALLMA_URL}  ...  OFFLINE")
         msgs += ["─" * 50, "SYSTEM READY.", ""]
         return msgs
 
     def action_proceed(self) -> None:
         if self._done:
             self.app.push_screen(
-                MainMenuScreen(self._gpus, self._online, self._srv, self._phys, self._logical)
+                MainMenuScreen(self._gpus, self._online, self._srv, self._base, self._profiles)
             )
 
     def on_key(self, event) -> None:
@@ -546,21 +546,21 @@ class MainMenuScreen(Screen):
         Binding("f10", "quit", "Quit"),
     ]
 
-    def __init__(self, gpus, online, srv, phys, logical, **kwargs):
+    def __init__(self, gpus, online, srv, base, profiles, **kwargs):
         super().__init__(**kwargs)
         self._gpus, self._online, self._srv = gpus, online, srv
-        self._phys, self._logical = phys, logical
+        self._base, self._profiles = base, profiles
 
     def _dashboard(self) -> str:
         lines = []
         if self._online:
             active  = self._srv.get("active_servers", 0)
             servers = self._srv.get("servers", [])
-            lines.append(f"  SERVER  ●  ONLINE  ·  {active} active  ·  {ALLAMA_URL}")
+            lines.append(f"  SERVER  ●  ONLINE  ·  {active} active  ·  {ALLMA_URL}")
             if servers:
                 lines.append("          ↳  " + "  ·  ".join(s.get("model", "?") for s in servers[:3]))
         else:
-            lines.append(f"  SERVER  ○  OFFLINE  ·  {ALLAMA_URL}")
+            lines.append(f"  SERVER  ○  OFFLINE  ·  {ALLMA_URL}")
         lines.append("")
         if self._gpus:
             for g in self._gpus:
@@ -572,7 +572,7 @@ class MainMenuScreen(Screen):
         else:
             lines.append("  GPU     NO CUDA DEVICES  [CPU MODE]")
         lines.append("")
-        lines.append(f"  CONFIGS  {len(self._phys)} physical  ·  {len(self._logical)} logical")
+        lines.append(f"  CONFIGS  {len(self._base)} base  ·  {len(self._profiles)} profile")
         return "\n".join(lines)
 
     def _menu_text(self) -> str:
@@ -582,7 +582,7 @@ class MainMenuScreen(Screen):
         return "\n".join([
             "", f"  {sep}",
             row("F1", "Add Model",     "5-step guided config wizard"),
-            row("F2", "Model Library", f"{len(self._phys)} physical  ·  {len(self._logical)} logical"),
+            row("F2", "Model Library", f"{len(self._base)} base  ·  {len(self._profiles)} profile"),
             f"  {sep}",
             row("Q",  "Quit", ""),
             f"  {sep}", "",
@@ -597,7 +597,7 @@ class MainMenuScreen(Screen):
                 yield Static("  F1: Add Model   F2: Model Library   F10 / Q: Quit", id="menu-fkeys")
 
     def on_mount(self) -> None:
-        self.query_one("#main-window").border_title = " ALLAMA · FILE & CONFIG UTILITY  v1.0 "
+        self.query_one("#main-window").border_title = " ALLMA · FILE & CONFIG UTILITY  v1.0 "
 
     def on_key(self, event) -> None:
         k = event.key
@@ -606,7 +606,7 @@ class MainMenuScreen(Screen):
         elif k in ("q", "Q"): self.action_quit()
 
     def action_go_1(self): self.app.push_screen(WizardStep1Screen())
-    def action_go_2(self): self.app.push_screen(ModelLibraryScreen(self._phys, self._logical))
+    def action_go_2(self): self.app.push_screen(ModelLibraryScreen(self._base, self._profiles))
     def action_quit(self):  self.app.exit()
 
 
@@ -663,10 +663,10 @@ class ModelLibraryScreen(Screen):
         Binding("f10",    "back", "Back"),
     ]
 
-    def __init__(self, phys, logical, **kwargs):
+    def __init__(self, base, profiles, **kwargs):
         super().__init__(**kwargs)
-        self._phys    = phys
-        self._logical = logical
+        self._base    = base
+        self._profiles = profiles
         # inline editor state
         self._editing       = False
         self._ed_value      = 0.0
@@ -682,10 +682,10 @@ class ModelLibraryScreen(Screen):
         with Container(classes="shadow-wrap"):
             with Container(id="main-window"):
                 yield ScrollableContainer(
-                    Static(f"\n  Physical Models  ({len(self._phys)})\n  {'─'*50}\n"),
-                    DataTable(id="phys-tbl"),
+                    Static(f"\n  Base Models  ({len(self._base)})\n  {'─'*50}\n"),
+                    DataTable(id="base-tbl"),
                     Static(
-                        f"\n  Logical Models  ({len(self._logical)})\n"
+                        f"\n  Profile Models  ({len(self._profiles)})\n"
                         f"  {'─'*50}\n"
                         "  ← → arrows to move  ·  Enter to edit highlighted value\n"
                     ),
@@ -709,7 +709,7 @@ class ModelLibraryScreen(Screen):
 
     # ── table builders ───────────────────────────────────────────────────────
     def _build_phys_table(self) -> None:
-        pt = self.query_one("#phys-tbl", DataTable)
+        pt = self.query_one("#base-tbl", DataTable)
         pt.cursor_type = "row"
         pt.add_column("NAME",    key="name")
         pt.add_column("BACKEND", key="backend")
@@ -717,7 +717,7 @@ class ModelLibraryScreen(Screen):
         pt.add_column("VRAM",    key="vram")
         pt.add_column("TP",      key="tp")
         pt.add_column("CTX",     key="ctx")
-        for m in self._phys:
+        for m in self._base:
             cfg  = m["cfg"]
             tp   = cfg.get("tensor_parallel", "1")
             ctx  = cfg.get("max_model_len") or cfg.get("n_ctx", "—")
@@ -728,24 +728,24 @@ class ModelLibraryScreen(Screen):
                 f"{need:.1f}GB", str(tp), str(ctx),
                 key=m["name"],
             )
-        if not self._phys:
+        if not self._base:
             pt.add_row("(none)", "", "", "", "", "", key="_none")
 
     def _build_log_table(self) -> None:
         lt = self.query_one("#log-tbl", DataTable)
         lt.cursor_type = "cell"
         lt.add_column("NAME",    key="name")
-        lt.add_column("PHYSICAL",key="physical")
+        lt.add_column("PHYSICAL",key="base")
         lt.add_column("TEMP",    key="temperature")
         lt.add_column("TOP_P",   key="top_p")
         lt.add_column("TOP_K",   key="top_k")
         lt.add_column("MIN_P",   key="min_p")
         lt.add_column("PRES_P",  key="presence_penalty")
         lt.add_column("REP_P",   key="repetition_penalty")
-        for m in self._logical:
+        for m in self._profiles:
             s = m["cfg"].get("sampling", {})
             lt.add_row(
-                m["name"], m["physical"],
+                m["name"], m["base"],
                 str(s.get("temperature",         "—")),
                 str(s.get("top_p",               "—")),
                 str(s.get("top_k",               "—")),
@@ -754,7 +754,7 @@ class ModelLibraryScreen(Screen):
                 str(s.get("repetition_penalty",  "—")),
                 key=m["name"],
             )
-        if not self._logical:
+        if not self._profiles:
             lt.add_row("(none)", "", "", "", "", "", "", "", key="_none")
 
     # ── inline editor ────────────────────────────────────────────────────────
@@ -805,14 +805,14 @@ class ModelLibraryScreen(Screen):
         self._ed_vram_fn  = None
         self.query_one("#editor-panel").remove_class("editing")
 
-    # ── physical table: Enter on row → edit CTX ──────────────────────────────
+    # ── base table: Enter on row → edit CTX ──────────────────────────────
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id != "phys-tbl":
+        if event.data_table.id != "base-tbl":
             return
         row_idx = event.cursor_row
-        if row_idx >= len(self._phys):
+        if row_idx >= len(self._base):
             return
-        m   = self._phys[row_idx]
+        m   = self._base[row_idx]
         cfg = m["cfg"]
         ctx_key = "max_model_len" if "max_model_len" in cfg else "n_ctx"
         cur_ctx = cfg.get(ctx_key, 4096)
@@ -826,7 +826,7 @@ class ModelLibraryScreen(Screen):
             update_allm_param(m["file"], None, ctx_key, int(new_ctx))
             cfg[ctx_key] = int(new_ctx)
             new_vram = f"{vram_need(m, int(new_ctx)):.1f}GB"
-            tbl = self.query_one("#phys-tbl", DataTable)
+            tbl = self.query_one("#base-tbl", DataTable)
             tbl.update_cell(row_key=m["name"], column_key="ctx",  value=str(int(new_ctx)))
             tbl.update_cell(row_key=m["name"], column_key="vram", value=new_vram)
 
@@ -835,17 +835,17 @@ class ModelLibraryScreen(Screen):
             1024, 262144, 8192, 1024, True, on_save, vram_label,
         )
 
-    # ── logical table: Enter on editable cell → edit sampling param ──────────
+    # ── profile table: Enter on editable cell → edit sampling param ──────────
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
         if event.data_table.id != "log-tbl":
             return
         col_idx = event.coordinate.column
         row_idx = event.coordinate.row
-        if col_idx not in _LOG_EDITABLE or row_idx >= len(self._logical):
+        if col_idx not in _LOG_EDITABLE or row_idx >= len(self._profiles):
             return
 
         param_key, min_v, max_v, big_s, small_s, is_int, default, display = _LOG_EDITABLE[col_idx]
-        m        = self._logical[row_idx]
+        m        = self._profiles[row_idx]
         sampling = m["cfg"].setdefault("sampling", {})
         cur_val  = sampling.get(param_key, default)
 
@@ -903,8 +903,8 @@ class ModelLibraryScreen(Screen):
 # ──────────────────────────────────────────────────────────────────────────────
 # App
 # ──────────────────────────────────────────────────────────────────────────────
-class AllamaTUI(App):
-    TITLE                  = "ALLAMA"
+class AllmaTUI(App):
+    TITLE                  = "ALLMA"
     CSS                    = CSS
     ENABLE_COMMAND_PALETTE = False
 
@@ -913,4 +913,4 @@ class AllamaTUI(App):
 
 
 if __name__ == "__main__":
-    AllamaTUI().run()
+    AllmaTUI().run()

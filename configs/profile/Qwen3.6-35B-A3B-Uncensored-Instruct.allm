@@ -1,5 +1,5 @@
 name = "Qwen3.6:35b-Uncensored-Instruct"
-physical = "Qwen3.6-35B-A3B-Uncensored-gguf"
+base = "Qwen3.6-35B-A3B-Uncensored-gguf"
 enable_thinking = false
 
 [sampling]

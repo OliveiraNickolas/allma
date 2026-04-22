@@ -1,5 +1,5 @@
 """
-Model loading: spinner, readiness check, ensure_physical_model.
+Model loading: spinner, readiness check, ensure_base_model.
 """
 import asyncio
 import os
@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from core.config import logger, PHYSICAL_MODELS, ALLAMA_LOG_DIR, PATH_TO_ALLAMA
+from core.config import logger, BASE_MODELS, ALLMA_LOG_DIR, PATH_TO_ALLMA
 import core.state as state
 from core.gpu import get_free_gpu_memory, get_model_vram_need, get_all_gpus
 from core.process import (
@@ -72,7 +72,7 @@ class LoadingSpinner:
         self._thread = None
         self._start_time = None
 
-    # 3-row llama sprite (mirrored from allama_cli)
+    # 3-row llama sprite (mirrored from allma_cli)
     _L_HEAD  = "▄▄"
     _L_NECK  = "▓"
     _L_BODY  = ["▓▒▓", "▓▓▒", "▓▒▓", "▒▓▓"]
@@ -201,12 +201,12 @@ async def wait_for_model_ready(
                         logger.debug(f"   Raw: {error_analysis.raw_message}")
                         if error_analysis.auto_fix_available:
                             logger.info(f"🔧 Tentando auto-correção: {error_analysis.auto_fix_action}")
-                            state.last_error_analysis[physicalname] = error_analysis
+                            state.last_error_analysis[basename] = error_analysis
                             return False  # Sinalizar para retry com fix
                         else:
                             for suggestion in error_analysis.suggestions:
                                 logger.warning(f"   → {suggestion}")
-                            state.last_error_analysis[physicalname] = error_analysis
+                            state.last_error_analysis[basename] = error_analysis
                             # Continuar aguardando, pode ser apenas warning
 
                     for line in new_content.splitlines():
@@ -246,16 +246,16 @@ async def wait_for_model_ready(
 # ==============================================================================
 # AUTO-FIX HELPERS
 # ==============================================================================
-def apply_auto_fix(physicalname: str, cfg: dict, error_analysis) -> bool:
+def apply_auto_fix(basename: str, cfg: dict, error_analysis) -> bool:
     """Apply auto-fix to config based on error analysis. Returns True if applied."""
     if not error_analysis or not error_analysis.auto_fix_available:
         return False
 
     action = error_analysis.auto_fix_action
-    attempt_count = state.auto_fix_attempt_count.get(physicalname, 0)
+    attempt_count = state.auto_fix_attempt_count.get(basename, 0)
 
     if attempt_count >= 3:
-        logger.warning(f"⚠️  Auto-fix max attempts (3) reached for {physicalname}, skipping")
+        logger.warning(f"⚠️  Auto-fix max attempts (3) reached for {basename}, skipping")
         return False
 
     if action == "reduce_ubatch_size":
@@ -263,7 +263,7 @@ def apply_auto_fix(physicalname: str, cfg: dict, error_analysis) -> bool:
         new = max(2, current // 2)
         if new < current:
             cfg["max_num_seqs"] = str(new)
-            state.auto_fix_attempt_count[physicalname] = attempt_count + 1
+            state.auto_fix_attempt_count[basename] = attempt_count + 1
             logger.info(f"🔧 Auto-fix: reduced max_num_seqs {current} → {new} (attempt {attempt_count + 1}/3)")
             return True
 
@@ -274,7 +274,7 @@ def apply_auto_fix(physicalname: str, cfg: dict, error_analysis) -> bool:
             new = max(2, current // 2)
             if new < current:
                 cfg["max_num_seqs"] = str(new)
-                state.auto_fix_attempt_count[physicalname] = attempt_count + 1
+                state.auto_fix_attempt_count[basename] = attempt_count + 1
                 logger.info(f"🔧 Auto-fix: reduced max_num_seqs {current} → {new}")
                 return True
 
@@ -283,7 +283,7 @@ def apply_auto_fix(physicalname: str, cfg: dict, error_analysis) -> bool:
         new = max(8192, current // 2)
         if new < current:
             cfg["max_model_len"] = str(new)
-            state.auto_fix_attempt_count[physicalname] = attempt_count + 1
+            state.auto_fix_attempt_count[basename] = attempt_count + 1
             logger.info(f"🔧 Auto-fix: reduced max_model_len {current} → {new}")
             return True
 
@@ -296,7 +296,7 @@ def apply_auto_fix(physicalname: str, cfg: dict, error_analysis) -> bool:
                     current_val = float(extra_args[i + 1])
                     new_val = max(0.01, current_val / 2)
                     extra_args[i + 1] = str(new_val)
-                    state.auto_fix_attempt_count[physicalname] = attempt_count + 1
+                    state.auto_fix_attempt_count[basename] = attempt_count + 1
                     logger.info(f"🔧 Auto-fix: increased defrag from {current_val} → {new_val}")
                     return True
                 except ValueError:
@@ -308,84 +308,84 @@ def apply_auto_fix(physicalname: str, cfg: dict, error_analysis) -> bool:
 # ==============================================================================
 # MODEL LOADING
 # ==============================================================================
-async def ensure_physical_model(physicalname: str, logicalname: Optional[str] = None, gpu_id: Optional[int] = None):
-    if physicalname not in PHYSICAL_MODELS:
-        raise RuntimeError(f"Model {physicalname} not configured")
+async def ensure_base_model(basename: str, profilename: Optional[str] = None, gpu_id: Optional[int] = None):
+    if basename not in BASE_MODELS:
+        raise RuntimeError(f"Model {basename} not configured")
 
-    cfg = PHYSICAL_MODELS[physicalname]
+    cfg = BASE_MODELS[basename]
     # Honour pinned_gpu from config if caller did not specify a gpu_id
     if gpu_id is None and "pinned_gpu" in cfg:
         gpu_id = int(cfg["pinned_gpu"])
-        logger.info(f"📌 {physicalname}: pinned_gpu={gpu_id} from config")
+        logger.info(f"📌 {basename}: pinned_gpu={gpu_id} from config")
     backend = cfg.get("backend", "vllm")
-    displayname = logicalname or physicalname
+    displayname = profilename or basename
 
     with state.global_lock:
-        if physicalname in state.active_servers:
-            proc = state.active_servers[physicalname]["process"]
+        if basename in state.active_servers:
+            proc = state.active_servers[basename]["process"]
             if proc.poll() is None:
-                port = state.active_servers[physicalname]["port"]
-                state.server_idle_time[physicalname] = time.time()
+                port = state.active_servers[basename]["port"]
+                state.server_idle_time[basename] = time.time()
                 logger.debug(f"♻️  Reusing {displayname}:{port}")
                 return port
 
-        already_loading = physicalname in state.loading_models
+        already_loading = basename in state.loading_models
         if not already_loading:
-            state.loading_models.add(physicalname)
+            state.loading_models.add(basename)
 
     if already_loading:
         logger.info(f"⏳ {displayname} already loading, waiting...")
         for _ in range(150):
             await asyncio.sleep(2)
             with state.global_lock:
-                if physicalname in state.active_servers:
-                    proc = state.active_servers[physicalname]["process"]
+                if basename in state.active_servers:
+                    proc = state.active_servers[basename]["process"]
                     if proc and proc.poll() is None:
-                        port = state.active_servers[physicalname]["port"]
-                        state.server_idle_time[physicalname] = time.time()
+                        port = state.active_servers[basename]["port"]
+                        state.server_idle_time[basename] = time.time()
                         logger.debug(f"♻️  Reusing {displayname}:{port} after wait")
                         return port
-                if physicalname not in state.loading_models:
+                if basename not in state.loading_models:
                     # Primary loader finished — check if it succeeded
-                    if physicalname in state.active_servers:
-                        proc = state.active_servers[physicalname]["process"]
+                    if basename in state.active_servers:
+                        proc = state.active_servers[basename]["process"]
                         if proc and proc.poll() is None:
-                            port = state.active_servers[physicalname]["port"]
-                            state.server_idle_time[physicalname] = time.time()
+                            port = state.active_servers[basename]["port"]
+                            state.server_idle_time[basename] = time.time()
                             return port
                     raise RuntimeError(f"{displayname} failed to load")
         raise RuntimeError(f"Loading timeout for {displayname} - load may have stuck")
 
     success = False
     try:
-        port = await _load_model_impl(physicalname, cfg, backend, displayname, gpu_id=gpu_id)
+        port = await _load_model_impl(basename, cfg, backend, displayname, gpu_id=gpu_id)
         success = True
         return port
     finally:
-        state.loading_models.discard(physicalname)
+        state.loading_models.discard(basename)
         if not success:
             with state.global_lock:
-                state.active_servers.pop(physicalname, None)
-                state.server_idle_time.pop(physicalname, None)
+                state.active_servers.pop(basename, None)
+                state.server_idle_time.pop(basename, None)
 
 
-async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayname: str, gpu_id: Optional[int] = None) -> int:
+async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: str, gpu_id: Optional[int] = None) -> int:
     """Internal implementation of model loading."""
-    NEEDGB = get_model_vram_need(cfg, physicalname)
+    NEEDGB = get_model_vram_need(cfg, basename)
     logger.info(f"🧮 {displayname} needs {NEEDGB:.1f}GB VRAM")
 
     # Bootstrap: Calibrate model if hardware profile available
     calib = None
-    if state.hardware_profile and physicalname not in state.bootstrap_calibrations:
+    if state.hardware_profile and basename not in state.bootstrap_calibrations:
         try:
             logger.info(f"📊 Calibrating {displayname}...")
             calib = await BootstrapDetector.calibrate_for_model(
-                physical_name=physicalname,
+                base_name=basename,
                 model_size_gb=NEEDGB,
                 hardware_profile=state.hardware_profile,
                 config=cfg,
             )
-            state.bootstrap_calibrations[physicalname] = calib
+            state.bootstrap_calibrations[basename] = calib
 
             logger.info(
                 f"   Recommended: TP={calib.recommended_tp}, "
@@ -401,7 +401,7 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
         except Exception as e:
             logger.debug(f"Calibration failed: {e}, continuing with static config")
     else:
-        calib = state.bootstrap_calibrations.get(physicalname)
+        calib = state.bootstrap_calibrations.get(basename)
 
     # Determine if this model needs more than one GPU can provide.
     # We compare NEEDGB against the usable capacity of the best single GPU
@@ -440,7 +440,7 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
             break
 
         with state.global_lock:
-            names_to_unload = [n for n in state.active_servers if n != physicalname]
+            names_to_unload = [n for n in state.active_servers if n != basename]
 
         for name in names_to_unload:
             logger.info(f"📤 Unloading {name} (dynamic swap)")
@@ -461,8 +461,8 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                     with state.global_lock:
                         active_server_pids = {s["process"].pid for s in state.active_servers.values()}
                     for p in sorted(active_procs, key=lambda x: x["memory_mb"], reverse=True)[:5]:
-                        is_allama = p["pid"] in active_server_pids
-                        marker = "ALLAMA" if is_allama else "external"
+                        is_allma = p["pid"] in active_server_pids
+                        marker = "ALLMA" if is_allma else "external"
                         logger.error(f"  PID {p['pid']} ({p['name']}): {p['memory_mb']//1024:.0f}GB [{marker}]")
                 logger.error(
                     f"⚠️  Failed to free enough VRAM. "
@@ -494,7 +494,7 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
     skip_gpu: int | None = None
 
     for attempt in range(max_attempts):
-        logfilepath = ALLAMA_LOG_DIR / f"{physicalname}.log"
+        logfilepath = ALLMA_LOG_DIR / f"{basename}.log"
         logfile = None
         try:
             logfile = open(logfilepath, "a+")
@@ -504,9 +504,9 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
             raise
 
         if backend == "vllm":
-            cmd, port, current_gpu_id = build_vllm_cmd(physicalname, skip_gpu=skip_gpu, gpu_id=gpu_id, calib=calib)
+            cmd, port, current_gpu_id = build_vllm_cmd(basename, skip_gpu=skip_gpu, gpu_id=gpu_id, calib=calib)
         else:
-            cmd, port, current_gpu_id = build_llama_cmd(physicalname, gpu_id=gpu_id, calib=calib)
+            cmd, port, current_gpu_id = build_llama_cmd(basename, gpu_id=gpu_id, calib=calib)
 
         tp_from_cmd = 1
         try:
@@ -557,16 +557,16 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
             )
 
             with state.global_lock:
-                state.active_servers[physicalname] = {
+                state.active_servers[basename] = {
                     "process": proc,
                     "pid": proc.pid,
                     "port": port,
                     "backend": backend,
                     "logfile": logfilepath,
                 }
-                state.server_idle_time[physicalname] = time.time()
+                state.server_idle_time[basename] = time.time()
 
-            save_backend_pid(physicalname, proc.pid, port, backend)
+            save_backend_pid(basename, proc.pid, port, backend)
             logger.info(f"✅ Process started PID {proc.pid} on port {port}, GPU {current_gpu_id}")
             logger.info(f"📄 Log: tail -f {logfilepath}")
 
@@ -592,16 +592,16 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                         )
                         for suggestion in error_analysis.suggestions:
                             logger.error(f"   • {suggestion}")
-                        state.last_error_analysis[physicalname] = error_analysis
+                        state.last_error_analysis[basename] = error_analysis
 
                         # Tentar auto-fix se disponível
-                        if apply_auto_fix(physicalname, cfg, error_analysis):
+                        if apply_auto_fix(basename, cfg, error_analysis):
                             logger.info(f"♻️  Retrying with auto-fix... (attempt {attempt + 2}/{max_attempts})")
                             # Limpar processo e continuar para próximo attempt
                             with state.global_lock:
-                                if state.active_servers.get(physicalname):
-                                    state.active_servers.pop(physicalname, None)
-                                    state.server_idle_time.pop(physicalname, None)
+                                if state.active_servers.get(basename):
+                                    state.active_servers.pop(basename, None)
+                                    state.server_idle_time.pop(basename, None)
                             continue
                         # Sem auto-fix disponível, reportar erro e falhar
 
@@ -619,15 +619,15 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
 
         except RuntimeError as runtime_err:
             with state.global_lock:
-                if state.active_servers.get(physicalname):
-                    p = state.active_servers[physicalname].get("process")
+                if state.active_servers.get(basename):
+                    p = state.active_servers[basename].get("process")
                     if p:
                         try:
                             os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                         except Exception:
                             pass
-                    state.active_servers.pop(physicalname, None)
-                    state.server_idle_time.pop(physicalname, None)
+                    state.active_servers.pop(basename, None)
+                    state.server_idle_time.pop(basename, None)
             # NOTE: Don't skip GPU on VRAM allocation errors — if TP>1, skipping breaks tensor parallelism
             # (reduces TP to 1 which also won't fit). User must adjust model parameters instead.
             raise
