@@ -527,7 +527,13 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                     subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
                     logger.info(f"🎮 llama.cpp TP=1 pinned to GPU {current_gpu_id} via CUDA_VISIBLE_DEVICES")
                 else:
-                    logger.info(f"🎮 llama.cpp TP=1 needs multi-GPU offload ({NEEDGB:.1f}GB > {max_free_gb:.1f}GB) — all GPUs visible")
+                    # Multi-GPU offload: put the pinned/preferred GPU first so it becomes
+                    # CUDA0 — this ensures the model's larger shard AND mmproj land on it.
+                    all_gpus = [g["index"] for g in get_all_gpus()]
+                    ordered = [current_gpu_id] + [g for g in all_gpus if g != current_gpu_id]
+                    gpu_order = ",".join(str(g) for g in ordered)
+                    subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_order
+                    logger.info(f"🎮 llama.cpp multi-GPU offload, GPU order [{gpu_order}] (primary={current_gpu_id})")
 
             import subprocess as _sp
             proc = _sp.Popen(
