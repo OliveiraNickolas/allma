@@ -710,7 +710,7 @@ def _print_repl_header(console, model: str):
     cmds_tbl.add_column()
     cmds = Text(style=_S)
     cmds.append("  ", style=f"on {C_BG}")
-    for i, cmd in enumerate(["/exit", "/clear", "/model"]):
+    for i, cmd in enumerate(["/exit", "/clear", "/clean", "/model"]):
         cmds.append(cmd, style=f"bold {C_ACCENT} on {C_BG}")
         cmds.append("  ·  ", style=f"{C_DIM} on {C_BG}")
     cmds.append("Ctrl+C", style=f"bold {C_FG} on {C_BG}")
@@ -873,7 +873,8 @@ def _repl(model: str):
     try:
         while True:
             try:
-                user_input = input(">>> ").strip()
+                model_tag = model.split("-")[-1] if "-" in model else model.split(":")[-1]
+                user_input = input(f"[{model_tag}] >>> ").strip()
             except (EOFError, KeyboardInterrupt):
                 print("\nBye!")
                 break
@@ -886,6 +887,9 @@ def _repl(model: str):
             if user_input == "/clear":
                 history.clear()
                 print("History cleared.")
+                continue
+            if user_input == "/clean":
+                print("\033[2J\033[H", end="", flush=True)
                 continue
             if user_input == "/model":
                 switched = _repl_switch_model(model, _rich_console if _use_rich else None)
