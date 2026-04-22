@@ -1,6 +1,7 @@
 """
 FastAPI application, route handlers, HTTP client, and banner display.
 """
+import json as _json
 import httpx
 from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -18,6 +19,52 @@ from core.config import (
 import core.state as state
 from core.loader import ensure_physical_model
 from core.process import shutdown_server
+from core.error_detector import ErrorDetector
+
+# ==============================================================================
+# JINJA TEMPLATE RENDERER (llama.cpp thinking control)
+# ==============================================================================
+import os as _os
+
+def _get_template_file(cfg: dict) -> str | None:
+    """Extract --chat-template-file path from physical config extra_args."""
+    args = cfg.get("extra_args", [])
+    for i, arg in enumerate(args):
+        if arg == "--chat-template-file" and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def _strip_think_prefix(text: str) -> str:
+    """Remove leading </think> artifact that models sometimes emit when thinking is pre-closed."""
+    import re as _re
+    return _re.sub(r"^</think>\s*", "", text, count=1)
+
+
+def _render_no_think_prompt(cfg: dict, messages: list, tools: list | None = None) -> str | None:
+    """Render chat template in Python with enable_thinking=False.
+    Returns the full prompt string, or None if no template file configured."""
+    template_file = _get_template_file(cfg)
+    if not template_file or not _os.path.exists(template_file):
+        return None
+    try:
+        from jinja2 import Environment, FileSystemLoader
+        env = Environment(
+            loader=FileSystemLoader(_os.path.dirname(template_file)),
+            keep_trailing_newline=True,
+        )
+        env.globals["tojson"] = lambda v, **kw: __import__("json").dumps(v, ensure_ascii=False)
+        t = env.get_template(_os.path.basename(template_file))
+        return t.render(
+            messages=messages,
+            add_generation_prompt=True,
+            enable_thinking=False,
+            tools=tools or None,
+        )
+    except Exception as e:
+        logger.warning(f"Template render failed: {e}")
+        return None
+
 
 # ==============================================================================
 # HTTP CLIENT
@@ -100,8 +147,12 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         else:
             body.pop(key, None)
 
-    # Disable thinking for Instruct models or when explicitly set in config
-    if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
+    # Disable thinking for vLLM
+    if backend == "vllm" and (logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower()):
+        body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
+
+    # For llama.cpp with thinking disabled: pass via chat_template_kwargs
+    if backend == "llama.cpp" and (logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower()):
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
     logger.debug(f"{model_name} -> {physical_name}:{port} ({backend})")
@@ -119,15 +170,30 @@ async def chat_completions(request: Request, body: dict = Body(...)):
 
     client = await get_http_client()
     try:
-        if body.get("stream", False):
+        req_body = body
+
+        if req_body.get("stream", False):
+            import json as _json2
             async def generate():
                 try:
-                    async with client.stream("POST", url, json=body) as response:
+                    async with client.stream("POST", url, json=req_body) as response:
                         if response.status_code != 200:
                             error_body = await response.aread()
                             error_detail = error_body.decode() if isinstance(error_body, bytes) else str(error_body)
                             logger.error(f"Backend returned {response.status_code} for {model_name}: {error_detail}")
-                            yield 'data: {"error": "Backend error"}\n\n'
+
+                            # Analisar erro do backend
+                            error_analysis = ErrorDetector.analyze_log(error_detail)
+                            if error_analysis:
+                                error_response = {
+                                    "error": error_detail,
+                                    "error_type": error_analysis.error_type,
+                                    "explanation": error_analysis.explanation,
+                                    "suggestions": error_analysis.suggestions,
+                                }
+                                yield f'data: {_json.dumps(error_response)}\n\n'
+                            else:
+                                yield 'data: {"error": "Backend error"}\n\n'
                             return
                         async for line in response.aiter_lines():
                             line = line.strip()
@@ -148,13 +214,24 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
         else:
-            resp = await client.post(url, json=body)
+            resp = await client.post(url, json=req_body)
             if resp.status_code == 400:
                 error_body = await resp.aread()
                 error_detail = (
                     error_body.decode() if isinstance(error_body, bytes) else str(error_body)
                 )
                 logger.error(f"vLLM 400 Error for {model_name}: {error_detail}")
+
+                # Analisar erro
+                error_analysis = ErrorDetector.analyze_log(error_detail)
+                if error_analysis:
+                    logger.warning(
+                        f"   Tipo: {error_analysis.error_type}\n"
+                        f"   {error_analysis.explanation}"
+                    )
+                    for sugg in error_analysis.suggestions:
+                        logger.warning(f"   → {sugg}")
+
                 logger.warning("vLLM 400 - returning empty response")
                 return JSONResponse(
                     status_code=200,
@@ -264,7 +341,7 @@ async def messages(request: Request, body: dict = Body(...)):
         drop_keys = {
             "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
             "minLength", "maxLength", "minItems", "maxItems",
-            "$schema", "additionalProperties",
+            "$schema", "additionalProperties", "pattern",
         }
         out = {}
         for k, v in schema.items():
@@ -319,11 +396,26 @@ async def messages(request: Request, body: dict = Body(...)):
             continue
 
         # Separate content block types
-        text_parts, tool_uses, tool_results = [], [], []
+        text_parts, image_parts, tool_uses, tool_results = [], [], [], []
         for block in content:
             btype = block.get("type", "")
             if btype == "text":
                 text_parts.append(block.get("text", ""))
+            elif btype == "image":
+                source = block.get("source", {})
+                src_type = source.get("type", "")
+                if src_type == "base64":
+                    media = source.get("media_type", "image/jpeg")
+                    data = source.get("data", "")
+                    image_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media};base64,{data}"},
+                    })
+                elif src_type == "url":
+                    image_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": source.get("url", "")},
+                    })
             elif btype == "tool_use":
                 tool_uses.append(block)
             elif btype == "tool_result":
@@ -346,12 +438,35 @@ async def messages(request: Request, body: dict = Body(...)):
                 ]
             oai_messages.append(oai_msg)
         else:
-            # User messages: text first, then tool_results as separate "tool" role messages
-            if text_parts:
+            # User messages: build multipart content array if images present, else plain text
+            if image_parts:
+                oai_content = []
+                if text_parts:
+                    oai_content.append({"type": "text", "text": "".join(text_parts)})
+                oai_content.extend(image_parts)
+                oai_messages.append({"role": "user", "content": oai_content})
+            elif text_parts:
                 oai_messages.append({"role": "user", "content": "".join(text_parts)})
             for tr in tool_results:
                 tr_content = tr.get("content", "")
+                tr_images = []
                 if isinstance(tr_content, list):
+                    for b in tr_content:
+                        if b.get("type") == "image":
+                            source = b.get("source", {})
+                            src_type = source.get("type", "")
+                            if src_type == "base64":
+                                media = source.get("media_type", "image/jpeg")
+                                data = source.get("data", "")
+                                tr_images.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:{media};base64,{data}"},
+                                })
+                            elif src_type == "url":
+                                tr_images.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": source.get("url", "")},
+                                })
                     tr_content = "".join(
                         b.get("text", "") for b in tr_content if b.get("type") == "text"
                     )
@@ -360,6 +475,9 @@ async def messages(request: Request, body: dict = Body(...)):
                     "tool_call_id": tr.get("tool_use_id", ""),
                     "content": str(tr_content),
                 })
+                # tool messages can't carry images in OpenAI format — inject as user message
+                if tr_images:
+                    oai_messages.append({"role": "user", "content": tr_images})
 
     oai_body = {
         "model": cfg["model"],
@@ -372,10 +490,16 @@ async def messages(request: Request, body: dict = Body(...)):
     if oai_tools:
         oai_body["tools"] = oai_tools
 
+    # Disable thinking for llama.cpp via chat_template_kwargs
+    no_think_prompt_llama = None
+    if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
+        oai_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
+
     url = f"http://127.0.0.1:{port}/chat/completions"
+    llama_req_body = oai_body
 
     try:
-        if oai_body["stream"]:
+        if llama_req_body["stream"]:
             msg_id = f"msg_{_uuid.uuid4().hex[:24]}"
 
             async def generate_llama():
@@ -388,10 +512,18 @@ async def messages(request: Request, body: dict = Body(...)):
                     tool_calls_acc = {}  # tc_index -> {id, name, arguments, block_idx}
                     stop_reason = "end_turn"
 
-                    async with client.stream("POST", url, json=oai_body) as response:
+                    async with client.stream("POST", url, json=llama_req_body) as response:
                         if response.status_code != 200:
                             error_body = await response.aread()
-                            logger.error(f"Backend returned {response.status_code}: {error_body.decode()}")
+                            error_detail = error_body.decode() if isinstance(error_body, bytes) else str(error_body)
+                            logger.error(f"Backend returned {response.status_code}: {error_detail}")
+
+                            # Analisar erro
+                            error_analysis = ErrorDetector.analyze_log(error_detail)
+                            if error_analysis:
+                                logger.error(f"   Tipo: {error_analysis.error_type}")
+                                logger.error(f"   {error_analysis.explanation}")
+
                             yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
                             yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
                             return
@@ -405,10 +537,11 @@ async def messages(request: Request, body: dict = Body(...)):
                                 break
                             try:
                                 chunk = _json.loads(raw)
+
                                 delta = chunk["choices"][0].get("delta", {})
+                                delta_text = delta.get("content", "")
 
                                 # ── Text content ──
-                                delta_text = delta.get("content", "")
                                 if delta_text:
                                     if not text_started:
                                         yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': block_idx, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
@@ -417,24 +550,24 @@ async def messages(request: Request, body: dict = Body(...)):
 
                                 # ── Tool calls ──
                                 for tc_delta in delta.get("tool_calls", []):
-                                    tc_idx = tc_delta.get("index", 0)
-                                    if tc_idx not in tool_calls_acc:
-                                        # New tool call — close text block if open
-                                        if text_started:
-                                            yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
-                                            block_idx += 1
-                                            text_started = False
+                                        tc_idx = tc_delta.get("index", 0)
+                                        if tc_idx not in tool_calls_acc:
+                                            # New tool call — close text block if open
+                                            if text_started:
+                                                yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
+                                                block_idx += 1
+                                                text_started = False
 
-                                        tc_id = tc_delta.get("id", f"toolu_{_uuid.uuid4().hex[:24]}")
-                                        tc_name = tc_delta.get("function", {}).get("name", "")
-                                        tool_calls_acc[tc_idx] = {"id": tc_id, "name": tc_name, "block_idx": block_idx}
-                                        stop_reason = "tool_use"
+                                            tc_id = tc_delta.get("id", f"toolu_{_uuid.uuid4().hex[:24]}")
+                                            tc_name = tc_delta.get("function", {}).get("name", "")
+                                            tool_calls_acc[tc_idx] = {"id": tc_id, "name": tc_name, "block_idx": block_idx}
+                                            stop_reason = "tool_use"
 
-                                        yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': block_idx, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': tc_name, 'input': {}}})}\n\n"
+                                            yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': block_idx, 'content_block': {'type': 'tool_use', 'id': tc_id, 'name': tc_name, 'input': {}}})}\n\n"
 
-                                    args_delta = tc_delta.get("function", {}).get("arguments", "")
-                                    if args_delta:
-                                        yield f"event: content_block_delta\ndata: {_json.dumps({'type': 'content_block_delta', 'index': tool_calls_acc[tc_idx]['block_idx'], 'delta': {'type': 'input_json_delta', 'partial_json': args_delta}})}\n\n"
+                                        args_delta = tc_delta.get("function", {}).get("arguments", "")
+                                        if args_delta:
+                                            yield f"event: content_block_delta\ndata: {_json.dumps({'type': 'content_block_delta', 'index': tool_calls_acc[tc_idx]['block_idx'], 'delta': {'type': 'input_json_delta', 'partial_json': args_delta}})}\n\n"
 
                             except Exception:
                                 pass
@@ -457,7 +590,8 @@ async def messages(request: Request, body: dict = Body(...)):
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
         else:
-            resp = await client.post(url, json=oai_body)
+            resp = await client.post(url, json=llama_req_body)
+            msg_id = f"msg_{_uuid.uuid4().hex[:24]}"
             oai = resp.json()
             choice = oai["choices"][0]
             message = choice.get("message", {})

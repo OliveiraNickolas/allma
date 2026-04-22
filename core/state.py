@@ -25,6 +25,10 @@ _health_monitor_running = threading.Event()
 # HTTP client (managed by server.py)
 httpx_client = None
 
+# Error detection & auto-resolution
+last_error_analysis: Dict[str, Any] = {}  # {physical_name: ErrorAnalysis}
+auto_fix_attempt_count: Dict[str, int] = {}  # {physical_name: attempt_count}
+
 # ==============================================================================
 # PORT ALLOCATION
 # ==============================================================================

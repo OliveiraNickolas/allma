@@ -22,6 +22,7 @@ from core.process import (
     list_gpu_processes,
     save_backend_pid,
 )
+from core.error_detector import ErrorDetector, tail_file
 
 
 # ==============================================================================
@@ -180,6 +181,23 @@ async def wait_for_model_ready(
                     f.seek(log_position)
                     new_content = f.read()
                     log_position = f.tell()
+
+                    # Detectar erros conhecidos em tempo real
+                    error_analysis = ErrorDetector.analyze_log(new_content)
+                    if error_analysis:
+                        spinner.stop(success=False)
+                        logger.warning(f"⚠️ {error_analysis.error_type}: {error_analysis.explanation}")
+                        logger.debug(f"   Raw: {error_analysis.raw_message}")
+                        if error_analysis.auto_fix_available:
+                            logger.info(f"🔧 Tentando auto-correção: {error_analysis.auto_fix_action}")
+                            state.last_error_analysis[physicalname] = error_analysis
+                            return False  # Sinalizar para retry com fix
+                        else:
+                            for suggestion in error_analysis.suggestions:
+                                logger.warning(f"   → {suggestion}")
+                            state.last_error_analysis[physicalname] = error_analysis
+                            # Continuar aguardando, pode ser apenas warning
+
                     for line in new_content.splitlines():
                         if line.strip():
                             logger.debug(f"[{displayname}] {line}")
@@ -455,6 +473,20 @@ async def _load_model_impl(physicalname: str, cfg: dict, backend: str, displayna
                     logger.error(f"{displayname}:{port} exited with code {returncode}")
                     logfile.seek(log_start_position)
                     log_content = logfile.read()
+
+                    # Analisar erro em detalhe
+                    error_analysis = ErrorDetector.analyze_log(log_content)
+                    if error_analysis:
+                        logger.error(
+                            f"❌ Falha ao carregar {displayname}\n"
+                            f"   Tipo: {error_analysis.error_type}\n"
+                            f"   Detalhes: {error_analysis.explanation}"
+                        )
+                        for suggestion in error_analysis.suggestions:
+                            logger.error(f"   • {suggestion}")
+                        state.last_error_analysis[physicalname] = error_analysis
+
+                    # Fallback antigo: VRAM detection
                     if "Free memory" in log_content and "less than desired" in log_content:
                         logger.warning(
                             f"💥 VRAM allocation failed on GPU {current_gpu_id}, retrying with adjusted config..."

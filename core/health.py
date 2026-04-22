@@ -2,9 +2,11 @@
 Health monitor: idle-timeout unloading and crash detection.
 """
 import time
-from core.config import logger, AUTO_SWAP_ENABLED, KEEP_ALIVE_SECONDS, HEALTH_CHECK_INTERVAL
+from pathlib import Path
+from core.config import logger, AUTO_SWAP_ENABLED, KEEP_ALIVE_SECONDS, HEALTH_CHECK_INTERVAL, ALLAMA_LOG_DIR
 import core.state as state
 from core.process import shutdown_server
+from core.error_detector import ErrorDetector, tail_file
 
 
 def health_monitor():
@@ -22,7 +24,23 @@ def health_monitor():
                         port = server["port"]
 
                         if proc.poll() is not None:
-                            logger.error(f"💥 {physical_name}:{port} crashed")
+                            # Tentar extrair razão do crash analisando log
+                            log_path = Path(ALLAMA_LOG_DIR) / f"{physical_name}.log"
+                            if log_path.exists():
+                                last_lines = tail_file(str(log_path), lines=100)
+                                error_analysis = ErrorDetector.analyze_log(last_lines)
+                                if error_analysis:
+                                    logger.error(
+                                        f"💥 {physical_name}:{port} crashed\n"
+                                        f"   Razão: {error_analysis.error_type}\n"
+                                        f"   {error_analysis.explanation}"
+                                    )
+                                    state.last_error_analysis[physical_name] = error_analysis
+                                else:
+                                    logger.error(f"💥 {physical_name}:{port} crashed (causa desconhecida)")
+                            else:
+                                logger.error(f"💥 {physical_name}:{port} crashed")
+
                             state.active_servers.pop(physical_name, None)
                             state.server_idle_time.pop(physical_name, None)
                             continue
