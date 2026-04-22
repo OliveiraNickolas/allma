@@ -861,8 +861,10 @@ def show_banner():
             if ch == "█":
                 logo_text.append(ch, style=f"bold {color}")
             elif ch in _BOX:
-                style = f"dim {color}" if j in _L_COLS else f"bold {color}"
-                logo_text.append(ch, style=style)
+                if j in _L_COLS:
+                    logo_text.append(ch, style=f"dim {color}")
+                else:
+                    logo_text.append(" ")
             else:
                 logo_text.append(ch)
         if i < 5:

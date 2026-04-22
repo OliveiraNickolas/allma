@@ -48,8 +48,10 @@ def _build_logo_markup():
             if ch == "█":
                 t.append(ch, style=f"bold {color}")
             elif ch in _BOX_CHARS:
-                style = f"dim {color}" if j in _L_COLS else f"bold {color}"
-                t.append(ch, style=style)
+                if j in _L_COLS:
+                    t.append(ch, style=f"dim {color}")
+                else:
+                    t.append(" ")
             else:
                 t.append(ch)
         if i < len(_LOGO_ROWS) - 1:
