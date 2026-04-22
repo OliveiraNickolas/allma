@@ -35,8 +35,8 @@ def _build_logo_rows() -> list[str]:
         'L': ["█    ", "█    ", "█    ", "█    ", "█████"],
         'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
     }
-    word, starts = list("ALLMA"), [0, 6, 12, 18, 24, 30]
-    canvas = [[0] * 36 for _ in range(5)]
+    word, starts = list("ALLMA"), [0, 6, 12, 18, 24]
+    canvas = [[0] * 30 for _ in range(5)]
     for ch, col in zip(word, starts):
         for r, row in enumerate(CHARS[ch]):
             for c, px in enumerate(row):
@@ -45,7 +45,7 @@ def _build_logo_rows() -> list[str]:
         if ch == "L":
             for r, row in enumerate(CHARS[ch]):
                 for c, px in enumerate(row):
-                    if px == "█" and col + c + 1 < 36 and canvas[r][col + c + 1] == 0:
+                    if px == "█" and col + c + 1 < 30 and canvas[r][col + c + 1] == 0:
                         canvas[r][col + c + 1] = 2
     return ["".join("█" if v == 1 else "▒" if v == 2 else " " for v in row)
             for row in canvas]

@@ -845,8 +845,8 @@ def show_banner():
             'L': ["█    ", "█    ", "█    ", "█    ", "█████"],
             'M': ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
         }
-        word, starts = list("ALLMA"), [0, 6, 12, 18, 24, 30]
-        canvas = [[0] * 36 for _ in range(5)]
+        word, starts = list("ALLMA"), [0, 6, 12, 18, 24]
+        canvas = [[0] * 30 for _ in range(5)]
         for ch, col in zip(word, starts):
             for r, row in enumerate(CHARS[ch]):
                 for c, px in enumerate(row):
@@ -857,7 +857,7 @@ def show_banner():
                     for c, px in enumerate(row):
                         if px == "█":
                             sc = col + c + 1
-                            if sc < 36 and canvas[r][sc] == 0:
+                            if sc < 30 and canvas[r][sc] == 0:
                                 canvas[r][sc] = 2
         return ["".join("█" if v == 1 else "▒" if v == 2 else " " for v in row)
                 for row in canvas]
