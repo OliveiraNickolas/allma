@@ -872,7 +872,7 @@ def show_banner():
     # ── configuration summary ─────────────────────────────────────────────────
     cfg_line = Text()
     cfg_line.append(f"  {len(BASE_MODELS)}", style=f"bold {C_FG}")
-    cfg_line.append(" phys  ·  " if _narrow else " base model(s)  ·  ", style=C_DIM)
+    cfg_line.append(" base  ·   if _narrow else " base model(s)  ·  ", style=C_DIM)
     cfg_line.append(f"{len(PROFILE_MODELS)}", style=f"bold {C_FG}")
     cfg_line.append(" profile  ·  keep-alive: " if _narrow else " profile model(s)  ·  keep-alive: ", style=C_DIM)
     cfg_line.append(f"{KEEP_ALIVE_SECONDS}s", style=f"bold {C_FG}")
@@ -948,7 +948,7 @@ def show_banner():
     log_tbl = Table(box=None, padding=_tbl_pad, show_header=True,
                     header_style=f"bold {C_DIM}", expand=True)
     log_tbl.add_column("NAME",     style=C_FG,   no_wrap=True, min_width=_w_name_l)
-    log_tbl.add_column("PHYSICAL", style=C_DIM,  no_wrap=True, min_width=_w_phys)
+    log_tbl.add_column("BASE", style=C_DIM,  no_wrap=True, min_width=_w_phys)
     log_tbl.add_column("TEMP",     style=C_DIM,  justify="right", min_width=4)
     log_tbl.add_column("TOP_P",    style=C_DIM,  justify="right", min_width=4)
     log_tbl.add_column("TOP_K",    style=C_DIM,  justify="right", min_width=4)
