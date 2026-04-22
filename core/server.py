@@ -943,15 +943,13 @@ def show_banner():
         _log_groups.setdefault(_g, []).append((_n, _c))
 
     _w_name_l = 14 if _narrow else 24
-    _w_phys   = 16 if _narrow else 28
 
     log_tbl = Table(box=None, padding=_tbl_pad, show_header=True,
                     header_style=f"bold {C_DIM}", expand=True)
-    log_tbl.add_column("NAME",     style=C_FG,   no_wrap=True, min_width=_w_name_l)
-    log_tbl.add_column("BASE", style=C_DIM,  no_wrap=True, min_width=_w_phys)
-    log_tbl.add_column("TEMP",     style=C_DIM,  justify="right", min_width=4)
-    log_tbl.add_column("TOP_P",    style=C_DIM,  justify="right", min_width=4)
-    log_tbl.add_column("TOP_K",    style=C_DIM,  justify="right", min_width=4)
+    log_tbl.add_column("NAME", style=C_FG,  no_wrap=True, min_width=_w_name_l)
+    log_tbl.add_column("TEMP", style=C_DIM, justify="right", min_width=4)
+    log_tbl.add_column("TOP_P", style=C_DIM, justify="right", min_width=4)
+    log_tbl.add_column("TOP_K", style=C_DIM, justify="right", min_width=4)
 
     _log_group_list = [g for g in ("vllm", "gguf") if g in _log_groups]
     for _gi, _g in enumerate(_log_group_list):
@@ -962,7 +960,6 @@ def show_banner():
             _end_sec  = (_i == len(_items) - 1) and not _is_last_group
             log_tbl.add_row(
                 _lname,
-                _lcfg.get("base", "—"),
                 str(_sampling.get("temperature", "—")),
                 str(_sampling.get("top_p",       "—")),
                 str(_sampling.get("top_k",       "—")),
@@ -997,7 +994,7 @@ def show_banner():
 
     log_panel = Panel(
         log_tbl,
-        title=_sec_title("Profile Models"), title_align="left",
+        title=_sec_title("Profiles"), title_align="left",
         box=_box.SQUARE, border_style=C_DIM,
         style=_S, padding=_inner_pad,
     )
