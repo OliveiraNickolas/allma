@@ -840,12 +840,12 @@ def show_banner():
         return t
 
     LOGO_ROWS = [
-        " █████╗ ██╗     ██╗     ███╗   ███╗ █████╗ ",
-        "██╔══██╗██║     ██║     ████╗ ████║██╔══██╗",
-        "███████║██║     ██║     ██╔████╔██║███████║",
-        "██╔══██║██║     ██║     ██║╚██╔╝██║██╔══██║",
-        "██║  ██║███████╗███████╗██║ ╚═╝ ██║██║  ██║",
-        "╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝",
+        "█████  ██╗     ██╗     ███    ███  █████ ",
+        "██   ██ ██║     ██║     ████  ████ ██   ██",
+        "███████ ██║     ██║     ██ ████ ██ ███████",
+        "██   ██ ██║     ██║     ██  ██  ██ ██   ██",
+        "██   ██ ███████╗███████╗██      ██ ██   ██",
+        "        ╚══════╝╚══════╝__________________",
     ]
 
     # ── logo panel ────────────────────────────────────────────────────────────
@@ -865,6 +865,8 @@ def show_banner():
                     logo_text.append(ch, style=f"dim {color}")
                 else:
                     logo_text.append(" ")
+            elif ch == "_":
+                logo_text.append(ch, style=C_BG)
             else:
                 logo_text.append(ch)
         if i < 5:
@@ -872,9 +874,9 @@ def show_banner():
     # ── configuration summary ─────────────────────────────────────────────────
     cfg_line = Text()
     cfg_line.append(f"  {len(BASE_MODELS)}", style=f"bold {C_FG}")
-    cfg_line.append(" base  ·   if _narrow else " base model(s)  ·  ", style=C_DIM)
+    cfg_line.append(" base model(s)  ·  ", style=C_DIM)
     cfg_line.append(f"{len(PROFILE_MODELS)}", style=f"bold {C_FG}")
-    cfg_line.append(" profile  ·  keep-alive: " if _narrow else " profile model(s)  ·  keep-alive: ", style=C_DIM)
+    cfg_line.append(" profile (s)  ·  keep-alive: ", style=C_DIM)
     cfg_line.append(f"{KEEP_ALIVE_SECONDS}s", style=f"bold {C_FG}")
 
     # ── base models table — sorted by backend group then size desc ───────
@@ -900,62 +902,88 @@ def show_banner():
         _phys_groups.setdefault(_g, []).append((_n, _c))
 
     _tbl_pad  = (0, 1, 0, 0) if _narrow else (0, 2, 0, 0)
-    _w_name_p = 16 if _narrow else 28
-    _w_fmt    = 8  if _narrow else 12
+    _w_name_p = 24 if _narrow else 35
 
     phys_tbl = Table(box=None, padding=_tbl_pad, show_header=True,
                      header_style=f"bold {C_DIM}", expand=True)
-    phys_tbl.add_column("NAME",    style=C_FG,     no_wrap=True, min_width=_w_name_p)
-    phys_tbl.add_column("FORMAT",  style=C_ACCENT, no_wrap=True, min_width=_w_fmt)
-    phys_tbl.add_column("CTX",     style=C_DIM,    justify="right", min_width=6)
-    phys_tbl.add_column("GPU",     style=C_DIM,    justify="right", min_width=3)
+    phys_tbl.add_column("SAFETENSORS",  style=C_FG,     no_wrap=False, min_width=_w_name_p)
+    phys_tbl.add_column("GGUF",         style=C_FG,     no_wrap=False, min_width=_w_name_p)
 
-    _group_labels = {"vllm": "safetensors", "gguf": "gguf"}
-    _group_list   = [g for g in ("vllm", "gguf") if g in _phys_groups]
-    for _gi, _g in enumerate(_group_list):
-        _items = _phys_groups[_g]
-        _label = _group_labels[_g]
-        _is_last_group = _gi == len(_group_list) - 1
-        for _i, (_name, _cfg) in enumerate(_items):
-            _ctx     = _cfg.get("n_ctx") or _cfg.get("max_model_len", "—")
-            _gpu     = _cfg.get("n_gpu_layers", "—")
-            _gpu_str = "all" if str(_gpu) == "-1" else str(_gpu)
-            _end_sec = (_i == len(_items) - 1) and not _is_last_group
-            phys_tbl.add_row(_name, _label, str(_ctx), _gpu_str,
-                             end_section=_end_sec)
+    # separate safetensors and gguf
+    _sft_items = sorted(_phys_groups.get("vllm", []), key=lambda x: x[0].lower())
+    _gguf_items = sorted(_phys_groups.get("gguf", []), key=lambda x: x[0].lower())
+
+    # pair them side by side
+    _max_rows = max(len(_sft_items), len(_gguf_items))
+    for _i in range(_max_rows):
+        _sft_name = _sft_items[_i][0] if _i < len(_sft_items) else ""
+        _gguf_name = _gguf_items[_i][0] if _i < len(_gguf_items) else ""
+        phys_tbl.add_row(_sft_name, _gguf_name)
 
     sorted_log = sorted(PROFILE_MODELS.items(), key=lambda kv: kv[0].lower())
 
-    # group by base backend for separator
-    _log_groups: dict[str, list] = {}
-    for _n, _c in sorted_log:
-        _phys_cfg = BASE_MODELS.get(_c.get("base", ""), {})
-        _g = "vllm" if _phys_cfg.get("backend", "vllm") == "vllm" else "gguf"
-        _log_groups.setdefault(_g, []).append((_n, _c))
+    # hierarchical grouping: Model Base → Variant → Profile Variant
+    import re as _re_hier
+    _hier: dict[str, dict[str, list]] = {}  # {base: {variant: [(name, cfg), ...]}}
+    for _lname, _lcfg in sorted_log:
+        # parse name like "Qwen3.6:27b" or "Qwen3.6:35b-Instruct"
+        _match = _re_hier.match(r'^([^:]+):(\d+[a-z])(?:-(.+))?$', _lname)
+        if _match:
+            _base, _variant, _suffix = _match.groups()
+            if _base not in _hier:
+                _hier[_base] = {}
+            if _variant not in _hier[_base]:
+                _hier[_base][_variant] = []
+            _hier[_base][_variant].append((_lname, _lcfg, _suffix or ""))
 
-    _w_name_l = 14 if _narrow else 24
+    _w_name_l = 14 if _narrow else 32
 
     log_tbl = Table(box=None, padding=_tbl_pad, show_header=True,
                     header_style=f"bold {C_DIM}", expand=True)
-    log_tbl.add_column("NAME", style=C_FG,  no_wrap=True, min_width=_w_name_l)
+    log_tbl.add_column("PROFILE", style=C_FG,  no_wrap=False, min_width=_w_name_l)
     log_tbl.add_column("TEMP", style=C_DIM, justify="right", min_width=4)
     log_tbl.add_column("TOP_P", style=C_DIM, justify="right", min_width=4)
     log_tbl.add_column("TOP_K", style=C_DIM, justify="right", min_width=4)
 
-    _log_group_list = [g for g in ("vllm", "gguf") if g in _log_groups]
-    for _gi, _g in enumerate(_log_group_list):
-        _items = _log_groups[_g]
-        _is_last_group = _gi == len(_log_group_list) - 1
-        for _i, (_lname, _lcfg) in enumerate(_items):
-            _sampling = _lcfg.get("sampling", {})
-            _end_sec  = (_i == len(_items) - 1) and not _is_last_group
-            log_tbl.add_row(
-                _lname,
-                str(_sampling.get("temperature", "—")),
-                str(_sampling.get("top_p",       "—")),
-                str(_sampling.get("top_k",       "—")),
-                end_section=_end_sec,
-            )
+    # render hierarchy with elegant unicode tree
+    _bases = sorted(_hier.keys())
+    for _bi, _base in enumerate(_bases):
+        # base model header with diamond
+        _base_text = Text(f"◆ {_base}", style=f"bold {C_FG}")
+        log_tbl.add_row(_base_text, "", "", "")
+
+        _variants = sorted(_hier[_base].keys())
+        for _vi, _variant in enumerate(_variants):
+            _is_last_var = _vi == len(_variants) - 1
+            # variant row with tree connector and small circle
+            _var_prefix = "  └─ ◦ " if _is_last_var else "  ├─ ◦ "
+            _var_text = Text(_var_prefix + _variant, style=C_DIM)
+            log_tbl.add_row(_var_text, "", "", "")
+
+            # render profiles under variant
+            _profiles = _hier[_base][_variant]
+            for _pi, (_lname, _lcfg, _suffix) in enumerate(_profiles):
+                _sampling = _lcfg.get("sampling", {})
+                _is_last_prof = _pi == len(_profiles) - 1
+
+                # extract just the variant part + suffix (e.g., "27b", "27b-Code")
+                _profile_name = _lname.split(':')[1]
+
+                # tree connector with pipe for branches
+                _t = _sampling.get("temperature", "—")
+                _p = _sampling.get("top_p", "—")
+                _k = _sampling.get("top_k", "—")
+                _pipe = "  │  " if not _is_last_var else "     "
+                _connector = _pipe + ("└─ " if _is_last_prof else "├─ ")
+
+                _pname = Text(_connector + _profile_name, style=C_FG)
+
+                log_tbl.add_row(
+                    _pname,
+                    str(_t),
+                    str(_p),
+                    str(_k),
+                )
 
     # ── sub-panels (DOS wizard style — bordered boxes inside the main window) ──
     _inner_pad = (0, 1) if _narrow else (0, 2)
