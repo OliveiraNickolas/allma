@@ -924,16 +924,7 @@ def show_banner():
             phys_tbl.add_row(_name, _label, str(_ctx), _gpu_str,
                              end_section=_end_sec)
 
-    # ── profile models table — grouped by base backend, sorted by size ───
-    def _log_sort_key(kv):
-        _lname, _lcfg = kv
-        _phys_name = _lcfg.get("base", "")
-        _phys_cfg  = BASE_MODELS.get(_phys_name, {})
-        _backend   = _phys_cfg.get("backend", "vllm")
-        _group     = 0 if _backend == "vllm" else 1
-        return (_group, -_param_b(_phys_name), _phys_name.lower(), _lname.lower())
-
-    sorted_log = sorted(PROFILE_MODELS.items(), key=_log_sort_key)
+    sorted_log = sorted(PROFILE_MODELS.items(), key=lambda kv: kv[0].lower())
 
     # group by base backend for separator
     _log_groups: dict[str, list] = {}
