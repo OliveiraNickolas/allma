@@ -197,12 +197,12 @@ async def wait_for_model_ready(
                     error_analysis = ErrorDetector.analyze_log(new_content)
                     if error_analysis:
                         spinner.stop(success=False)
-                        logger.warning(f"⚠️ {error_analysis.error_type}: {error_analysis.explanation}")
+                        logger.warning(f"{error_analysis.error_type}: {error_analysis.explanation}")
                         logger.debug(f"   Raw: {error_analysis.raw_message}")
                         if error_analysis.auto_fix_available:
-                            logger.info(f"🔧 Tentando auto-correção: {error_analysis.auto_fix_action}")
+                            logger.info(f"Attempting auto-fix: {error_analysis.auto_fix_action}")
                             state.last_error_analysis[basename] = error_analysis
-                            return False  # Sinalizar para retry com fix
+                            return False
                         else:
                             for suggestion in error_analysis.suggestions:
                                 logger.warning(f"   → {suggestion}")

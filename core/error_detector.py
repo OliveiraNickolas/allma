@@ -183,7 +183,7 @@ class ErrorDetector:
                 "Reduzir n_ctx ou usar menos requisições em paralelo."
             ),
             "vram_fragmentation": (
-                "Memória VRAM está fragmentada. Muitos pequenos espaços livres, nenhum contíguo grande o suficiente."
+                "VRAM is fragmented. Many small free spaces, no large contiguous block available."
             ),
             "invalid_model_path": (
                 "Arquivo de modelo não encontrado em path configurado. "
