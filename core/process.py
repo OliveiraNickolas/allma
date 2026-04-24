@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 import psutil
 
-from core.config import logger, BASE_MODELS, LLAMA_CPP_PATH, VLLM_PATH, ALLMA_LOG_DIR
+from core.config import logger, BASE_MODELS, LLAMA_CPP_PATH, LLAMA_CPP_PYTHON_BACKEND, VLLM_PATH, ALLMA_LOG_DIR
 from core.model_detect import get_auto_extra_args, get_auto_max_model_len, get_family_label
 from core.gpu import find_optimal_tp_and_gpus, get_best_gpu, get_free_gpu_memory
 import core.state as state
@@ -184,22 +184,63 @@ def build_llama_cmd(base_name: str, gpu_id: int | None = None) -> tuple[list, in
         family = get_family_label(cfg.get("model", ""))
         logger.info(f"{base_name}: auto-detected family '{family}', applying preset args")
 
+    if LLAMA_CPP_PYTHON_BACKEND:
+        cmd = _build_llama_cpp_python_cmd(cfg, port, n_ctx, n_batch, gpu_id, extra_args)
+    else:
+        cmd = [
+            LLAMA_CPP_PATH,
+            "-m", cfg["model"],
+            "--host", "127.0.0.1",
+            "--port", str(port),
+            "-t", str(cfg.get("n_threads", "16")),
+            "-c", str(n_ctx),
+            "-b", str(n_batch),
+            "-ngl", str(cfg.get("n_gpu_layers", "-1")),
+        ]
+        if cfg.get("mmproj") and os.path.exists(cfg["mmproj"]):
+            cmd.extend(["--mmproj", cfg["mmproj"]])
+        if cfg.get("chat_template_file") and os.path.exists(cfg["chat_template_file"]):
+            cmd.extend(["--chat-template-file", cfg["chat_template_file"]])
+        cmd.extend(extra_args)
+    return cmd, port, gpu_id
+
+
+def _build_llama_cpp_python_cmd(
+    cfg: dict, port: int, n_ctx: str, n_batch: str, gpu_id: int, extra_args: list
+) -> list:
+    """Build command for llama-cpp-python server (python -m llama_cpp.server).
+
+    Translates llama-server CLI flags to llama-cpp-python settings flags.
+    Some advanced features (KV quantization, jinja templates, flash-attn) are
+    not supported by llama-cpp-python and will be silently skipped.
+    """
+    import sys as _sys
     cmd = [
-        LLAMA_CPP_PATH,
-        "-m", cfg["model"],
+        _sys.executable, "-m", "llama_cpp.server",
+        "--model", cfg["model"],
         "--host", "127.0.0.1",
         "--port", str(port),
-        "-t", str(cfg.get("n_threads", "16")),
-        "-c", str(n_ctx),
-        "-b", str(n_batch),
-        "-ngl", str(cfg.get("n_gpu_layers", "-1")),
+        "--n_ctx", str(n_ctx),
+        "--n_batch", str(n_batch),
+        "--n_threads", str(cfg.get("n_threads", "16")),
+        "--n_gpu_layers", str(cfg.get("n_gpu_layers", "-1")),
     ]
-    if cfg.get("mmproj") and os.path.exists(cfg["mmproj"]):
-        cmd.extend(["--mmproj", cfg["mmproj"]])
-    if cfg.get("chat_template_file") and os.path.exists(cfg["chat_template_file"]):
-        cmd.extend(["--chat-template-file", cfg["chat_template_file"]])
-    cmd.extend(extra_args)
-    return cmd, port, gpu_id
+    # Map subset of extra_args that llama-cpp-python supports
+    _SUPPORTED = {"--chat-format", "--rope-scaling", "--rope-freq-base", "--rope-freq-scale"}
+    skip_next = False
+    for i, arg in enumerate(extra_args):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in _SUPPORTED:
+            cmd.append(arg)
+            skip_next = True  # include the value too
+    logger.warning(
+        f"Using llama-cpp-python server (fallback). Some features are unavailable: "
+        "KV cache quantization, flash-attn, jinja templates, mmproj vision. "
+        "Install llama-server for full support: bash scripts/install-llama-cpp.sh"
+    )
+    return cmd
 
 
 # ==============================================================================

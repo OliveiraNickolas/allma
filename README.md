@@ -63,48 +63,58 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Backend Setup
 
-Allma itself is lightweight (FastAPI proxy). The heavy backends — vLLM and llama.cpp — are installed separately. **You only need to install the backend(s) you plan to use.**
+Allma is a lightweight proxy. The heavy backends — vLLM and llama.cpp — are separate. **You only need to install the backend(s) you plan to use.**
 
-### vLLM (for safetensors / FP8 / BF16 models)
-
-Install into the same venv that allma uses:
+### vLLM (safetensors / FP8 / BF16 models)
 
 ```bash
-# Basic install (CPU + CUDA auto-detected)
 venv/bin/pip install vllm
-
-# If you need a specific CUDA version:
-venv/bin/pip install vllm --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
-vLLM requires a CUDA-capable GPU. Minimum ~16 GB VRAM for 7B models, ~24 GB for 14B, and so on.
+That's it. vLLM requires a CUDA GPU. Installation downloads several GB and takes 5–15 minutes.
 
-> **Note:** vLLM installation can take 10–20 minutes and downloads several GB. The allma venv already contains the right Python version.
+> If you already have vLLM installed in a different virtualenv or conda environment, allma will find it automatically via `which vllm`. No need to reinstall.
 
-### llama.cpp (for GGUF models)
+### llama.cpp (GGUF models)
 
-llama.cpp must be built from source for GPU (CUDA) support:
+**Option A — automated build script (recommended, full features)**
 
 ```bash
-# Prerequisites: cmake, a C++ compiler, CUDA toolkit
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp
-
-# Build with CUDA support
-cmake -B build -DGGML_CUDA=ON
-cmake --build build --config Release -j$(nproc)
+bash scripts/install-llama-cpp.sh
 ```
 
-The `llama-server` binary will be at `build/bin/llama-server`. Allma auto-detects it from:
-- `LLAMA_CPP_PATH` env var
-- `~/llama.cpp/build/bin/llama-server`
-- `~/AI/llama.cpp/build/bin/llama-server`
-- Any `llama-server` on your `PATH`
+This clones llama.cpp, builds `llama-server` with CUDA support, and installs it to `~/.local/bin/`. Prerequisites: `cmake` and `build-essential` (standard on most Linux distros).
 
-Or set it explicitly in `.env`:
+```bash
+# If cmake is missing:
+sudo apt install -y cmake build-essential
+```
 
+**Option B — pip install (no compilation, limited features)**
+
+```bash
+# Replace cu121 with your CUDA major version (cu118, cu121, cu124, cu128…)
+# Find yours: nvidia-smi | grep "CUDA Version"
+venv/bin/pip install "llama-cpp-python[server]" \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+```
+
+This works without any compilation. Limitations vs. the native binary:
+- No vision / multimodal (`mmproj`) support
+- No KV cache quantization (`--cache-type-k`)
+- No flash attention
+- No jinja chat templates
+
+Use Option B for quick testing or if you only need basic GGUF inference.
+
+**Auto-detection order**
+
+Allma finds `llama-server` from: `LLAMA_CPP_PATH` env var → `~/.local/bin/llama-server` → `~/llama.cpp/build/bin/llama-server` → `PATH` → `llama-cpp-python` Python module (fallback).
+
+To override explicitly:
 ```ini
-LLAMA_CPP_PATH=/path/to/llama.cpp/build/bin/llama-server
+# .env
+LLAMA_CPP_PATH=/custom/path/to/llama-server
 ```
 
 ---

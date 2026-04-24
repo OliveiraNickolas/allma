@@ -83,30 +83,58 @@ fi
 echo ""
 echo "  Checking backends..."
 
+# llama.cpp
 LLAMA_OK=false
-if command -v llama-server &>/dev/null; then
-    echo "  llama-server — found on PATH ($(which llama-server))"
-    LLAMA_OK=true
-elif [ -f "$HOME/llama.cpp/build/bin/llama-server" ]; then
-    echo "  llama-server — found at ~/llama.cpp/build/bin/llama-server"
-    LLAMA_OK=true
-elif [ -f "$HOME/AI/llama.cpp/build/bin/llama-server" ]; then
-    echo "  llama-server — found at ~/AI/llama.cpp/build/bin/llama-server"
+LLAMA_WHERE=""
+for candidate in \
+    "$(command -v llama-server 2>/dev/null)" \
+    "$HOME/.local/bin/llama-server" \
+    "$HOME/llama.cpp/build/bin/llama-server" \
+    "$HOME/AI/llama.cpp/build/bin/llama-server" \
+    "/usr/local/bin/llama-server"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        LLAMA_WHERE="$candidate"
+        LLAMA_OK=true
+        break
+    fi
+done
+
+if $LLAMA_OK; then
+    LLAMA_VER=$("$LLAMA_WHERE" --version 2>&1 | head -1 | grep -oP 'version \K\S+' || echo "")
+    echo "  llama-server ${LLAMA_VER:+$LLAMA_VER }— $LLAMA_WHERE"
+elif "$VENV/bin/python" -c "import llama_cpp" &>/dev/null 2>&1; then
+    LLAMA_PYVER=$("$VENV/bin/python" -c "import llama_cpp; print(llama_cpp.__version__)" 2>/dev/null)
+    echo "  llama-cpp-python $LLAMA_PYVER — found (limited features, no vision/flash-attn)"
     LLAMA_OK=true
 else
-    echo "  llama-server — NOT found (see README for install instructions)"
+    echo "  llama-server — not found"
+    echo "  llama-cpp-python — not found"
+    LLAMA_OK=false
 fi
 
+# vLLM — check venv, PATH, and common conda/venv locations
 VLLM_OK=false
-if "$VENV/bin/python" -c "import vllm" &>/dev/null 2>&1; then
-    VLLM_VER=$("$VENV/bin/python" -c "import vllm; print(vllm.__version__)" 2>/dev/null)
-    echo "  vllm $VLLM_VER — found in venv"
+VLLM_WHERE=""
+for vllm_candidate in \
+    "$VENV/bin/vllm" \
+    "$(command -v vllm 2>/dev/null)"; do
+    if [ -n "$vllm_candidate" ] && [ -x "$vllm_candidate" ]; then
+        VLLM_WHERE="$vllm_candidate"
+        VLLM_OK=true
+        break
+    fi
+done
+# Also check if importable in venv
+if ! $VLLM_OK && "$VENV/bin/python" -c "import vllm" &>/dev/null 2>&1; then
     VLLM_OK=true
-elif command -v vllm &>/dev/null; then
-    echo "  vllm — found on PATH ($(which vllm))"
-    VLLM_OK=true
+    VLLM_WHERE="(Python module in venv)"
+fi
+
+if $VLLM_OK; then
+    VLLM_VER=$("$VENV/bin/python" -c "import vllm; print(vllm.__version__)" 2>/dev/null || echo "")
+    echo "  vllm ${VLLM_VER:+$VLLM_VER }— ${VLLM_WHERE:-found}"
 else
-    echo "  vllm — NOT found (see README for install instructions)"
+    echo "  vllm — not found"
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────────
@@ -117,28 +145,47 @@ echo ""
 echo "  Next steps:"
 echo ""
 
-if [ "$LLAMA_OK" = false ] || [ "$VLLM_OK" = false ]; then
-    echo "  1. Install the backend(s) you want to use:"
+STEP=1
+if [ "$VLLM_OK" = false ] || [ "$LLAMA_OK" = false ]; then
+    echo "  $STEP. Install the backend(s) you need:"
+    STEP=$((STEP+1))
+    echo ""
     if [ "$VLLM_OK" = false ]; then
-        echo "     vLLM:      $VENV/bin/pip install vllm"
+        echo "     ── vLLM (for safetensors / FP8 models) ──"
+        echo "     $VENV/bin/pip install vllm"
+        echo ""
     fi
     if [ "$LLAMA_OK" = false ]; then
-        echo "     llama.cpp: see README — requires building from source"
+        echo "     ── llama.cpp (for GGUF models) ── choose one:"
+        echo ""
+        echo "     Option A — automated build script (recommended):"
+        echo "       bash scripts/install-llama-cpp.sh"
+        echo ""
+        echo "     Option B — pip (easier, limited features, no vision):"
+        # Detect CUDA version for the right wheel URL
+        CUDA_VER=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+" | head -1)
+        if [ -n "$CUDA_VER" ]; then
+            echo "       $VENV/bin/pip install \"llama-cpp-python[server]\" \\"
+            echo "         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu${CUDA_VER}"
+        else
+            echo "       $VENV/bin/pip install \"llama-cpp-python[server]\""
+        fi
+        echo ""
     fi
-    echo ""
-    echo "  2. Create your base model configs:"
-else
-    echo "  1. Create your base model configs:"
 fi
 
+echo "  $STEP. Create your model configs:"
+STEP=$((STEP+1))
 echo "     cp configs/base/Qwen3.6-27B-FP8.allm.example configs/base/MyModel.allm"
-echo "     # Edit MyModel.allm and set the correct model path"
+echo "     # Edit the file and set the correct model path"
+echo "     # Or use the interactive wizard:"
+echo "     allma wizard"
 echo ""
-echo "  Then start allma:"
+echo "  $STEP. Start:"
 echo "     allma serve"
 echo "     allma list"
 echo "     allma run <profile-name>"
 echo ""
-echo "  Full documentation: README.md"
+echo "  Full docs: README.md"
 echo "  ─────────────────────────────────────────"
 echo ""

@@ -492,7 +492,7 @@ def _kill_leftover_backends() -> int:
                     continue
                 cmd = " ".join(proc.cmdline())
                 is_vllm  = "vllm" in cmd and "serve" in cmd and "--api-key dummy" in cmd
-                is_llama = "llama-server" in cmd and "--host 127.0.0.1" in cmd
+                is_llama = ("llama-server" in cmd or "llama_cpp.server" in cmd) and "--host 127.0.0.1" in cmd
                 if is_vllm or is_llama:
                     try:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
