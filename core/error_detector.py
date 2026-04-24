@@ -5,20 +5,20 @@ from typing import Optional
 
 @dataclass
 class ErrorAnalysis:
-    """Análise estruturada de um erro."""
-    error_type: str  # ex: "cuda_out_of_memory"
-    severity: str    # "ERROR" ou "WARNING"
-    raw_message: str  # Mensagem original detectada
-    explanation: str  # Explicação em português
-    suggestions: list[str]  # Opções de correção
+    """Structured analysis of a backend error."""
+    error_type: str
+    severity: str
+    raw_message: str
+    explanation: str
+    suggestions: list[str]
     auto_fix_available: bool = False
-    auto_fix_action: Optional[str] = None  # ex: "reduce_ubatch_size"
+    auto_fix_action: Optional[str] = None  # e.g. "reduce_ubatch_size"
 
 
 class ErrorDetector:
-    """Detecta e analisa erros conhecidos em logs de backend."""
+    """Detects and analyses known error patterns in backend logs."""
 
-    # Padrões de erro em regex (priority order)
+    # Regex error patterns (priority order)
     ERROR_PATTERNS = {
         "cuda_out_of_memory": [
             r"CUDA out of memory",
@@ -65,60 +65,58 @@ class ErrorDetector:
         ],
     }
 
-    # Sugestões por tipo de erro
     SUGGESTIONS = {
         "cuda_out_of_memory": [
-            "Reduzir --ubatch-size (ex: 1024 → 512 → 256)",
-            "Reduzir --cache-type (usar q8_0 em vez de fp16 para KV cache)",
-            "Reduzir max_model_len (ex: 262K → 131K)",
-            "Usar tensor-parallel com múltiplas GPUs",
-            "Usar quantização (Q4, Q5 em vez de fp16)",
-            "Aumentar --defrag-thold para desfraginizar memória",
+            "Reduce --ubatch-size (e.g. 1024 → 512 → 256)",
+            "Use KV cache quantization (--cache-type-k q8_0 instead of fp16)",
+            "Reduce max_model_len (e.g. 262K → 131K)",
+            "Use tensor-parallel across multiple GPUs",
+            "Use a quantized model (Q4, Q5 instead of fp16)",
+            "Increase --defrag-thold to defragment VRAM",
         ],
         "cuda_allocation_failed": [
-            "GPU pode estar fragilizada, reinicie o servidor",
-            "Verificar se há outros processos usando GPU (nvidia-smi)",
-            "Reduzir gpu_memory_utilization em base config",
-            "Reiniciar NVIDIA driver: sudo systemctl restart nvidia-persistenced",
+            "GPU memory may be fragmented — restart the server",
+            "Check for other processes using VRAM (nvidia-smi)",
+            "Reduce gpu_memory_utilization in the base config",
+            "Restart NVIDIA persistence daemon: sudo systemctl restart nvidia-persistenced",
         ],
         "tensor_parallel_failed": [
-            "Verificar se todas as GPUs têm memória suficiente",
-            "Reduzir tensor-parallel-size",
-            "Usar GPU_MEMORY_THRESHOLD_GB para limpar VRAM antes",
-            "Verificar CUDA_VISIBLE_DEVICES está correto",
+            "Check that all GPUs have enough free VRAM",
+            "Reduce tensor-parallel-size",
+            "Set GPU_MEMORY_THRESHOLD_GB higher to ensure VRAM is clear before loading",
+            "Verify CUDA_VISIBLE_DEVICES is set correctly",
         ],
         "model_too_large": [
-            "Modelo não cabe em GPU disponível",
-            "Opções: (1) Aumentar GPUs, (2) Usar quantização, (3) Usar modelo menor",
-            "Reduzir max_model_len para economizar VRAM",
+            "Model does not fit in available VRAM",
+            "Options: (1) add more GPUs, (2) use a quantized version, (3) use a smaller model",
+            "Reduce max_model_len to save VRAM on the KV cache",
         ],
         "context_too_large": [
-            "Contexto muito grande para GPU",
-            "Reduzir n_ctx em base config",
-            "Usar --yarn-scale-factor para extensão com YaRN",
+            "Context length is too large for available VRAM",
+            "Reduce n_ctx in the base config",
+            "Use --yarn-scale-factor to extend context with less VRAM via YaRN",
         ],
         "invalid_model_path": [
-            "Verificar path do modelo em base config",
-            "Confirmar arquivo existe em /home/nick/AI/Models/",
-            "Verificar permissões: ls -la /path/to/model",
+            "Check the model path in your base config (.allm file)",
+            "Verify the file exists: ls -la /path/to/model",
+            "Check file permissions",
         ],
         "tokenizer_load_failed": [
-            "Verificar tokenizer path em base config",
-            "Confirmar arquivo tokenizer.model ou tokenizer.json existe",
-            "Usar chat_template-file correto",
+            "Check the tokenizer path in your base config",
+            "Verify tokenizer.model or tokenizer.json exists in the model directory",
+            "Make sure the correct --chat-template-file is set",
         ],
     }
 
     @staticmethod
     def analyze_log(log_content: str) -> Optional[ErrorAnalysis]:
         """
-        Analisa conteúdo de log para detectar padrões de erro conhecidos.
-        Retorna ErrorAnalysis ou None se nenhum padrão detectado.
+        Scan log content for known error patterns.
+        Returns an ErrorAnalysis, or None if no pattern matched.
         """
         if not log_content:
             return None
 
-        # Procurar por cada tipo de erro em ordem de priority
         for error_type, patterns in ErrorDetector.ERROR_PATTERNS.items():
             for pattern in patterns:
                 match = re.search(pattern, log_content, re.IGNORECASE | re.MULTILINE)
@@ -142,93 +140,86 @@ class ErrorDetector:
 
     @staticmethod
     def _get_explanation(error_type: str, log_content: str) -> str:
-        """Retorna explicação em português para cada tipo de erro."""
+        """Return a plain-English explanation for each error type."""
         explanations = {
             "cuda_out_of_memory": (
-                "CUDA ficou sem memória durante alocação ou execução. "
-                "A GPU não tem memória suficiente para o modelo com estas configurações."
+                "CUDA ran out of memory during allocation or inference. "
+                "The GPU does not have enough VRAM for this model with the current settings."
             ),
             "cuda_allocation_failed": (
-                "Falha ao alocar memória CUDA. GPU pode estar fragilizada ou sem espaço."
+                "Failed to allocate CUDA memory. The GPU may be fragmented or out of space."
             ),
             "tensor_parallel_failed": (
-                "Falha ao dividir modelo entre GPUs (tensor-parallel). "
-                "Uma ou mais GPUs podem não ter memória suficiente."
+                "Failed to split the model across GPUs (tensor-parallel). "
+                "One or more GPUs may not have enough free VRAM."
             ),
             "model_too_large": (
-                "Modelo é maior que memória disponível em GPU. "
-                "Precisará de mais GPUs, quantização, ou modelo menor."
+                "The model is larger than available GPU memory. "
+                "You need more GPUs, a quantized version, or a smaller model."
             ),
             "context_too_large": (
-                "Contexto (n_ctx) configurado é muito grande para GPU. "
-                "Reduzir n_ctx ou usar menos requisições em paralelo."
+                "The configured context length (n_ctx) is too large for available VRAM. "
+                "Reduce n_ctx or limit parallel requests."
             ),
             "invalid_model_path": (
-                "Arquivo de modelo não encontrado em path configurado. "
-                "Verificar se arquivo existe e path está correto."
+                "Model file not found at the configured path. "
+                "Check that the file exists and the path in your base config is correct."
             ),
             "tokenizer_load_failed": (
-                "Tokenizer não encontrado ou falhou ao carregar. "
-                "Verificar path do tokenizer em base config."
+                "Tokenizer not found or failed to load. "
+                "Check the tokenizer path in your base config."
             ),
         }
-        return explanations.get(error_type, "Erro desconhecido")
+        return explanations.get(error_type, "Unknown error")
 
     @staticmethod
     def _get_auto_fix_action(error_type: str, log_content: str) -> Optional[str]:
         """
-        Retorna ação de auto-correção se disponível para este erro.
-        Retorna None se erro requer intervenção manual.
+        Return an auto-fix action identifier if one is available.
+        Returns None if the error requires manual intervention.
         """
         if error_type == "cuda_out_of_memory":
-            # Detectar se é ubatch-size que pode ser facilmente reduzido
             if re.search(r"ubatch|batch", log_content, re.IGNORECASE):
                 return "reduce_ubatch_size"
-            # Detectar se é context/max_model_len
             if re.search(r"max_model_len|n_ctx|context", log_content, re.IGNORECASE):
                 return "reduce_context_length"
-            # Caso genérico CUDA OOM
             return "reduce_batch_params"
 
-        # Fragmentação VRAM: requer ajuste manual de defrag-thold na config, não auto-fix
-        # Auto-fix repetitivo não funciona bem aqui
-
-        # Outros erros requerem ação manual
         return None
 
     @staticmethod
     def analyze_exit_code(exit_code: int, backend: str) -> Optional[str]:
         """
-        Interpreta exit code do processo para inferir causa de falha.
-        Retorna descrição legível ou None se desconhecido.
+        Interpret a process exit code to infer the cause of failure.
+        Returns a human-readable description, or None if the code is unknown.
         """
         if exit_code == 0:
-            return None  # Sucesso
+            return None  # clean exit
 
         if exit_code == 1:
-            return "Falha genérica (erro na inicialização ou fatal)"
+            return "Generic failure (startup error or fatal exception)"
 
         if exit_code == 127:
-            return f"Comando não encontrado (verifique path do {backend})"
+            return f"Command not found — check the {backend} binary path"
 
         if exit_code == -9 or exit_code == 137:
-            return "Processo foi morto (SIGKILL, possivelmente OOM killer)"
+            return "Process was killed (SIGKILL — likely OOM killer)"
 
         if exit_code == -15 or exit_code == 143:
-            return "Processo terminado (SIGTERM, shutdown normal)"
+            return "Process terminated (SIGTERM — normal shutdown)"
 
         if exit_code > 128:
             signal_num = exit_code - 128
-            return f"Terminado por signal {signal_num} (saída anormal)"
+            return f"Terminated by signal {signal_num} (abnormal exit)"
 
-        return f"Exit code {exit_code} (erro desconhecido)"
+        return f"Exit code {exit_code} (unknown error)"
 
 
 def tail_file(file_path: str, lines: int = 50) -> str:
-    """Lê as últimas N linhas de um arquivo."""
+    """Read the last N lines of a file."""
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
             return "".join(all_lines[-lines:])
     except Exception as e:
-        return f"Erro ao ler arquivo: {e}"
+        return f"Error reading file: {e}"

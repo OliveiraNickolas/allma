@@ -38,123 +38,123 @@ ARG_CATALOG: dict[str, list[dict]] = {
         {
             "id": "reasoning_qwen3",
             "label": "--reasoning-parser qwen3",
-            "description": "Habilita bloco <think> para modelos Qwen3 com reasoning",
+            "description": "Enable <think> blocks for Qwen3 reasoning models",
             "args": ["--reasoning-parser", "qwen3"],
         },
         {
             "id": "reasoning_deepseek_r1",
             "label": "--reasoning-parser deepseek_r1",
-            "description": "Habilita bloco <think> para DeepSeek-R1",
+            "description": "Enable <think> blocks for DeepSeek-R1",
             "args": ["--reasoning-parser", "deepseek_r1"],
         },
         # ── Tool calling ──────────────────────────────────────────────────────
         {
             "id": "auto_tool_choice",
             "label": "--enable-auto-tool-choice",
-            "description": "Deixa o modelo decidir quando chamar tools",
+            "description": "Let the model decide when to call tools automatically",
             "args": ["--enable-auto-tool-choice"],
         },
         {
             "id": "tool_parser_qwen3",
             "label": "--tool-call-parser qwen3_coder",
-            "description": "Parser de tool calls para Qwen3 / Qwen-Coder",
+            "description": "Tool call parser for Qwen3 / Qwen-Coder models",
             "args": ["--tool-call-parser", "qwen3_coder"],
         },
         {
             "id": "tool_parser_hermes",
             "label": "--tool-call-parser hermes",
-            "description": "Parser de tool calls para Hermes / Mistral / Llama-3.1+",
+            "description": "Tool call parser for Hermes / Mistral / Llama-3.1+",
             "args": ["--tool-call-parser", "hermes"],
         },
         {
             "id": "tool_parser_llama3",
             "label": "--tool-call-parser llama3_json",
-            "description": "Parser de tool calls para Llama 3.x",
+            "description": "Tool call parser for Llama 3.x models",
             "args": ["--tool-call-parser", "llama3_json"],
         },
         {
             "id": "tool_parser_pythonic",
             "label": "--tool-call-parser pythonic",
-            "description": "Parser de tool calls estilo pythônico (Gemma3, etc.)",
+            "description": "Pythonic-style tool call parser (Gemma3, etc.)",
             "args": ["--tool-call-parser", "pythonic"],
         },
-        # ── Performance / estabilidade ────────────────────────────────────────
+        # ── Performance / stability ───────────────────────────────────────────
         {
             "id": "disable_custom_allreduce",
             "label": "--disable-custom-all-reduce",
-            "description": "Desativa all-reduce customizado — fix para TP>1 em alguns modelos",
+            "description": "Disable custom all-reduce — fixes TP>1 issues on some models",
             "args": ["--disable-custom-all-reduce"],
         },
         {
             "id": "prefix_caching",
             "label": "--enable-prefix-caching",
-            "description": "Cache de prefixo — acelera conversas longas com mesmo contexto",
+            "description": "Prefix caching — speeds up long conversations with shared context",
             "args": ["--enable-prefix-caching"],
         },
         {
             "id": "chunked_prefill",
             "label": "--enable-chunked-prefill",
-            "description": "Prefill em chunks — melhora latência com contextos muito longos",
+            "description": "Chunked prefill — improves latency with very long contexts",
             "args": ["--enable-chunked-prefill"],
         },
         {
             "id": "enforce_eager",
             "label": "--enforce-eager",
-            "description": "Desativa CUDA graphs — mais lento, mas resolve erros em alguns modelos",
+            "description": "Disable CUDA graphs — slower but fixes errors on some models",
             "args": ["--enforce-eager"],
         },
         # ── Multimodal ────────────────────────────────────────────────────────
         {
             "id": "mm_limit_image1",
             "label": "--limit-mm-per-prompt image=1",
-            "description": "Limita a 1 imagem por prompt (modelos de visão compactos)",
+            "description": "Limit to 1 image per prompt (compact vision models)",
             "args": ["--limit-mm-per-prompt", "image=1"],
         },
         {
             "id": "mm_limit_image4",
             "label": "--limit-mm-per-prompt image=4",
-            "description": "Limita a 4 imagens por prompt (modelos de visão padrão)",
+            "description": "Limit to 4 images per prompt (standard vision models)",
             "args": ["--limit-mm-per-prompt", "image=4"],
         },
     ],
     "llama.cpp": [
-        # ── Formato de chat ───────────────────────────────────────────────────
+        # ── Chat format ───────────────────────────────────────────────────────
         {
             "id": "jinja",
             "label": "--jinja",
-            "description": "Templates Jinja para chat — necessário para tool calling completo",
+            "description": "Jinja chat templates — required for full tool calling support",
             "args": ["--jinja"],
         },
         # ── Performance ───────────────────────────────────────────────────────
         {
             "id": "flash_attn_on",
             "label": "--flash-attn on",
-            "description": "Flash Attention 2 — mais rápido e menor uso de VRAM",
+            "description": "Flash Attention 2 — faster inference and lower VRAM usage",
             "args": ["--flash-attn", "on"],
         },
         {
             "id": "cont_batching",
             "label": "--cont-batching",
-            "description": "Batching contínuo — melhor throughput com múltiplos clientes",
+            "description": "Continuous batching — better throughput with multiple clients",
             "args": ["--cont-batching"],
         },
         {
             "id": "cache_reuse",
             "label": "--cache-reuse 256",
-            "description": "Reutiliza cache de KV — acelera conversas longas",
+            "description": "KV cache reuse — speeds up long conversations",
             "args": ["--cache-reuse", "256"],
         },
-        # ── Memória ───────────────────────────────────────────────────────────
+        # ── Memory ────────────────────────────────────────────────────────────
         {
             "id": "no_mmap",
             "label": "--no-mmap",
-            "description": "Desativa mmap — mais lento para carregar, evita falhas em alguns sistemas",
+            "description": "Disable mmap — slower to load, but avoids issues on some systems",
             "args": ["--no-mmap"],
         },
         {
             "id": "mlock",
             "label": "--mlock",
-            "description": "Bloqueia modelo na RAM — evita swap para disco",
+            "description": "Lock model in RAM — prevents swapping to disk",
             "args": ["--mlock"],
         },
     ],
@@ -205,11 +205,11 @@ def _estimate_context_vram(ctx_tokens: int, model_path, size_gb: float) -> tuple
     return kv_gb, size_gb + kv_gb
 
 STEP_LABELS = [
-    (1, "DIRETÓRIO",  "Localizar modelo"),
-    (2, "ANÁLISE",    "Detectar arquivos"),
-    (3, "FÍSICO",     "Configurar backend"),
-    (4, "LÓGICO",     "Definir perfis"),
-    (5, "REVISÃO",    "Salvar configs"),
+    (1, "DIRECTORY",  "Locate model"),
+    (2, "ANALYSIS",   "Detect files"),
+    (3, "HARDWARE",   "Configure backend"),
+    (4, "PROFILES",   "Define profiles"),
+    (5, "REVIEW",     "Save configs"),
 ]
 
 
@@ -299,9 +299,9 @@ class WizardStep1Screen(Screen):
                                 id="tip-text",
                             )
                         with Horizontal(id="wizard-nav"):
-                            yield Button("◄ CANCELAR  [ESC]", id="cancel-btn")
+                            yield Button("◄ CANCEL  [ESC]", id="cancel-btn")
                             yield Button("ESCANEAR & CONTINUAR  ►", id="next-btn", variant="primary")
-                yield Static("<ESC: Cancelar>  <F10: Cancelar>", id="fkey-bar")
+                yield Static("<ESC: Cancel>  <F10: Cancel>", id="fkey-bar")
 
     def on_mount(self) -> None:
         self.query_one("#main-window").border_title = "[ ADICIONAR MODELO — PASSO 1/5 ]"
@@ -330,12 +330,12 @@ class WizardStep1Screen(Screen):
             status.update(f"  [red]Não é um diretório:[/red] {path}")
             return
 
-        status.update("  Escaneando arquivos do modelo...")
+        status.update("  Scanning model files...")
         try:
             info = detect_model(path)
             gpus = get_gpus()
         except Exception as e:
-            status.update(f"  [red]Falha ao escanear:[/red] {e}")
+            status.update(f"  [red]Failed to scan:[/red] {e}")
             return
 
         preset = FAMILY_PRESETS[info["family"]]
@@ -379,7 +379,7 @@ class WizardStep2Screen(Screen):
                             yield _section("Allma analisou o diretório")
                             yield Static(self._summary_text(info, gpus, preset), id="detect-summary")
 
-                            yield _section("Escolha o backend de inferência:")
+                            yield _section("Choose inference backend:")
                             with Vertical(classes="wizard-field"):
                                 yield Label("  Backend:")
                                 yield Select(
@@ -413,13 +413,13 @@ class WizardStep2Screen(Screen):
 
                         with Container(id="tip-box"):
                             yield Static(
-                                "  Confirmaremos se o modelo pode ser carregado com as configurações detectadas.",
+                                "  We will verify that the model can be loaded with the detected configuration.",
                                 id="tip-text",
                             )
                         with Horizontal(id="wizard-nav"):
-                            yield Button("◄ VOLTAR", id="back-btn")
-                            yield Button("PRÓXIMO  ►", id="next-btn", variant="primary")
-                yield Static("<ESC: Voltar>", id="fkey-bar")
+                            yield Button("◄ BACK", id="back-btn")
+                            yield Button("NEXT  ►", id="next-btn", variant="primary")
+                yield Static("<ESC: Back>", id="fkey-bar")
 
     def _summary_text(self, info, gpus, preset) -> str:
         lines = [""]
@@ -649,9 +649,9 @@ class WizardStep3Screen(Screen):
                                 id="tip-text",
                             )
                         with Horizontal(id="wizard-nav"):
-                            yield Button("◄ VOLTAR", id="back-btn")
-                            yield Button("PRÓXIMO  ►", id="next-btn", variant="primary")
-                yield Static("<ESC: Voltar>", id="fkey-bar")
+                            yield Button("◄ BACK", id="back-btn")
+                            yield Button("NEXT  ►", id="next-btn", variant="primary")
+                yield Static("<ESC: Back>", id="fkey-bar")
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.control.id != "ctx-input":
@@ -830,9 +830,9 @@ class WizardStep4Screen(Screen):
                                 id="tip-text",
                             )
                         with Horizontal(id="wizard-nav"):
-                            yield Button("◄ VOLTAR", id="back-btn")
+                            yield Button("◄ BACK", id="back-btn")
                             yield Button("REVISAR  ►", id="next-btn", variant="primary")
-                yield Static("<ESC: Voltar>", id="fkey-bar")
+                yield Static("<ESC: Back>", id="fkey-bar")
 
     def on_mount(self) -> None:
         self.query_one("#main-window").border_title = "[ ADICIONAR MODELO — PASSO 4/5 ]"
@@ -876,7 +876,7 @@ class WizardStep4Screen(Screen):
         self.app.pop_screen()
 
 
-# ─── Step 5: Revisão & Salvar ─────────────────────────────────────────────────
+# ─── Step 5: Review & Save ────────────────────────────────────────────────────
 class WizardStep5Screen(Screen):
     BINDINGS = [
         Binding("escape", "back", "Back", show=False),
@@ -962,9 +962,9 @@ class WizardStep5Screen(Screen):
                                 id="tip-text",
                             )
                         with Horizontal(id="wizard-nav"):
-                            yield Button("◄ VOLTAR", id="back-btn")
+                            yield Button("◄ BACK", id="back-btn")
                             yield Button("SALVAR & ATIVAR  ✔", id="save-btn", variant="primary")
-                yield Static("<ESC: Voltar>", id="fkey-bar")
+                yield Static("<ESC: Back>", id="fkey-bar")
 
     def on_mount(self) -> None:
         self.query_one("#main-window").border_title = "[ ADICIONAR MODELO — PASSO 5/5 ]"
@@ -1003,7 +1003,7 @@ class WizardStep5Screen(Screen):
             btn.label    = "SALVO  ✔"
             btn.disabled = True
         except Exception as e:
-            status.update(f"  [red]Erro ao salvar:[/red] {e}")
+            status.update(f"  [red]Failed to save:[/red] {e}")
 
     def action_back(self) -> None:
         self.app.pop_screen()

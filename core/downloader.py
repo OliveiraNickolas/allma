@@ -29,7 +29,7 @@ _S       = f"on {C_BG}"
 
 console = Console()
 
-MODELS_DIR = Path(os.environ.get("ALLMA_MODELS_DIR", "/home/nick/AI/Models"))
+MODELS_DIR = Path(os.environ.get("ALLMA_MODELS_DIR", str(Path.home() / "AI" / "Models")))
 
 QUANT_ORDER = [
     "BF16", "F16", "F32",
