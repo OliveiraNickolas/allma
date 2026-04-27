@@ -1,9 +1,0 @@
-name = "Gemma4:26b-General"
-base = "Gemma4-26b-A4B-GGUF_Q8"
-
-[sampling]
-temperature = 1.0
-top_p = 0.95
-top_k = 64
-min_p = 0.0
-repetition_penalty = 1.0

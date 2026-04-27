@@ -6,7 +6,6 @@ import argparse
 import json
 import logging
 import os
-import queue
 import signal
 import subprocess
 import sys
@@ -17,10 +16,6 @@ from pathlib import Path
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
-
-# ── Globals ───────────────────────────────────────────────────────────────────
-# Queue to communicate which models are being loaded (for -bv terminal opening)
-_models_loading_queue = queue.Queue()
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 ALLMA_DIR  = Path(__file__).parent
@@ -340,62 +335,32 @@ def _open_terminal_tail(logfile: str):
             continue
 
 
-def _be_verbose_watcher(log_dir: Path, stop_event: threading.Event, models_queue: queue.Queue):
-    """Watch allma.log for model loading messages and open terminals for each model."""
-    import re
-
-    allma_log = log_dir / "allma.log"
-    opened_models: set[str] = set()
-    log_position = None  # Will be set to end-of-file on first read
-
-    # Regex to remove ANSI color/control codes and other junk
-    ansi_escape = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\r|[^\x20-\x7E\n]')
+def _be_verbose_watcher(log_dir: Path, stop_event: threading.Event):
+    """Watch for new or freshly-written backend log files and open a terminal for each."""
+    opened: set[Path] = set()
+    # Snapshot existing files + mtimes so we only react to changes from this point
+    try:
+        existing_mtimes = {
+            p: p.stat().st_mtime
+            for p in log_dir.glob("*.log")
+            if p.name != "allma.log"
+        }
+    except Exception:
+        existing_mtimes = {}
 
     while not stop_event.is_set():
         try:
-            if not allma_log.exists():
-                stop_event.wait(0.5)
-                continue
-
-            with open(allma_log, "r", errors="replace") as f:
-                # On first read, jump to end of file (ignore past logs)
-                if log_position is None:
-                    f.seek(0, 2)  # 0, 2 = seek to end
-                    log_position = f.tell()
-                    continue  # Skip first iteration, just initialize position
-
-                f.seek(log_position)
-                new_content = f.read()
-                log_position = f.tell()
-
-            # Clean everything except ASCII printable + newline
-            clean_content = ansi_escape.sub('', new_content)
-
-            # Look for "Loading <model>" — split by lines and search each line
-            for line in clean_content.split('\n'):
-                if 'Loading' in line:
-                    # Extract model name: "Loading Qwen3.5:9b" → "Qwen3.5:9b"
-                    parts = line.split('Loading')
-                    if len(parts) > 1:
-                        # Get everything after "Loading", strip whitespace, take first token
-                        after_loading = parts[1].strip().split()[0] if parts[1].strip() else None
-                        if after_loading:
-                            model_name = after_loading
-
-                            if model_name not in opened_models:
-                                opened_models.add(model_name)
-
-                                # Find the corresponding log file
-                                model_for_file = model_name.replace(":", "-")
-                                logfile = log_dir / f"{model_for_file}.log"
-
-                                if not logfile.exists():
-                                    for candidate in log_dir.glob(f"*{model_for_file}*.log"):
-                                        logfile = candidate
-                                        break
-
-                                if logfile.exists():
-                                    _open_terminal_tail(str(logfile))
+            for logfile in log_dir.glob("*.log"):
+                if logfile.name == "allma.log" or logfile in opened:
+                    continue
+                try:
+                    mtime = logfile.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                prev_mtime = existing_mtimes.get(logfile)
+                if prev_mtime is None or mtime > prev_mtime:
+                    opened.add(logfile)
+                    _open_terminal_tail(str(logfile))
         except Exception:
             pass
         stop_event.wait(0.5)
@@ -416,7 +381,7 @@ def cmd_serve(args):
     if be_verbose:
         watcher = threading.Thread(
             target=_be_verbose_watcher,
-            args=(ALLMA_DIR / "logs", be_verbose_stop, _models_loading_queue),
+            args=(ALLMA_DIR / "logs", be_verbose_stop),
             daemon=True,
         )
         watcher.start()
@@ -427,23 +392,27 @@ def cmd_serve(args):
             print("Starting Allma (verbose mode — Ctrl+C to stop)...")
             _run_watchdog(verbose=True)
         elif be_verbose:
-            # --be-verbose only: silent daemon mode but keep watcher alive
+            # --be-verbose only: start daemon, then block watching for backend logs
             if _is_running():
                 print("Allma is already running.")
-                return
-            label = ["Starting Allma with backend logs...  "]
-            stop_spinner = threading.Event()
-            spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
-            spinner.start()
-            _start_daemon()
-            ok = _wait_for_server(30)
-            stop_spinner.set()
-            spinner.join()
-            if ok:
-                print("Allma ready. Backend terminals will open automatically.")
             else:
-                print("Allma timed out. Check logs: allma logs")
-            # Don't wait — let the watcher thread continue in background
+                label = ["Starting Allma with backend logs...  "]
+                stop_spinner = threading.Event()
+                spinner = threading.Thread(target=_run_spinner, args=(stop_spinner, label), daemon=True)
+                spinner.start()
+                _start_daemon()
+                ok = _wait_for_server(30)
+                stop_spinner.set()
+                spinner.join()
+                if not ok:
+                    print("Allma timed out. Check logs: allma logs")
+                    return
+            print("Watching for backend loads — Ctrl+C to stop.")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
         else:
             # Background daemon mode (no verbose, no be_verbose)
             if _is_running():
@@ -657,18 +626,29 @@ def cmd_run(args):
         sys.exit(1)
 
     # Pre-load model (triggers ensure_base_model server-side)
+    be_verbose = getattr(args, "be_verbose", False)
+    bv_stop = threading.Event()
+    if be_verbose:
+        bv_thread = threading.Thread(
+            target=_be_verbose_watcher,
+            args=(ALLMA_DIR / "logs", bv_stop),
+            daemon=True,
+        )
+        bv_thread.start()
+
     try:
-        # Notify the -bv watcher which model we're loading
-        _models_loading_queue.put(model)
         load_data = {"model": model}
         if args.gpu is not None:
             load_data["gpu_id"] = args.gpu
         _post("/v1/load", load_data, timeout=300.0)
     except KeyboardInterrupt:
+        bv_stop.set()
         stop_spinner.set()
         spinner.join()
         print("\nCancelled.")
         sys.exit(0)
+    finally:
+        bv_stop.set()
 
     stop_spinner.set()
     spinner.join()

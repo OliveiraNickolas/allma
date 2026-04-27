@@ -1,5 +1,5 @@
-name = "Qwen3.6:27b-Reasoning"
-base = "Qwen3.6-27B-FP8"
+name = "Qwen3.6:27b-Uncensored-Reasoning"
+base = "Qwen3.6-27B-Uncensored-GGUF_Q4"
 enable_thinking = false
 
 [sampling]
