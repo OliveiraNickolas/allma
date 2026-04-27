@@ -104,7 +104,7 @@ LLAMA_BASE_PORT = _parse_int("LLAMA_BASE_PORT", 9001)
 KEEP_ALIVE_SECONDS = _parse_int("KEEP_ALIVE_SECONDS", 600)
 HEALTH_CHECK_INTERVAL = _parse_int("HEALTH_CHECK_INTERVAL", 60)
 AUTO_SWAP_ENABLED = os.environ.get("AUTO_SWAP_ENABLED", "true").lower() == "true"
-MAX_MESSAGES = _parse_int("MAX_MESSAGES", 15)
+MAX_MESSAGES = _parse_int("MAX_MESSAGES", 50)
 
 SCRIPT_DIR = Path(__file__).parent.parent  # allama/ root
 ALLMA_LOG_DIR = Path(os.environ.get("ALLMA_LOG_DIR", str(SCRIPT_DIR / "logs")))

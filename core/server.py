@@ -79,7 +79,27 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         )
 
     if "messages" in body and MAX_MESSAGES > 0:
-        body["messages"] = body["messages"][-MAX_MESSAGES:]
+        msgs = body["messages"]
+        if len(msgs) > MAX_MESSAGES:
+            # Separate pinned prefix (system + first user) from the rest
+            pinned = []
+            rest_start = 0
+            if msgs and msgs[0].get("role") == "system":
+                pinned.append(msgs[0])
+                rest_start = 1
+            # Always keep the first user message so the model has a query anchor
+            for i in range(rest_start, len(msgs)):
+                if msgs[i].get("role") == "user":
+                    if i > rest_start:  # not already adjacent to pinned
+                        pinned.append(msgs[i])
+                    else:
+                        pinned.append(msgs[i])
+                    rest_start = i + 1
+                    break
+            rest = msgs[rest_start:]
+            # Fill remaining budget with the tail of the conversation
+            budget = MAX_MESSAGES - len(pinned)
+            body["messages"] = pinned + rest[-budget:]
 
     logical_cfg = PROFILE_MODELS[model_name]
     base_name = logical_cfg["base"]
