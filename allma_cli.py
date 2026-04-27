@@ -438,9 +438,6 @@ def cmd_restart(args):
     """Stop and restart the Allma server."""
     cmd_stop(args)
     time.sleep(1)
-    # Clear the "already running" guard so cmd_serve proceeds
-    if hasattr(args, "_restarting"):
-        pass
     cmd_serve(args)
 
 

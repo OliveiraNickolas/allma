@@ -25,9 +25,9 @@ This document shows **your actual models** with recommended configurations based
 
 **Current Physical Config:**
 ```ini
-[/home/nick/AI/allma/configs/base/Qwen3.5-35b.allm]
+[configs/base/Qwen3.5-35b.allm]
 backend = "vllm"
-path = "/home/nick/AI/Models/Qwen3.5-35B-A3B-FP8"
+path = "/path/to/models/Qwen3.5-35B-A3B-FP8"
 tensor_parallel = "2"          ✅ Correct for your 2x RTX 3090
 gpu_memory_utilization = "0.95"  ⚠️  Risky, lower to 0.85
 max_model_len = 65536          ✅ Good
@@ -104,7 +104,7 @@ extra_args = [
 **Current Physical Config:**
 ```ini
 backend = "vllm"
-path = "/home/nick/AI/Models/Qwen3.5-27B-FP8"
+path = "/path/to/models/Qwen3.5-27B-FP8"
 tensor_parallel = "1"          ✅ Correct (fits single GPU)
 gpu_memory_utilization = "0.90"  ✅ Good
 max_model_len = 65536          ✅ Long context
@@ -153,7 +153,7 @@ repetition_penalty = 1.0
 **Current Physical Config:**
 ```ini
 backend = "vllm"
-path = "/home/nick/AI/Models/Qwen3.VL-8B"
+path = "/path/to/models/Qwen3.VL-8B"
 tensor_parallel = "1"
 gpu_memory_utilization = "0.90"
 max_model_len = 61152

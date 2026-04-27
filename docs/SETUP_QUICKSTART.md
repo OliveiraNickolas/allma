@@ -54,7 +54,7 @@ mkdir -p /path/to/models
 ### Step 2: Update Profile Paths
 Edit each profile file and replace `/path/to/models/`:
 ```bash
-cd /home/nick/AI/allma/configs/profiles/
+cd ~/allma/configs/profile/
 
 # Edit all .allm files to point to your actual model paths
 sed -i 's|/path/to/models/|/your/actual/path/|g' *.allm
@@ -62,7 +62,7 @@ sed -i 's|/path/to/models/|/your/actual/path/|g' *.allm
 
 ### Step 3: Start Server
 ```bash
-cd /home/nick/AI/allma
+cd ~/allma
 
 # Start Allma server
 allma serve

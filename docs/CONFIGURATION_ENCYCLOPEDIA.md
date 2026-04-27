@@ -802,7 +802,7 @@ Some models have custom **chat templates** that control how messages are formatt
 
 **Your Qwen 35B has:**
 ```
-/home/nick/AI/Models/Qwen3.5-35B-A3B-FP8/chat_template.jinja
+/path/to/models/Qwen3.5-35B-A3B-FP8/chat_template.jinja
 ```
 
 **What it does:** Controls how user/assistant messages are combined into tokens.
