@@ -1564,6 +1564,35 @@ def main():
     parser = argparse.ArgumentParser(
         prog="allma",
         description="Allma — local LLM manager",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+commands:
+  server:
+    serve [-v] [-bv] [-f]            start daemon  (-v: foreground  -bv: tail backend logs)
+    restart                          stop + restart
+    stop                             stop server and all backends
+    status                           show if server is running
+
+  models:
+    list                             list available profiles
+    ps                               show loaded models and GPU usage
+    run <profile>                    interactive chat with a model
+    unload <model>                   unload a model and free its VRAM
+
+  logs:
+    logs [-f] [-n N]                 show allma logs  (-f: follow)
+    backend logs [name] [-f] [-n N]  tail a backend process log
+
+  clients:
+    launch claude <profile>          open Claude Code pointed at a local model
+
+  setup:
+    download <hf-repo>               download a model from HuggingFace
+    wizard                           interactive wizard to create configs
+    hardware-detect                  show detected GPUs and VRAM
+    calibrate <model>                pre-calibrate model (warmup KV cache)
+    update [all|allma|vllm|llama]    update allma and/or backends
+"""
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     sub.required = True
