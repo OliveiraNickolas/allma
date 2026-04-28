@@ -294,7 +294,7 @@ def apply_auto_fix(basename: str, cfg: dict, error_analysis) -> bool:
         return False
 
     if action == "reduce_ubatch_size":
-        current = int(cfg.get("max_num_seqs", "8"))
+        current = int(cfg.get("max_num_seqs") or "8")
         new = max(2, current // 2)
         if new < current:
             cfg["max_num_seqs"] = str(new)
@@ -546,15 +546,20 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
         logger.info(f"{displayname} loaded on GPU {current_gpu_id}")
         return port
 
-    except RuntimeError:
+    except Exception:
         with state.global_lock:
             if state.active_servers.get(basename):
                 p = state.active_servers[basename].get("process")
                 if p:
                     try:
                         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                    except Exception:
-                        pass
+                    except (ProcessLookupError, PermissionError):
+                        try:
+                            os.kill(p.pid, signal.SIGKILL)
+                        except Exception as kill_err:
+                            logger.warning(f"Failed to kill {basename} PID {p.pid}: {kill_err}")
+                    except Exception as e:
+                        logger.warning(f"killpg failed for {basename}: {e}")
                 state.active_servers.pop(basename, None)
                 state.server_idle_time.pop(basename, None)
         raise

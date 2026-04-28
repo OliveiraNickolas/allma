@@ -723,7 +723,7 @@ async def ps():
                 "port": srv.get("port"),
                 "pid": srv.get("pid"),
                 "logfile": str(srv.get("logfile", "")),
-                "alive": srv["process"].poll() is None,
+                "alive": bool(srv.get("process")) and srv["process"].poll() is None,
             }
             for name, srv in state.active_servers.items()
         ]

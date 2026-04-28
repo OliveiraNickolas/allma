@@ -174,13 +174,18 @@ VLLM_PATH = _find_vllm()
 # ==============================================================================
 ALLMA_LOG_DIR.mkdir(exist_ok=True)
 
-file_handler = logging.handlers.RotatingFileHandler(
-    str(ALLMA_LOG_DIR / "allma.log"),
-    maxBytes=10_485_760,
-    backupCount=5,
-    encoding="utf-8",
-)
-file_handler.setFormatter(JSONFormatter())
+try:
+    file_handler = logging.handlers.RotatingFileHandler(
+        str(ALLMA_LOG_DIR / "allma.log"),
+        maxBytes=10_485_760,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(JSONFormatter())
+except Exception as _log_err:
+    file_handler = logging.StreamHandler(sys.stderr)
+    file_handler.setFormatter(JSONFormatter())
+    print(f"WARNING: Could not open log file, falling back to stderr: {_log_err}", file=sys.stderr)
 
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(ColoredFormatter())
@@ -250,7 +255,11 @@ def format_user_agent(ua: str) -> str:
 def load_models_from_configs() -> tuple[dict, dict]:
     try:
         sys.path.insert(0, str(SCRIPT_DIR))
-        from configs.loader import load_models_from_configs as _load
+        try:
+            from configs.loader import load_models_from_configs as _load
+        finally:
+            if str(SCRIPT_DIR) in sys.path:
+                sys.path.remove(str(SCRIPT_DIR))
         return _load(str(CONFIG_DIR))
     except FileNotFoundError as e:
         logger.warning(f"Config directory not found: {e}")
