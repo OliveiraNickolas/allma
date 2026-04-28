@@ -622,18 +622,35 @@ async def messages(request: Request, body: dict = Body(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+def _model_context_length(profile_cfg: dict) -> int | None:
+    """Return n_ctx for a profile's base model, or None if not found."""
+    base_cfg = BASE_MODELS.get(profile_cfg.get("base", ""), {})
+    try:
+        return int(base_cfg.get("n_ctx") or base_cfg.get("max_model_len") or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
 @app.get("/v1/models")
 async def models_list():
-    return {
-        "object": "list",
-        "data": [{"id": k, "object": "model"} for k in sorted(PROFILE_MODELS.keys())],
-    }
+    data = []
+    for k in sorted(PROFILE_MODELS.keys()):
+        entry: dict = {"id": k, "object": "model"}
+        ctx = _model_context_length(PROFILE_MODELS[k])
+        if ctx:
+            entry["context_length"] = ctx
+        data.append(entry)
+    return {"object": "list", "data": data}
 
 
 @app.get("/v1/models/{model_id:path}")
 async def model_retrieve(model_id: str):
     if model_id in PROFILE_MODELS:
-        return {"id": model_id, "object": "model"}
+        entry: dict = {"id": model_id, "object": "model"}
+        ctx = _model_context_length(PROFILE_MODELS[model_id])
+        if ctx:
+            entry["context_length"] = ctx
+        return entry
     from fastapi import HTTPException
     raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
 
