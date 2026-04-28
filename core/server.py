@@ -123,6 +123,19 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         else:
             body.pop(key, None)
 
+    # Inject profile-level system prompt (prepended to the client's system message)
+    profile_system_prompt = logical_cfg.get("system_prompt", "").strip()
+    if profile_system_prompt and "messages" in body and body["messages"]:
+        msgs = body["messages"]
+        if msgs[0].get("role") == "system":
+            existing = msgs[0].get("content", "")
+            if isinstance(existing, str):
+                msgs[0] = dict(msgs[0], content=profile_system_prompt + "\n\n" + existing)
+            elif isinstance(existing, list):
+                msgs[0] = dict(msgs[0], content=[{"type": "text", "text": profile_system_prompt + "\n\n"}] + existing)
+        else:
+            body["messages"] = [{"role": "system", "content": profile_system_prompt}] + msgs
+
     # Disable thinking for vLLM
     if backend == "vllm" and (logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower()):
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
