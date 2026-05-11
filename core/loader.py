@@ -193,7 +193,6 @@ async def wait_for_model_ready(
                             for expected_signal in signals:
                                 if expected_signal in line:
                                     spinner.stop(success=True)
-                                    await asyncio.sleep(1)
                                     return True
             except Exception as e:
                 logger.debug(f"Error reading log for {displayname}: {e}")
@@ -427,11 +426,18 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
     if available_gb < NEEDGB:
         with state.global_lock:
             names_to_unload = [n for n in state.active_servers if n != basename]
+        loop = asyncio.get_event_loop()
         for name in names_to_unload:
             logger.info(f"Unloading {name} to free VRAM")
-            shutdown_server(name, "swap", fast=True)
-        kill_vram_fast()
-        await asyncio.sleep(3)
+            await loop.run_in_executor(None, lambda n=name: shutdown_server(n, "swap", fast=True))
+        await loop.run_in_executor(None, kill_vram_fast)
+        # Poll until VRAM is actually freed (max 6s) instead of blind sleep
+        for _ in range(12):
+            await asyncio.sleep(0.5)
+            gpus_check = get_free_gpu_memory()
+            chk_free = sum(g["free_gb"] for g in gpus_check) if needs_multi_gpu else max((g["free_gb"] for g in gpus_check), default=0.0)
+            if chk_free >= NEEDGB:
+                break
 
         gpus = get_free_gpu_memory()
         max_free_gb = max((g["free_gb"] for g in gpus), default=0.0)

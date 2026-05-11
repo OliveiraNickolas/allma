@@ -90,10 +90,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
             # Always keep the first user message so the model has a query anchor
             for i in range(rest_start, len(msgs)):
                 if msgs[i].get("role") == "user":
-                    if i > rest_start:  # not already adjacent to pinned
-                        pinned.append(msgs[i])
-                    else:
-                        pinned.append(msgs[i])
+                    pinned.append(msgs[i])
                     rest_start = i + 1
                     break
             rest = msgs[rest_start:]
@@ -136,12 +133,8 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         else:
             body["messages"] = [{"role": "system", "content": profile_system_prompt}] + msgs
 
-    # Disable thinking for vLLM
-    if backend == "vllm" and (logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower()):
-        body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
-
-    # For llama.cpp with thinking disabled: pass via chat_template_kwargs
-    if backend == "llama.cpp" and (logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower()):
+    # Disable thinking when profile says so or when "instruct" is in the model name
+    if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
     logger.debug(f"{model_name} -> {base_name}:{port} ({backend})")
@@ -194,6 +187,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                                 break
                 except Exception as e:
                     logger.error(f"Stream error: {e}")
+                    yield f'data: {_json.dumps({"error": {"message": str(e), "type": "stream_error"}})}\n\n'
                     yield "data: [DONE]\n\n"
 
             return StreamingResponse(
@@ -585,8 +579,25 @@ async def messages(request: Request, body: dict = Body(...)):
             )
         else:
             resp = await client.post(url, json=llama_req_body)
+            if resp.status_code != 200:
+                error_detail = resp.text
+                logger.error(f"Backend returned {resp.status_code} for {model_name}: {error_detail}")
+                error_analysis = ErrorDetector.analyze_log(error_detail)
+                if error_analysis:
+                    logger.error(f"   {error_analysis.error_type}: {error_analysis.explanation}")
+                return JSONResponse(
+                    status_code=resp.status_code,
+                    content={"error": {"type": "api_error", "message": error_detail}},
+                )
             oai = resp.json()
-            choice = oai["choices"][0]
+            choices = oai.get("choices")
+            if not choices:
+                logger.error(f"Backend returned no choices for {model_name}: {oai}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": {"type": "api_error", "message": "Backend returned empty response"}},
+                )
+            choice = choices[0]
             message = choice.get("message", {})
             msg_id = f"msg_{_uuid.uuid4().hex[:24]}"
 
@@ -800,7 +811,9 @@ async def unload_model(body: dict = Body(...)):
             status_code=404,
             content={"error": f"'{base_name}' is not loaded", "loaded": running},
         )
-    shutdown_server(base_name, reason="manual unload")
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: shutdown_server(base_name, reason="manual unload"))
     # Clear default_profile if it pointed to this base model
     if state.default_profile and state.default_profile in PROFILE_MODELS:
         if PROFILE_MODELS[state.default_profile].get("base") == base_name:

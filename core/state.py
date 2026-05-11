@@ -4,6 +4,7 @@ All shared mutable runtime state.
 import os
 import socket
 import threading
+import time
 from typing import Any, Dict, Optional
 
 from core.config import VLLM_BASE_PORT, LLAMA_BASE_PORT
@@ -18,6 +19,7 @@ loading_models: set = set()
 running = True
 ALLMA_PID = os.getpid()
 gpu_allocation: Dict[str, int] = {}
+startup_time: float = time.time()
 
 # Health monitor
 _health_monitor_running = threading.Event()

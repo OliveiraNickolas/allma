@@ -31,7 +31,11 @@ def _load_dotenv() -> None:
                     continue
                 key, _, value = line.partition("=")
                 key = key.strip()
-                value = value.strip().strip('"').strip("'")
+                value = value.strip()
+                # Strip inline comments (e.g. KEY=300 # comment)
+                if not value.startswith(('"', "'")):
+                    value = value.partition("#")[0].strip()
+                value = value.strip('"').strip("'")
                 if key and key not in os.environ:
                     os.environ[key] = value
     except Exception:
