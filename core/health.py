@@ -31,13 +31,14 @@ def health_monitor():
                                 error_analysis = ErrorDetector.analyze_log(last_lines)
                                 if error_analysis:
                                     logger.error(
-                                        f"{base_name}:{port} crashed\n"
-                                        f"   Reason: {error_analysis.error_type}\n"
+                                        f"{base_name}:{port} crashed — {error_analysis.error_type}\n"
                                         f"   {error_analysis.explanation}"
                                     )
+                                    for suggestion in error_analysis.suggestions:
+                                        logger.error(f"   → {suggestion}")
                                     state.last_error_analysis[base_name] = error_analysis
                                 else:
-                                    logger.error(f"{base_name}:{port} crashed (unknown cause)")
+                                    logger.error(f"{base_name}:{port} crashed (exit code {proc.poll()})")
                             else:
                                 logger.error(f"{base_name}:{port} crashed")
 

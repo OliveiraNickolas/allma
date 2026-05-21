@@ -1,5 +1,5 @@
-name = "Qwen3.6:27b-Uncensored-Hermes"
-base = "Qwen3.6-27B-Uncensored-GGUF_Q4"
+name = "Qwen3.6:27b-Abliterated-Hermes-MTP_Q4"
+base = "Qwen3.6-27B-Abliterated-GGUF_Q4-MTP"
 enable_thinking = false
 
 [sampling]

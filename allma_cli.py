@@ -543,16 +543,29 @@ def cmd_list(args):
 
 
 def cmd_ps(args):
-    """Show currently loaded (running) models."""
-    health = _get("/health")
-    if not health:
+    """Show currently loaded (running) models and recent crash errors."""
+    if not _is_running():
         print("Allma is not running.")
         return
-    active = health.get("active_servers", 0)
-    if active == 0:
+    data = _get("/v1/ps")
+    if data is None:
+        print("Failed to reach Allma server.")
+        return
+    servers = data.get("servers", [])
+    errors = data.get("errors", {})
+    if not servers and not errors:
         print("No models loaded.")
-    else:
-        print(f"{active} model(s) loaded.")
+        return
+    for s in servers:
+        status = "● running" if s.get("alive") else "✗ dead"
+        print(f"{status}  {s['name']}  (pid {s.get('pid')}, port {s.get('port')}, {s.get('backend')})")
+    if errors:
+        for name, err in errors.items():
+            if not any(s["name"] == name and s.get("alive") for s in servers):
+                print(f"\n✗ {name} crashed — {err['error_type']}")
+                print(f"  {err['explanation']}")
+                for suggestion in err.get("suggestions", []):
+                    print(f"  → {suggestion}")
 
 
 def cmd_unload(args):
@@ -1343,50 +1356,97 @@ def cmd_launch_hermes(args):
 
 def cmd_backend_logs(args):
     """Tail the log of the currently running backend process."""
+    import time as _time
+
     if not _is_running():
         print("Allma is not running.")
         return
 
-    data = _get("/v1/ps")
-    servers = (data or {}).get("servers", [])
-    alive = [s for s in servers if s.get("alive")]
+    follow = args.follow if hasattr(args, "follow") else True
 
-    if not alive:
-        print("No backend is currently loaded.")
-        return
+    def _get_target():
+        """Return the best matching alive backend, or None."""
+        data = _get("/v1/ps")
+        servers = (data or {}).get("servers", [])
+        alive = [s for s in servers if s.get("alive")]
+        if not alive:
+            return None
+        if args.name:
+            matches = [s for s in alive if args.name.lower() in s["name"].lower()]
+            return matches[0] if matches else None
+        if len(alive) == 1:
+            return alive[0]
+        # Multiple backends, no filter — pick the one most recently changed
+        return alive[0]
 
-    # Filter by name if provided
-    if args.name:
-        matches = [s for s in alive if args.name.lower() in s["name"].lower()]
-        if not matches:
-            print(f"No running backend matching '{args.name}'.")
-            print("Running backends:")
-            for s in alive:
-                print(f"  · {s['name']} ({s['backend']})")
+    if not follow:
+        # Static mode: show last N lines of whatever is running right now
+        target = _get_target()
+        if not target:
+            print("No backend is currently loaded.")
             return
-        target = matches[0]
-    elif len(alive) == 1:
-        target = alive[0]
-    else:
-        print("Multiple backends running — specify one:")
-        for s in alive:
-            print(f"  · {s['name']} ({s['backend']})  →  allma backend logs {s['name']}")
+        logfile = target.get("logfile", "")
+        if not logfile or not Path(logfile).exists():
+            print(f"Log file not found for '{target['name']}'.")
+            return
+        print(f"● {target['name']} ({target['backend']})  —  {logfile}\n")
+        subprocess.run(["tail", f"-{args.lines}", logfile])
         return
 
-    logfile = target.get("logfile", "")
-    if not logfile or not Path(logfile).exists():
-        print(f"Log file not found for '{target['name']}'.")
-        return
+    # Follow mode: wait for a backend, tail it, and switch if it changes
+    tail_proc = None
+    current_logfile = None
+    current_name = None
+    waiting_printed = False
 
-    print(f"● {target['name']} ({target['backend']})  —  {logfile}\n")
     try:
-        follow = args.follow if hasattr(args, "follow") else True
-        if follow:
-            subprocess.run(["tail", "-f", logfile])
-        else:
-            subprocess.run(["tail", f"-{args.lines}", logfile])
+        while True:
+            target = _get_target()
+
+            if target is None:
+                # No backend running — kill any existing tail and wait
+                if tail_proc and tail_proc.poll() is None:
+                    tail_proc.terminate()
+                    tail_proc = None
+                    current_logfile = None
+                    current_name = None
+                    print("\n⏳ Backend unloaded — waiting for a new one...")
+                elif not waiting_printed:
+                    print("⏳ No backend loaded — waiting... (Ctrl+C to exit)")
+                    waiting_printed = True
+                _time.sleep(2)
+                continue
+
+            waiting_printed = False
+            logfile = target.get("logfile", "")
+
+            if not logfile or not Path(logfile).exists():
+                _time.sleep(2)
+                continue
+
+            # Backend changed (or first start) — switch tail
+            if logfile != current_logfile:
+                if tail_proc and tail_proc.poll() is None:
+                    tail_proc.terminate()
+                    tail_proc.wait(timeout=2)
+                    print(f"\n⟳ Switching to {target['name']} ({target['backend']})...")
+
+                print(f"● {target['name']} ({target['backend']})  —  {logfile}\n")
+                tail_proc = subprocess.Popen(["tail", "-f", "-n", "50", logfile])
+                current_logfile = logfile
+                current_name = target["name"]
+
+            # Check if tail died (e.g. log file rotated)
+            if tail_proc and tail_proc.poll() is not None:
+                tail_proc = None
+                current_logfile = None
+
+            _time.sleep(2)
+
     except KeyboardInterrupt:
-        pass
+        if tail_proc and tail_proc.poll() is None:
+            tail_proc.terminate()
+        print("")
 
 
 def cmd_hardware_detect(args):

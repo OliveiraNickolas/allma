@@ -1,4 +1,4 @@
-name = "Qwen3.6:27b-Abliterated-Reasoning"
+name = "Qwen3.6:27b-Abliterated-Reasoning_Q4"
 base = "Qwen3.6-27B-Abliterated-GGUF_Q4"
 enable_thinking = false
 

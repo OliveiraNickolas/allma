@@ -31,9 +31,8 @@ httpx_client = None
 # Set by /v1/load so that `allma launch` pins a specific profile for the session.
 default_profile: Optional[str] = None
 
-# Error detection & auto-resolution
+# Error detection
 last_error_analysis: Dict[str, Any] = {}  # {base_name: ErrorAnalysis}
-auto_fix_attempt_count: Dict[str, int] = {}  # {base_name: attempt_count}
 
 # Hardware detection & calibration (bootstrap)
 hardware_profile: Any = None  # HardwareProfile or None

@@ -12,12 +12,24 @@ from core.config import logger, BASE_MODELS
 
 
 def _calc_model_size_gb(model_path: str) -> float:
-    """Sum .safetensors files in a model directory to estimate model size in GB."""
-    total_bytes = sum(
-        os.path.getsize(os.path.join(root, f))
-        for root, _, files in os.walk(model_path)
-        for f in files if f.endswith(".safetensors")
-    )
+    """Sum .safetensors files in a model directory to estimate model size in GB.
+
+    Excludes .cache/ and hidden directories to avoid double-counting HuggingFace
+    download cache files which are symlinks or duplicates of the real weights.
+    """
+    total_bytes = 0
+    for root, dirs, files in os.walk(model_path):
+        # Skip hidden dirs (.cache, .git, etc.) in-place so os.walk won't descend
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for f in files:
+            if f.endswith(".safetensors"):
+                try:
+                    fpath = os.path.join(root, f)
+                    # Skip symlinks — they point to the real file already counted
+                    if not os.path.islink(fpath):
+                        total_bytes += os.path.getsize(fpath)
+                except OSError:
+                    pass
     return total_bytes / (1024 ** 3)
 
 

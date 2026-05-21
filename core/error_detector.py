@@ -11,8 +11,6 @@ class ErrorAnalysis:
     raw_message: str
     explanation: str
     suggestions: list[str]
-    auto_fix_available: bool = False
-    auto_fix_action: Optional[str] = None  # e.g. "reduce_ubatch_size"
 
 
 class ErrorDetector:
@@ -27,6 +25,7 @@ class ErrorDetector:
             r"torch\.cuda\.OutOfMemoryError",
             r"cuMemCreate.*out of memory",
             r"CUDA error.*out of memory",
+            r"marlin_gemm",  # FP8/GPTQ fragmentation OOM during inference
         ],
         "cuda_allocation_failed": [
             r"Failed to allocate",
@@ -67,12 +66,12 @@ class ErrorDetector:
 
     SUGGESTIONS = {
         "cuda_out_of_memory": [
-            "Reduce --ubatch-size (e.g. 1024 → 512 → 256)",
-            "Use KV cache quantization (--cache-type-k q8_0 instead of fp16)",
-            "Reduce max_model_len (e.g. 262K → 131K)",
+            "VRAM fragmentation (marlin_gemm/FP8): PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is set — restart the server to apply it",
+            "Reduce max_num_seqs or max_num_batched_tokens in the base config",
+            "Reduce max_model_len to shrink KV cache (e.g. 262K → 131K)",
+            "Use --kv-cache-dtype fp8 to halve KV cache VRAM",
+            "Reduce gpu_memory_utilization in the base config (e.g. 0.92 → 0.88)",
             "Use tensor-parallel across multiple GPUs",
-            "Use a quantized model (Q4, Q5 instead of fp16)",
-            "Increase --defrag-thold to defragment VRAM",
         ],
         "cuda_allocation_failed": [
             "GPU memory may be fragmented — restart the server",
@@ -124,7 +123,6 @@ class ErrorDetector:
                     raw_msg = match.group(0)
                     explanation = ErrorDetector._get_explanation(error_type, log_content)
                     suggestions = ErrorDetector.SUGGESTIONS.get(error_type, [])
-                    auto_fix_action = ErrorDetector._get_auto_fix_action(error_type, log_content)
 
                     return ErrorAnalysis(
                         error_type=error_type,
@@ -132,8 +130,6 @@ class ErrorDetector:
                         raw_message=raw_msg,
                         explanation=explanation,
                         suggestions=suggestions,
-                        auto_fix_available=auto_fix_action is not None,
-                        auto_fix_action=auto_fix_action,
                     )
 
         return None
@@ -171,21 +167,6 @@ class ErrorDetector:
             ),
         }
         return explanations.get(error_type, "Unknown error")
-
-    @staticmethod
-    def _get_auto_fix_action(error_type: str, log_content: str) -> Optional[str]:
-        """
-        Return an auto-fix action identifier if one is available.
-        Returns None if the error requires manual intervention.
-        """
-        if error_type == "cuda_out_of_memory":
-            if re.search(r"ubatch|batch", log_content, re.IGNORECASE):
-                return "reduce_ubatch_size"
-            if re.search(r"max_model_len|n_ctx|context", log_content, re.IGNORECASE):
-                return "reduce_context_length"
-            return "reduce_batch_params"
-
-        return None
 
     @staticmethod
     def analyze_exit_code(exit_code: int, backend: str) -> Optional[str]:

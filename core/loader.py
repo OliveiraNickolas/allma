@@ -219,131 +219,6 @@ async def wait_for_model_ready(
 
 
 # ==============================================================================
-# AUTO-FIX HELPERS
-# ==============================================================================
-def save_config_to_file(basename: str, cfg: dict) -> bool:
-    """Save config back to .allm file. Returns True if successful."""
-    try:
-        from core.config import CONFIG_DIR
-        config_file = CONFIG_DIR / "base" / f"{basename}.allm"
-        if not config_file.exists():
-            logger.warning(f"Config file not found: {config_file}")
-            return False
-
-        # Read original file to preserve formatting
-        with open(config_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        # Update only the specific keys that were auto-fixed
-        lines = content.split('\n')
-        new_lines = []
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            stripped = line.strip()
-
-            # Check if this line is a key we need to update
-            if '=' in stripped and not stripped.startswith('#'):
-                key = stripped.split('=')[0].strip()
-
-                if key == 'extra_args':
-                    # Handle multi-line extra_args
-                    new_lines.append('extra_args = [')
-                    extra_args = cfg.get('extra_args', [])
-                    for arg in extra_args:
-                        new_lines.append(f'    "{arg}",')
-                    new_lines.append(']')
-                    # Skip original extra_args block
-                    i += 1
-                    while i < len(lines) and ']' not in lines[i]:
-                        i += 1
-                    i += 1
-                    continue
-
-                elif key in ['n_ctx', 'n_batch', 'max_num_seqs', 'max_model_len']:
-                    if key in cfg:
-                        new_lines.append(f'{key} = {cfg[key]}')
-                        i += 1
-                        continue
-
-            new_lines.append(line)
-            i += 1
-
-        # Write back
-        with open(config_file, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(new_lines))
-
-        logger.info(f"Config saved: {config_file}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to save config: {e}")
-        return False
-
-
-def apply_auto_fix(basename: str, cfg: dict, error_analysis) -> bool:
-    """Apply auto-fix to config based on error analysis. Returns True if applied."""
-    if not error_analysis or not error_analysis.auto_fix_available:
-        return False
-
-    action = error_analysis.auto_fix_action
-    attempt_count = state.auto_fix_attempt_count.get(basename, 0)
-
-    if attempt_count >= 3:
-        logger.warning(f" Auto-fix max attempts (3) reached for {basename}, skipping")
-        return False
-
-    if action == "reduce_ubatch_size":
-        current = int(cfg.get("max_num_seqs") or "8")
-        new = max(2, current // 2)
-        if new < current:
-            cfg["max_num_seqs"] = str(new)
-            state.auto_fix_attempt_count[basename] = attempt_count + 1
-            logger.info(f"Auto-fix: reduced max_num_seqs {current} → {new} (attempt {attempt_count + 1}/3)")
-            save_config_to_file(basename, cfg)
-            return True
-
-    elif action == "reduce_batch_params":
-        # Try reducing ubatch-size first, then n_batch
-        if "max_num_seqs" in cfg:
-            current = int(cfg["max_num_seqs"])
-            new = max(2, current // 2)
-            if new < current:
-                cfg["max_num_seqs"] = str(new)
-                state.auto_fix_attempt_count[basename] = attempt_count + 1
-                logger.info(f"Auto-fix: reduced max_num_seqs {current} → {new}")
-                save_config_to_file(basename, cfg)
-                return True
-
-    elif action == "reduce_context_length":
-        current = int(cfg.get("max_model_len", "262144"))
-        new = max(8192, current // 2)
-        if new < current:
-            cfg["max_model_len"] = str(new)
-            state.auto_fix_attempt_count[basename] = attempt_count + 1
-            logger.info(f"Auto-fix: reduced max_model_len {current} → {new}")
-            save_config_to_file(basename, cfg)
-            return True
-
-    elif action == "increase_defrag_threshold":
-        # Add or increase defrag threshold in extra_args
-        extra_args = cfg.get("extra_args", [])
-        for i, arg in enumerate(extra_args):
-            if arg == "--defrag-thold" and i + 1 < len(extra_args):
-                try:
-                    current_val = float(extra_args[i + 1])
-                    new_val = max(0.01, current_val / 2)
-                    extra_args[i + 1] = str(new_val)
-                    state.auto_fix_attempt_count[basename] = attempt_count + 1
-                    logger.info(f"Auto-fix: increased defrag from {current_val} → {new_val}")
-                    save_config_to_file(basename, cfg)
-                    return True
-                except ValueError:
-                    pass
-
-    return False
-
-
-# ==============================================================================
 # MODEL LOADING
 # ==============================================================================
 async def ensure_base_model(basename: str, profilename: Optional[str] = None, gpu_id: Optional[int] = None):
@@ -496,6 +371,8 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                 gpu_indices = ",".join(str(current_gpu_id + i) for i in range(tp_from_cmd))
                 subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_indices
                 logger.info(f"TP={tp_from_cmd} on GPUs [{gpu_indices}]")
+            # Fix VRAM fragmentation (marlin_gemm OOM, quantized kernels) — zero downside
+            subprocess_env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         elif backend == "llama.cpp":
             if max_free_gb >= NEEDGB:
                 subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)

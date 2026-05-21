@@ -23,6 +23,90 @@ from core.error_detector import ErrorDetector
 
 
 # ==============================================================================
+# TOOL SCHEMA SIMPLIFICATION (llama.cpp GBNF grammar guard)
+# ==============================================================================
+def _simplify_prop(schema: dict) -> dict:
+    """
+    Simplify a single parameter property schema for llama.cpp.
+
+    llama.cpp auto-generates GBNF grammar from tool schemas.  Complex schemas
+    (array/object types, anyOf with complex variants, numeric range constraints)
+    produce large recursive grammar rules — for 30+ tools the grammar can
+    exceed the parser's capacity, causing "failed to parse grammar" on every
+    request and falling back to unreliable unconstrained generation.
+
+    This function flattens complex property types to plain "string" so the
+    resulting grammar is small and non-recursive.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    # Resolve anyOf / oneOf → pick the first non-null variant and recurse.
+    # Handles the common pattern: anyOf: [{type: "array", …}, {type: "null"}]
+    for composite_key in ("anyOf", "oneOf"):
+        if composite_key in schema:
+            variants = schema[composite_key]
+            if isinstance(variants, list):
+                non_null = [v for v in variants if isinstance(v, dict) and v.get("type") != "null"]
+                chosen = non_null[0] if non_null else (variants[0] if variants else {})
+                if schema.get("description") and not chosen.get("description"):
+                    chosen = {**chosen, "description": schema["description"]}
+                return _simplify_prop(chosen)
+
+    schema_type = schema.get("type")
+
+    # Complex types → string (these produce recursive grammar rules in GBNF)
+    if schema_type in ("object", "array"):
+        return {"type": "string", "description": schema.get("description", "")}
+
+    # Strip keys that generate complex / large grammar rules
+    drop_keys = {
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+        "minLength", "maxLength", "minItems", "maxItems",
+        "$schema", "additionalProperties", "pattern",
+        "items", "default", "examples", "$defs", "definitions",
+        "unevaluatedProperties", "allOf", "if", "then", "else",
+        "prefixItems", "contains", "propertyNames",
+    }
+    out = {}
+    for k, v in schema.items():
+        if k in drop_keys:
+            continue
+        if k == "enum" and isinstance(v, list):
+            # Cap large enums to avoid bloated grammar rules
+            out[k] = v[:12] if len(v) > 12 else v
+        else:
+            out[k] = v
+    return out
+
+
+def _simplify_tools_for_llama(tools: list) -> list:
+    """
+    Apply _simplify_prop to every parameter property in a list of OAI-format
+    tools.  The top-level 'parameters' object (always type:object) is kept
+    intact; only its individual properties are simplified.
+    """
+    result = []
+    for tool in tools:
+        fn = tool.get("function", {})
+        params = fn.get("parameters", {})
+        props = params.get("properties")
+        if not isinstance(props, dict):
+            result.append(tool)
+            continue
+        new_props = {name: _simplify_prop(pschema) for name, pschema in props.items()}
+        # Also clean up top-level noise on the params container itself
+        new_params = {k: v for k, v in params.items()
+                      if k not in {"additionalProperties", "$schema"}}
+        new_params["properties"] = new_props
+        result.append({
+            **tool,
+            "function": {**fn, "parameters": new_params},
+        })
+    return result
+
+
+# ==============================================================================
 # HTTP CLIENT
 # ==============================================================================
 _httpx_client: httpx.AsyncClient | None = None
@@ -137,6 +221,10 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
+    # Simplify tool schemas for llama.cpp to prevent GBNF grammar parse failures
+    if backend == "llama.cpp" and body.get("tools"):
+        body["tools"] = _simplify_tools_for_llama(body["tools"])
+
     logger.debug(f"{model_name} -> {base_name}:{port} ({backend})")
 
     if "messages" not in body or not body["messages"]:
@@ -214,11 +302,11 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                     for sugg in error_analysis.suggestions:
                         logger.warning(f"   → {sugg}")
 
-                logger.warning("vLLM 400 - returning empty response")
-                return JSONResponse(
-                    status_code=200,
-                    content={"choices": [{"message": {"content": ""}}]},
-                )
+                try:
+                    error_json = resp.json()
+                except Exception:
+                    error_json = {"error": error_detail}
+                return JSONResponse(status_code=400, content=error_json)
             logger.debug("Output sent")
             return JSONResponse(content=resp.json(), status_code=resp.status_code)
     except httpx.ConnectError as e:
@@ -319,45 +407,21 @@ async def messages(request: Request, body: dict = Body(...)):
     import uuid as _uuid
 
     # ── Convert tool definitions (Anthropic → OpenAI) ──
-    # Strip numeric constraints that cause llama.cpp GBNF grammar explosion
-    def _simplify_schema(schema):
-        """Remove JSON Schema constraints that produce astronomically complex
-        GBNF grammar rules in llama.cpp (e.g. min/max integer range validation
-        generates hundreds of nested parentheses per field)."""
-        if not isinstance(schema, dict):
-            return schema
-        drop_keys = {
-            "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
-            "minLength", "maxLength", "minItems", "maxItems",
-            "$schema", "additionalProperties", "pattern",
-        }
-        out = {}
-        for k, v in schema.items():
-            if k in drop_keys:
-                continue
-            if k == "properties" and isinstance(v, dict):
-                out[k] = {pk: _simplify_schema(pv) for pk, pv in v.items()}
-            elif k == "items" and isinstance(v, dict):
-                out[k] = _simplify_schema(v)
-            elif k == "anyOf" and isinstance(v, list):
-                out[k] = [_simplify_schema(item) for item in v]
-            else:
-                out[k] = v
-        return out
-
     oai_tools = None
     if body.get("tools"):
         oai_tools = []
         for tool in body["tools"]:
-            raw_schema = tool.get("input_schema", {})
             oai_tools.append({
                 "type": "function",
                 "function": {
                     "name": tool["name"],
                     "description": tool.get("description", ""),
-                    "parameters": _simplify_schema(raw_schema) if backend == "llama.cpp" else raw_schema,
+                    "parameters": tool.get("input_schema", {}),
                 },
             })
+        # Simplify schemas for llama.cpp to prevent GBNF grammar parse failures
+        if backend == "llama.cpp":
+            oai_tools = _simplify_tools_for_llama(oai_tools)
 
     # ── Convert messages ──
     oai_messages = []
@@ -776,7 +840,15 @@ async def ps():
             }
             for name, srv in state.active_servers.items()
         ]
-    return {"servers": servers}
+        # Include last known error analysis for any crashed model
+        errors = {}
+        for name, analysis in state.last_error_analysis.items():
+            errors[name] = {
+                "error_type": analysis.error_type,
+                "explanation": analysis.explanation,
+                "suggestions": analysis.suggestions,
+            }
+    return {"servers": servers, "errors": errors}
 
 
 @app.post("/v1/shutdown")

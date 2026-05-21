@@ -1,4 +1,4 @@
-name = "Qwen3.6:27b-Abliterated-Code"
+name = "Qwen3.6:27b-Abliterated-Code_Q4"
 base = "Qwen3.6-27B-Abliterated-GGUF_Q4"
 
 [sampling]
