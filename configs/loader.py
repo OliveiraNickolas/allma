@@ -40,8 +40,12 @@ def parse_all_file(content: str) -> Dict[str, Any]:
             if value.startswith('['):
                 accumulated = value
                 while not accumulated.rstrip().endswith(']') and i < len(lines):
-                    accumulated += ' ' + lines[i].strip()
+                    next_line = lines[i].strip()
                     i += 1
+                    # Skip comment lines inside the array (# ...) — not valid JSON
+                    if next_line.startswith('#'):
+                        continue
+                    accumulated += ' ' + next_line
                 try:
                     parsed = json.loads(accumulated)
                     if current_section is not None:
