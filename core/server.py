@@ -220,6 +220,23 @@ async def chat_completions(request: Request, body: dict = Body(...)):
     # Disable thinking when profile says so or when "instruct" is in the model name
     if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
+    elif backend == "llama.cpp":
+        # Inject reasoning_budget for llama.cpp to prevent infinite thinking loops.
+        # llama.cpp defaults to INT_MAX (2147483647) when no budget is given, causing
+        # the model to think for hundreds of tokens before every response.
+        # Profile field: thinking_budget (int, tokens). Default: 2048.
+        # llama.cpp defaults to INT_MAX when no budget is given — model thinks
+        # for hundreds of tokens per response. 2048 ≈ 10–15 s at ~30 t/s,
+        # which is enough for complex reasoning while keeping chat snappy.
+        budget = logical_cfg.get("thinking_budget")
+        if budget is None:
+            budget = 2048
+        try:
+            budget = int(budget)
+        except (TypeError, ValueError):
+            budget = 2048
+        if "reasoning_budget" not in body:
+            body["reasoning_budget"] = budget
 
     # Simplify tool schemas for llama.cpp to prevent GBNF grammar parse failures
     if backend == "llama.cpp" and body.get("tools"):
@@ -550,6 +567,16 @@ async def messages(request: Request, body: dict = Body(...)):
     # Disable thinking for llama.cpp via chat_template_kwargs
     if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
         oai_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
+    else:
+        # Same reasoning_budget guard as the /v1/chat/completions path
+        budget = logical_cfg.get("thinking_budget")
+        if budget is None:
+            budget = 2048
+        try:
+            budget = int(budget)
+        except (TypeError, ValueError):
+            budget = 2048
+        oai_body.setdefault("reasoning_budget", budget)
 
     url = f"http://127.0.0.1:{port}/chat/completions"
     llama_req_body = oai_body
