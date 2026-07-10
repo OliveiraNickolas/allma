@@ -1,5 +1,5 @@
-@name Qwen3.6:27B-FP8
-@base Qwen3.6-27B-FP8
+@name Qwen3.6_UNC:27B-Q4
+@base Qwen3.6-27B-Uncensored-HauhauCS-Aggressive
 
 temperature 1.0
 top-p 0.95
