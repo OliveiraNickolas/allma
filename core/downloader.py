@@ -294,100 +294,125 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
         console.print(Text("  No GGUF files found.", style=C_DIM))
         return []
 
-    W = _W()
-
-    # Build files table
-    tbl = Table(
-        show_header=True,
-        header_style=f"bold {C_DIM}",
-        box=None,
-        padding=(0, 2),
-        style=_S,
-        expand=True,
-        # zebra stripes: every other row slightly darker for scanability
-        row_styles=[f"on {C_BG}", "on #ddd2b4"],
-    )
     gpu = _gpu_stats()
     conf = _fetch_repo_config(repo_id, files) if gpu else None
     kv_bpt, native_max = _kv_bytes_per_token(conf)
     rec = _recommendation_bars(gguf_files, gpu, kv_bpt, native_max)
 
-    tbl.add_column("#",    style=f"bold {C_ACCENT}", width=4, justify="right")
-    tbl.add_column("File", style=f"{C_FG}", overflow="fold")
-    tbl.add_column("Size", style=f"bold {C_ACCENT}", justify="right", width=10)
-    if gpu:
-        tbl.add_column("Rec",  justify="left", width=7)
-        tbl.add_column("Max ctx", justify="right", width=8)
-        tbl.add_column("Fits", justify="left", width=15)
-
-    for i, f in enumerate(gguf_files, 1):
-        row = [str(i), f["name"], _file_size_str(f["size"])]
+    def _build_panel() -> Panel:
+        """Panel built at the CURRENT terminal width — called again on resize."""
+        tbl = Table(
+            show_header=True,
+            header_style=f"bold {C_DIM}",
+            box=None,
+            padding=(0, 2),
+            style=_S,
+            expand=True,
+            # zebra stripes: every other row slightly darker for scanability
+            row_styles=[f"on {C_BG}", "on #ddd2b4"],
+        )
+        tbl.add_column("#",    style=f"bold {C_ACCENT}", width=4, justify="right")
+        tbl.add_column("File", style=f"{C_FG}", overflow="fold")
+        tbl.add_column("Size", style=f"bold {C_ACCENT}", justify="right", width=10)
         if gpu:
-            score = rec.get(f["name"], 0)
-            bar_style = f"bold {C_GOOD}" if score >= 4 else (C_WARN if score >= 2 else C_DIM)
-            row.append(Text("▰" * score + "▱" * (5 - score), style=bar_style))
-            ctx = _max_ctx_tokens(f["size"], gpu, kv_bpt, native_max)
-            ctx_style = (f"bold {C_GOOD}" if ctx >= 32768
-                         else (C_WARN if ctx >= 8192 else f"bold {C_BAD}"))
-            row.append(Text(_fmt_ctx(ctx), style=ctx_style))
-            label, style = _fit_verdict(f["size"], gpu)
-            row.append(Text(label, style=style))
-        tbl.add_row(*row)
+            tbl.add_column("Rec",  justify="left", width=7)
+            tbl.add_column("Max ctx", justify="right", width=8)
+            tbl.add_column("Fits", justify="left", width=15)
 
-    if mmproj_files:
-        tbl.add_row(*([""] * (6 if gpu else 3)))
-        for i, f in enumerate(mmproj_files, len(gguf_files) + 1):
-            row = [
-                Text(str(i), style=f"bold {C_DIM}"),
-                Text(f["name"], style=C_DIM, overflow="fold"),
-                Text(_file_size_str(f["size"]), style=C_DIM),
-            ]
+        for i, f in enumerate(gguf_files, 1):
+            row = [str(i), f["name"], _file_size_str(f["size"])]
             if gpu:
-                row += [Text("", style=C_DIM), Text("", style=C_DIM),
-                        Text("(vision)", style=C_DIM)]
+                score = rec.get(f["name"], 0)
+                bar_style = f"bold {C_GOOD}" if score >= 4 else (C_WARN if score >= 2 else C_DIM)
+                row.append(Text("▰" * score + "▱" * (5 - score), style=bar_style))
+                ctx = _max_ctx_tokens(f["size"], gpu, kv_bpt, native_max)
+                ctx_style = (f"bold {C_GOOD}" if ctx >= 32768
+                             else (C_WARN if ctx >= 8192 else f"bold {C_BAD}"))
+                row.append(Text(_fmt_ctx(ctx), style=ctx_style))
+                label, style = _fit_verdict(f["size"], gpu)
+                row.append(Text(label, style=style))
             tbl.add_row(*row)
 
-    hint = Text(style=_S)
-    hint.append("  Enter numbers to download  ", style=f"{C_DIM} on {C_BG}")
-    hint.append("1", style=f"bold {C_ACCENT} on {C_BG}")
-    hint.append("  or  ", style=f"{C_DIM} on {C_BG}")
-    hint.append("1 3", style=f"bold {C_ACCENT} on {C_BG}")
-    hint.append("  or  ", style=f"{C_DIM} on {C_BG}")
-    hint.append("1,3", style=f"bold {C_ACCENT} on {C_BG}")
-    hint.append("  ·  Enter to cancel", style=f"{C_DIM} on {C_BG}")
+        if mmproj_files:
+            tbl.add_row(*([""] * (6 if gpu else 3)))
+            for i, f in enumerate(mmproj_files, len(gguf_files) + 1):
+                row = [
+                    Text(str(i), style=f"bold {C_DIM}"),
+                    Text(f["name"], style=C_DIM, overflow="fold"),
+                    Text(_file_size_str(f["size"]), style=C_DIM),
+                ]
+                if gpu:
+                    row += [Text("", style=C_DIM), Text("", style=C_DIM),
+                            Text("(vision)", style=C_DIM)]
+                tbl.add_row(*row)
 
-    hint_tbl = Table.grid(expand=True, padding=(0, 1))
-    hint_tbl.add_column()
-    hint_tbl.add_row(hint)
+        hint = Text(style=_S)
+        hint.append("  Enter numbers to download  ", style=f"{C_DIM} on {C_BG}")
+        hint.append("1", style=f"bold {C_ACCENT} on {C_BG}")
+        hint.append("  or  ", style=f"{C_DIM} on {C_BG}")
+        hint.append("1 3", style=f"bold {C_ACCENT} on {C_BG}")
+        hint.append("  or  ", style=f"{C_DIM} on {C_BG}")
+        hint.append("1,3", style=f"bold {C_ACCENT} on {C_BG}")
+        hint.append("  ·  Enter to cancel", style=f"{C_DIM} on {C_BG}")
 
-    inner = Panel(
-        Group(tbl, hint_tbl),
-        title=_section("Files"),
-        title_align="left",
-        box=_box.SQUARE,
-        border_style=C_DIM,
-        style=_S,
-        padding=(0, 1),
-    )
-    outer = Panel(
-        inner,
-        box=_box.DOUBLE,
-        border_style=C_BORDER,
-        style=f"on {C_SCREEN}",
-        padding=(0, 0),
-        width=W,
-    )
-    console.print(outer)
-    console.print()
+        hint_tbl = Table.grid(expand=True, padding=(0, 1))
+        hint_tbl.add_column()
+        hint_tbl.add_row(hint)
+
+        inner = Panel(
+            Group(tbl, hint_tbl),
+            title=_section("Files"),
+            title_align="left",
+            box=_box.SQUARE,
+            border_style=C_DIM,
+            style=_S,
+            padding=(0, 1),
+        )
+        return Panel(
+            inner,
+            box=_box.DOUBLE,
+            border_style=C_BORDER,
+            style=f"on {C_SCREEN}",
+            padding=(0, 0),
+            width=_W(),
+        )
 
     prompt = Text()
     prompt.append("  ▸ ", style=f"bold {C_ACCENT}")
-    console.print(prompt, end="")
+
+    def _draw(redraw: bool = False) -> None:
+        if redraw:
+            # Resize: printed output can't reflow — clear and repaint at the
+            # new width, prompt included.
+            console.clear()
+        console.print(_build_panel())
+        console.print()
+        console.print(prompt, end="")
+        sys.stdout.flush()
+
+    _draw()
+
+    # Repaint on terminal resize while we wait at the prompt (SIGWINCH is
+    # Unix-only; input() resumes after the handler thanks to PEP 475).
+    import signal as _signal
+    _old_winch = None
+    if hasattr(_signal, "SIGWINCH"):
+        try:
+            _old_winch = _signal.signal(
+                _signal.SIGWINCH, lambda *_: _draw(redraw=True))
+        except (ValueError, OSError):
+            _old_winch = None  # not the main thread — skip live resize
 
     try:
         raw = input("").strip()
     except (KeyboardInterrupt, EOFError):
         return []
+    finally:
+        if _old_winch is not None:
+            try:
+                _signal.signal(_signal.SIGWINCH, _old_winch)
+            except (ValueError, OSError):
+                pass
 
     if not raw:
         return []
