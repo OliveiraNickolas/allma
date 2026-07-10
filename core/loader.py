@@ -41,27 +41,28 @@ class LoadingSpinner:
         import shutil
         from core.ghost_art import render_rows, WIN
         tick = 0
-        sys.stdout.write("\n\n")
+        sys.stdout.write("\n\n\n")
         while self.running:
             elapsed = time.time() - self._start_time
             try:
                 term_w = shutil.get_terminal_size().columns
             except Exception:
                 term_w = 80
-            r1, r2, r3 = render_rows(tick)
+            r1, r2, r3, r4 = render_rows(tick)
             time_part = f"  [{elapsed:.0f}s]"
-            # visible width of the r3 prefix is fixed: 2 + WIN + 2
+            # visible width of the r4 prefix is fixed: 2 + WIN + 2
             max_msg = term_w - (WIN + 4) - len(time_part) - 1
             msg = self.message if len(self.message) <= max_msg else self.message[:max_msg - 1] + "…"
-            sys.stdout.write(f"\033[2A\r\033[K  {r1}\n")
+            sys.stdout.write(f"\033[3A\r\033[K  {r1}\n")
             sys.stdout.write(f"\r\033[K  {r2}\n")
-            sys.stdout.write(f"\r\033[K  {r3}  {msg}{time_part}")
+            sys.stdout.write(f"\r\033[K  {r3}\n")
+            sys.stdout.write(f"\r\033[K  {r4}  {msg}{time_part}")
             sys.stdout.flush()
             time.sleep(0.06)
             tick += 1
         sys.stdout.write("\r\033[K")
-        sys.stdout.write("\033[1A\r\033[K")
-        sys.stdout.write("\033[1A\r\033[K")
+        for _ in range(3):
+            sys.stdout.write("\033[1A\r\033[K")
         sys.stdout.flush()
 
     def start(self):

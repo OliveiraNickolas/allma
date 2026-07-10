@@ -136,7 +136,7 @@ def _spinner_loop(stop_event: threading.Event, text_fn):
 
     start = time.time()
     tick = 0
-    sys.stdout.write("\n\n")  # reserve 3 lines
+    sys.stdout.write("\n\n\n")  # reserve 4 lines
 
     while not stop_event.is_set():
         try:
@@ -144,22 +144,23 @@ def _spinner_loop(stop_event: threading.Event, text_fn):
         except Exception:
             term_width = 80
         elapsed = time.time() - start
-        r1, r2, r3 = render_rows(tick)
+        r1, r2, r3, r4 = render_rows(tick)
         message, time_part = text_fn(elapsed)
-        # visible width of the r3 prefix is fixed: 2 + WIN + 2
+        # visible width of the r4 prefix is fixed: 2 + WIN + 2
         budget = term_width - (WIN + 4) - len(time_part) - 2
         if len(message) > budget:
             message = message[:max(0, budget - 1)] + "…"
-        sys.stdout.write(f"\033[2A\r\033[K  {r1}\n")
+        sys.stdout.write(f"\033[3A\r\033[K  {r1}\n")
         sys.stdout.write(f"\r\033[K  {r2}\n")
-        sys.stdout.write(f"\r\033[K  {r3}  {message}  {time_part}")
+        sys.stdout.write(f"\r\033[K  {r3}\n")
+        sys.stdout.write(f"\r\033[K  {r4}  {message}  {time_part}")
         sys.stdout.flush()
         time.sleep(0.06)
         tick += 1
 
     sys.stdout.write("\r\033[K")
-    sys.stdout.write("\033[1A\r\033[K")
-    sys.stdout.write("\033[1A\r\033[K")
+    for _ in range(3):
+        sys.stdout.write("\033[1A\r\033[K")
     sys.stdout.flush()
 
 
