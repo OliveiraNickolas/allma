@@ -25,6 +25,11 @@ C_FG     = "#1a1408"
 C_DIM    = "#6a5a48"
 C_ACCENT = "#007878"
 C_BORDER = "#008888"
+# Verdict colors — dark variants readable on the cream background
+# (terminal-bright green/yellow wash out on #e8dfc8).
+C_GOOD   = "#1e7d23"
+C_WARN   = "#8a6d00"
+C_BAD    = "#c11a1e"
 _S       = f"on {C_BG}"
 
 console = Console()
@@ -110,12 +115,29 @@ def _fit_verdict(size_bytes: Optional[int], gpu: Optional[dict]) -> tuple[str, s
         return "?", C_DIM
     need = size_bytes / (1024 ** 3) * 1.01 + 2.0
     if need <= gpu["free_gb"]:
-        return "✓ fits", "bold green"
+        return "✓ fits", f"bold {C_GOOD}"
     if need <= gpu["total_gb"]:
-        return "◐ after unload", "yellow"
+        return "◐ after unload", C_WARN
     if need <= gpu["sum_total_gb"]:
-        return "◑ multi-gpu", "yellow"
-    return "✗ too big", "bold red"
+        return "◑ multi-gpu", C_WARN
+    return "✗ too big", f"bold {C_BAD}"
+
+
+def _display_names(names: list[str]) -> dict:
+    """name → shortened display name. Repos prefix every quant with the same
+    long model name; strip the common prefix so the distinguishing part
+    (the quant tag) is what the user actually sees."""
+    if len(names) < 2:
+        return {n: n for n in names}
+    import os.path as _osp
+    prefix = _osp.commonprefix(names)
+    # Cut back to the last separator so tokens stay whole
+    # ("...-Q4_K_M" / "...-Q8_0" share "...-Q" — keep the full "Q4_K_M").
+    cut = max(prefix.rfind("-"), prefix.rfind("_"), prefix.rfind("."))
+    prefix = prefix[:cut + 1] if cut > 0 else prefix
+    if len(prefix) < 8:
+        return {n: n for n in names}
+    return {n: "…" + n[len(prefix):] for n in names}
 
 
 def _recommendation_bars(gguf_files: list[dict], gpu: Optional[dict]) -> dict:
@@ -239,6 +261,8 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
     )
     gpu = _gpu_stats()
     rec = _recommendation_bars(gguf_files, gpu)
+    disp = _display_names([f["name"] for f in gguf_files])
+    disp.update(_display_names([f["name"] for f in mmproj_files]))
 
     tbl.add_column("#",    style=f"bold {C_ACCENT}", width=4, justify="right")
     tbl.add_column("File", style=f"{C_FG}")
@@ -248,10 +272,10 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
         tbl.add_column("Fits", justify="left", width=15)
 
     for i, f in enumerate(gguf_files, 1):
-        row = [str(i), f["name"], _file_size_str(f["size"])]
+        row = [str(i), disp.get(f["name"], f["name"]), _file_size_str(f["size"])]
         if gpu:
             score = rec.get(f["name"], 0)
-            bar_style = "bold green" if score >= 4 else ("yellow" if score >= 2 else C_DIM)
+            bar_style = f"bold {C_GOOD}" if score >= 4 else (C_WARN if score >= 2 else C_DIM)
             row.append(Text("▰" * score + "▱" * (5 - score), style=bar_style))
             label, style = _fit_verdict(f["size"], gpu)
             row.append(Text(label, style=style))
@@ -262,7 +286,7 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
         for i, f in enumerate(mmproj_files, len(gguf_files) + 1):
             row = [
                 Text(str(i), style=f"bold {C_DIM}"),
-                Text(f["name"], style=C_DIM),
+                Text(disp.get(f["name"], f["name"]), style=C_DIM),
                 Text(_file_size_str(f["size"]), style=C_DIM),
             ]
             if gpu:
