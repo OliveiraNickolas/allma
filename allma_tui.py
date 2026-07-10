@@ -1640,17 +1640,28 @@ class AllmaTUI(App):
 
         status_color = ACC_GREEN if fits else ACC_RED
         verdict = "fits" if fits else "DOESN'T FIT"
-        parts = [f"[#a89878]sys {sys_gb:.1f}[/]",
-                 f"[{ACC_BLUE}]weights {bd['weights_gb']:.1f}[/]",
-                 f"[{ACC_ORANGE}]kv {bd['kv_cache_gb']:.1f}[/]"]
+
+        # Legend: colored swatch + label + GB, laid out in two aligned columns.
+        items = [("#a89878", "sys", sys_gb),
+                 (ACC_BLUE, "weights", bd["weights_gb"]),
+                 (ACC_ORANGE, "kv", bd["kv_cache_gb"])]
         if bd["mtp_gb"]:
-            parts.append(f"[{ACC_YELLOW}]mtp {bd['mtp_gb']:.1f}[/]")
+            items.append((ACC_YELLOW, "mtp", bd["mtp_gb"]))
         if bd["cudagraph_gb"]:
-            parts.append(f"[{ACC_YELLOW}]cudagraph {bd['cudagraph_gb']:.1f}[/]")
+            items.append((ACC_YELLOW, "cudagraph", bd["cudagraph_gb"]))
         if bd["vision_gb"] or bd["mmproj_gb"]:
-            parts.append(f"[{ACC_YELLOW}]vision {bd['vision_gb'] + bd['mmproj_gb']:.1f}[/]")
-        parts.append(f"[{ACC_YELLOW}]ovh {bd['overhead_gb']:.1f}[/]")
-        legend = "  ".join(parts)
+            items.append((ACC_YELLOW, "vision", bd["vision_gb"] + bd["mmproj_gb"]))
+        items.append((ACC_YELLOW, "ovh", bd["overhead_gb"]))
+
+        col_w = 18  # visible chars per column cell
+        cells = []
+        for color, label, gb in items:
+            plain = f"{label} {gb:.1f}"
+            pad = " " * max(1, col_w - 2 - len(plain))
+            cells.append(f"[{color}]▰[/] {plain}{pad}")
+        legend_rows = ["".join(cells[i:i + 2]).rstrip() for i in range(0, len(cells), 2)]
+        legend = "\n".join(legend_rows)
+
         line.update(
             f"{bar} [bold {status_color}]{verdict}[/] "
             f"[bold]{need:.1f}[/]/{free_gb:.1f} GB free of {total_gb:.0f}\n{legend}"
