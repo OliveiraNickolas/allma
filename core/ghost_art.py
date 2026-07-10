@@ -5,12 +5,12 @@ Single source of truth for both spinners (allma_cli and core.loader).
 `render_rows(tick)` returns FOUR ANSI-styled strings, each exactly WIN
 visible columns wide. Colors are skipped when stdout isn't a TTY.
 
-How the wiggle works: the canvas is 4 rows. The trail is a continuous
-six-stripe ribbon that shifts down by HALF a cell in alternating
-segments (the shift lives inside the half-block glyphs, so the ribbon
-never breaks) — the same mechanism as the original Nyan Cat trail. The
-ghost is 3 rows tall (dome / eyes / hem) and rides the same wave at its
-own column, bobbing between rows 0-2 and 1-3.
+How the wiggle works: the canvas is 4 rows. The trail is a breathing
+ribbon — thin (2 rows, four stripes) on the wave's high segments, thick
+(3 rows, all six stripes) on the low ones, always overlapping at row 1
+so it reads continuous. The ghost is 3 rows tall (dome / eyes / hem)
+and rides the same wave at its own column, bobbing between rows 0-2
+and 1-3.
 """
 import random
 import sys
@@ -43,16 +43,16 @@ def _bg(rgb):
 
 
 # ── ghost sprite: 4 wide × 3 rows (cell aspect makes it slightly tall) ───────
-_GHOST_DOME = "▄██▄"
-_GHOST_FACE = "█▟▟█"            # two tiny notch-eyes
-_GHOST_HEMS = ["█▀█▀", "▀█▀█"]  # scalloped hem, fluttering
-_HEM_SPEED = 7
+_GHOST_DOME = "▄███▄"
+_GHOST_FACE = "███▙▙"            # tiny notch-eyes, pupils to the RIGHT
+_GHOST_HEMS = ["█▀ ▀█","█▀█▀█"]  # scalloped hem, fluttering
+_HEM_SPEED = 5
 
 
 def _wave_pos(tick: int, x: int) -> int:
     """Trail ribbon state at column x: 0 = up, 1 = shifted down HALF a cell.
     The ribbon stays continuous — the shift happens inside the half-blocks."""
-    return ((tick // 5) + (x // 4)) % 2
+    return ((tick // 5) + (x // 2)) % 2
 
 
 class _Stars:
@@ -89,29 +89,25 @@ def render_rows(tick: int, colored=None):
     gx = _GHOST_X
     rows = [[" "] * WIN for _ in range(ROWS)]
 
-    # ── trail: continuous 6-stripe ribbon, undulating by HALF a cell ────
-    # up state:   rows 0-2 hold the six stripes as ▀(top,bottom) pairs.
-    # down state: everything slides half a cell — ▄ paints the first
-    # half-stripe at the top edge, ▀ without bg paints the last at row 3.
+    # ── trail: breathing ribbon — thin & high when up, thick & low when down
+    # up state:   2 rows (rows 0-1), four stripes.
+    # down state: 3 rows (rows 1-3), all six stripes.
+    # They always overlap at row 1, so the ribbon reads continuous.
     s = _STRIPES
     for x in range(gx - 1):
-        if _wave_pos(tick, x) == 0:   # up
+        if _wave_pos(tick, x) == 0:   # up: thin (red/yellow/green/teal)
             if colored:
-                rows[0][x] = f"{_fg(s[0])}{_bg(s[1])}▀{_RESET}"
-                rows[1][x] = f"{_fg(s[2])}{_bg(s[3])}▀{_RESET}"
-                rows[2][x] = f"{_fg(s[4])}{_bg(s[5])}▀{_RESET}"
+                rows[0][x] = f"{_fg(s[0])}{_bg(s[2])}▀{_RESET}"
+                rows[1][x] = f"{_fg(s[3])}{_bg(s[5])}▀{_RESET}"
             else:
-                rows[0][x] = rows[1][x] = rows[2][x] = "█"
-        else:                          # down (half-cell shift)
+                rows[0][x] = rows[1][x] = "█"
+        else:                          # down: thick (all six stripes)
             if colored:
-                rows[0][x] = f"{_fg(s[0])}▄{_RESET}"
-                rows[1][x] = f"{_fg(s[1])}{_bg(s[2])}▀{_RESET}"
-                rows[2][x] = f"{_fg(s[3])}{_bg(s[4])}▀{_RESET}"
-                rows[3][x] = f"{_fg(s[5])}▀{_RESET}"
+                rows[1][x] = f"{_fg(s[0])}{_bg(s[1])}▀{_RESET}"
+                rows[2][x] = f"{_fg(s[2])}{_bg(s[3])}▀{_RESET}"
+                rows[3][x] = f"{_fg(s[4])}{_bg(s[5])}▀{_RESET}"
             else:
-                rows[0][x] = "▄"
-                rows[1][x] = rows[2][x] = "█"
-                rows[3][x] = "▀"
+                rows[1][x] = rows[2][x] = rows[3][x] = "█"
 
     # ── ghost rides the wave at its own column ──────────────────────────
     bob = _wave_pos(tick, gx)                     # rides the ribbon's shift
