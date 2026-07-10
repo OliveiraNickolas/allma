@@ -241,6 +241,8 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
         padding=(0, 2),
         style=_S,
         expand=True,
+        # zebra stripes: every other row slightly darker for scanability
+        row_styles=[f"on {C_BG}", "on #ddd2b4"],
     )
     gpu = _gpu_stats()
     rec = _recommendation_bars(gguf_files, gpu)
