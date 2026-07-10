@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from core.config import logger, BASE_MODELS
+import core.state as state
 
 
 def _calc_model_size_gb(model_path: str) -> float:
@@ -169,7 +170,7 @@ def find_optimal_tp_and_gpus(base_name: str, skip_gpu: int | None = None) -> tup
     Find the optimal tensor parallel size and GPU allocation for a model.
     Returns (adjusted_tp, selected_gpu).
     """
-    cfg = BASE_MODELS[base_name]
+    cfg = state.effective_base_cfg(base_name)
     backend = cfg.get("backend", "vllm")
 
     if backend != "vllm":
@@ -251,29 +252,102 @@ def find_optimal_tp_and_gpus(base_name: str, skip_gpu: int | None = None) -> tup
     return effective_tp, best["index"]
 
 
-def get_model_vram_need(cfg: Dict[str, Any], base_name: str) -> float:
+def get_vram_breakdown(cfg: Dict[str, Any], base_name: str = "") -> Dict[str, float]:
+    """Estimate VRAM usage split by component. All values in GB.
+
+    Returns a dict with:
+        weights_gb    — model weights as loaded (quantized size for GGUF,
+                        file bytes + load overhead for vLLM)
+        kv_cache_gb   — KV cache at the configured context length
+        mmproj_gb     — llama.cpp vision projector, when configured
+        vision_gb     — vLLM multimodal encoder working memory
+        cudagraph_gb  — CUDA graph capture workspace (vLLM, eager off)
+        mtp_gb        — speculative/MTP draft context
+        overhead_gb   — fixed backend overhead
+        total_gb      — sum of the above
+
+    The single-number `get_model_vram_need` wraps this and returns total_gb.
+    """
     backend = cfg.get("backend", "vllm")
+    extra_args = cfg.get("extra_args", [])
+    zero = {
+        "weights_gb": 0.0, "kv_cache_gb": 0.0, "mmproj_gb": 0.0,
+        "vision_gb": 0.0, "cudagraph_gb": 0.0, "mtp_gb": 0.0,
+        "overhead_gb": 0.0, "total_gb": 0.0,
+    }
+
+    def _finish(b: Dict[str, float]) -> Dict[str, float]:
+        b["total_gb"] = sum(v for k, v in b.items() if k != "total_gb")
+        return b
+
     try:
         if backend == "vllm":
             model_path = cfg.get("path", "")
             if not model_path or not os.path.isdir(model_path):
-                return 4.0
-            total_size_gb = _calc_model_size_gb(model_path)
+                return _finish({**zero, "weights_gb": 3.0, "overhead_gb": 1.0})
+
+            b = dict(zero)
+            b["weights_gb"] = _calc_model_size_gb(model_path) * 1.06
             model_len = int(cfg.get("max_model_len", "40960"))
-            kv_cache_overhead = _estimate_kv_cache_gb(model_path, model_len, _get_kv_dtype(cfg))
-            return total_size_gb * 1.06 + kv_cache_overhead + 1.0
+            b["kv_cache_gb"] = _estimate_kv_cache_gb(model_path, model_len, _get_kv_dtype(cfg))
+            b["overhead_gb"] = 1.0
+
+            # Multimodal encoder (Qwen-VL etc): activations + image-token buffers
+            # beyond the encoder weights already counted in weights_gb.
+            try:
+                mconf = json.loads((Path(model_path) / "config.json").read_text())
+                if "vision_config" in mconf:
+                    b["vision_gb"] = 0.8
+            except Exception:
+                pass
+
+            # CUDA graph capture workspace. enforce_eager disables it entirely.
+            enforce_eager = (
+                bool(cfg.get("enforce_eager"))
+                and str(cfg.get("enforce_eager")).lower() not in ("false", "0", "no")
+            ) or "--enforce-eager" in extra_args
+            if not enforce_eager:
+                # Scales with capture size; the vLLM default (512) is heavy.
+                cap = 512
+                if "--max-cudagraph-capture-size" in extra_args:
+                    idx = extra_args.index("--max-cudagraph-capture-size")
+                    if idx + 1 < len(extra_args):
+                        try:
+                            cap = int(extra_args[idx + 1])
+                        except ValueError:
+                            pass
+                b["cudagraph_gb"] = 0.5 if cap <= 16 else (1.0 if cap <= 128 else 1.8)
+
+            # Speculative decoding / MTP draft context.
+            if "--speculative-config" in extra_args:
+                b["mtp_gb"] = 0.6
+
+            return _finish(b)
+
         elif backend == "llama.cpp":
             model_file = cfg.get("model", "")
             if not model_file or not os.path.isfile(model_file):
-                return 4.0
-            size_gb   = os.path.getsize(model_file) / (1024 ** 3)
+                return _finish({**zero, "weights_gb": 3.0, "overhead_gb": 1.0})
+            # CPU-only (n_gpu_layers=0): the model runs entirely in system RAM and
+            # uses essentially no VRAM. Without this, a CPU model is sized by its file
+            # bytes and wrongly gated by the GPU-free check — refused to load when the
+            # GPUs are full, even though it never touches the GPU.
+            try:
+                if int(str(cfg.get("n_gpu_layers", "-1")).strip()) == 0:
+                    return _finish({**zero, "overhead_gb": 0.3})
+            except (TypeError, ValueError):
+                pass
+
+            b = dict(zero)
+            # GGUF loads exactly its quantized size — only 1% overhead
+            b["weights_gb"] = os.path.getsize(model_file) / (1024 ** 3) * 1.01
             mmproj_file = cfg.get("mmproj", "")
-            mmproj_gb = os.path.getsize(mmproj_file) / (1024 ** 3) if mmproj_file and os.path.isfile(mmproj_file) else 0.0
-            n_ctx     = int(cfg.get("n_ctx", "40960"))
+            if mmproj_file and os.path.isfile(mmproj_file):
+                b["mmproj_gb"] = os.path.getsize(mmproj_file) / (1024 ** 3)
+            n_ctx = int(cfg.get("n_ctx", "40960"))
             model_dir = str(Path(model_file).parent)
 
             # Read actual --cache-type-k value from extra_args (not just presence)
-            extra_args = cfg.get("extra_args", [])
             kv_dtype = "auto"
             if "--cache-type-k" in extra_args:
                 idx = extra_args.index("--cache-type-k")
@@ -286,9 +360,20 @@ def get_model_vram_need(cfg: Dict[str, Any], base_name: str) -> float:
                 _dtype_bytes = {"q4_0": 0.5, "q4_1": 0.5, "q5_0": 0.625, "q5_1": 0.625,
                                 "q8_0": 1.0, "fp8": 1.0}.get(kv_dtype, 2.0)
                 kv_cache_gb = (n_ctx * 2 * 32 * 128 * _dtype_bytes) / (1024 ** 3)
+            b["kv_cache_gb"] = kv_cache_gb
 
-            # GGUF loads exactly its quantized size — only 1% overhead + 0.25 GB fixed
-            return size_gb * 1.01 + mmproj_gb + kv_cache_gb + 0.25
+            # MTP / speculative draft context (llama-server logs ~0.5-0.6 GB
+            # for "estimated memory usage of MTP context").
+            if "--spec-type" in extra_args:
+                b["mtp_gb"] = 0.6
+
+            b["overhead_gb"] = 0.25
+            return _finish(b)
     except Exception as e:
         logger.error(f"Error estimating VRAM for {base_name}: {e}")
-    return 4.0
+    return _finish({**zero, "weights_gb": 3.0, "overhead_gb": 1.0})
+
+
+def get_model_vram_need(cfg: Dict[str, Any], base_name: str) -> float:
+    """Single-number VRAM estimate — sum of the per-component breakdown."""
+    return get_vram_breakdown(cfg, base_name)["total_gb"]
