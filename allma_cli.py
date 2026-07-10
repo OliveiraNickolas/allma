@@ -127,7 +127,7 @@ def _run_simple_spinner(stop_event: threading.Event, label_ref: list):
 
 
 def _run_spinner(stop_event: threading.Event, label_ref: list):
-    """3-row parallax Andes spinner with running llama."""
+    """3-row parallax spinner with floating ghost."""
     import shutil
 
     ci = si = ni = 0
@@ -148,7 +148,7 @@ def _run_spinner(stop_event: threading.Event, label_ref: list):
         cview = (_SPINNER_CLOUDS    * 2)[ci % len(_SPINNER_CLOUDS):    ci % len(_SPINNER_CLOUDS)    + _WINDOW]
         sview = (_SPINNER_SKY       * 2)[si % len(_SPINNER_SKY):       si % len(_SPINNER_SKY)       + _WINDOW]
         nview = (_SPINNER_MOUNTAINS * 2)[ni % len(_SPINNER_MOUNTAINS): ni % len(_SPINNER_MOUNTAINS) + _WINDOW]
-        cview, sview, nview = _inject_llama(cview, sview, nview, tick)
+        cview, sview, nview = _inject_ghost(cview, sview, nview, tick)
 
         cloud_line = f"  {cview}"
         sky_line   = f"  {sview}"
@@ -1225,50 +1225,46 @@ def _repl(model: str):
         print("\nBye!")
 
 
-_LLAMA_PHRASES_LOADING = [
-    "The llama is fluffing its wool; weights are almost ready.",
-    "Llama is arranging vectors into neat little pastures.",
-    "Alpaca warming up the tensor before the next token.",
-    "The model is sipping a byte-sized drink before starting.",
-    "Attention heads lined up — all staring across the same field.",
-    "Stacking embeddings with pure Andean elegance.",
-    "The optimizer is stretching before the climb.",
-    "Llama checking if the learning rate feels natural.",
-    "Synchronizing dance steps between CPU and GPU — smooth and steady.",
-    "The model is taking a deep breath before spreading wisdom.",
-    "The royal llama has requested full-precision mode — no shortcuts.",
-    "Warming up the GPU... no one touch the lever this time.",
-    "A groovy transformation is in progress — please stand by.",
-    "Alpaca intern measuring tensor fluffiness per microsecond.",
-    "GPU fans spinning gloriously under the Andean sun.",
-    "Model alignment supervisor insists the embeddings sparkle.",
-    "Tuning the optimizer's dance to royal perfection.",
-    "Calibrating attention heads — they must all bow in sync.",
-    "A mysterious voice said, 'Pull the other lever!' — ignoring for safety.",
-    "Llama chemistry lab mixing float32, dust, and imperial flair.",
-    "Thermal sensors report: the GPU is radiating majestic confidence.",
-    "Re-polishing tensor cores until they reflect true regal brilliance.",
-    "Exporting llama-grade tensors with maximum grace per second.",
-    "Embedding room is glowing slightly — must be enchanted gradients.",
-    "The royal inspector approved the quantization — reluctantly.",
-    "Andean frequency synchronization: stable, slightly dramatic.",
-    "VRAM cleanup complete — the field is pristine once more.",
-    "One llama muttered something about 'groove restoration.' Proceeding anyway.",
-    "Attention mechanism bowing to its emperor — inference in progress.",
-    "GPU hum sounds suspiciously like a victory fanfare.",
+_GHOST_PHRASES_LOADING = [
+    "The ghost is phasing through the weight matrices.",
+    "Boo-ting up the tensors — nothing to be scared of.",
+    "Ectoplasm calibration holding at 87% viscosity.",
+    "Politely possessing the GPU... it barely resisted.",
+    "Floating through attention layers, leaving cold spots.",
+    "Haunting permit approved — spirits engaged.",
+    "Whispering incantations to the optimizer.",
+    "A cold draft in the VRAM means it's working.",
+    "Materializing embeddings from the other side.",
+    "The ghost walked straight through a wall of matrices. Show-off.",
+    "Séance in progress: contacting the base model.",
+    "Do not cross the streams... of gradients.",
+    "Translucency check: 60% opacity, 100% ready to spook.",
+    "Chains rattling in perfect rhythm with the GPU fans.",
+    "The spirit board slowly spelled 'l-o-a-d-i-n-g'.",
+    "Levitating the KV cache gently into position.",
+    "Every token will be delivered with a faint, pleasant chill.",
+    "The ghost refuses to use stairs. It prefers phasing.",
+    "Unfinished business detected — finishing it now.",
+    "Haunting frequency tuned to 60 apparitions per second.",
+    "Kindly asking the weights to rise from their slumber.",
+    "The attic lights flickered — that's always a good sign.",
+    "Warming the cold spots up to a comfortable shiver.",
+    "Summoning circle drawn. Model spirit inbound.",
+    "Sheets pressed, eye-holes aligned, dignity intact.",
+    "Rehearsing a tasteful 'boo' for the first prompt.",
 ]
 
-_LLAMA_PHRASES_READY = [
-    "The field is green, the model is awake.",
-    "Llama ready to spit tokens with ancient wisdom.",
-    "Transformers warmed up, Andean insight engaged.",
-    "All weights loaded, all llamas assembled.",
-    "The Andean oracle has spoken: inference time.",
-    "Alpaca clapped — model initialization achieved!",
-    "The model woke from its dream; time to generate brilliance.",
-    "GPU humming, CPU smiling — we've got a loaded llama!",
-    "Everything calibrated — let's graze some tokens.",
-    "LLM ready. Achieved full woolly elegance.",
+_GHOST_PHRASES_READY = [
+    "The haunting is complete — model possessed and ready.",
+    "Boo! Your model has materialized.",
+    "Spirit summoned; tokens from beyond incoming.",
+    "The ghost has settled in. Ask it anything.",
+    "Full apparition achieved. Transparency optional.",
+    "Cold spots stabilized — the inference séance is open.",
+    "The medium confirms it: the model speaks.",
+    "Ectoplasm cured, weights luminous, all set.",
+    "Your friendly house ghost is on duty.",
+    "It floats, it glows, it generates.",
 ]
 
 _SPINNER_CLOUDS = (
@@ -1307,54 +1303,53 @@ _SPINNER_SKY = (
     "    ▁               "
 ) * 4
 
-# ── 3-row running llama sprite ────────────────────────────────────────────────
-# Llama faces right. Spread diagonally across 3 rows (body left, head upper-right):
+# ── 3-row floating ghost sprite ───────────────────────────────────────────────
+# A little ghost bobbing over the landscape. Pac-Man-adjacent, not identical:
 #
-#   row 1 (clouds):    · · · · · ▒ ▒      ← head
-#   row 2 (sky):       · · · · ▓           ← neck
-#   row 3 (mountains): ▓ ▒ ▓               ← body + legs
+#   floating (phases 0/1/3):        dipping (phase 2):
+#   clouds:     ▗██▖   ← dome       clouds:    (untouched)
+#   sky:        █''█   ← eyes       sky:        ▗██▖
+#   mountains:  ▀▚▞▀   ← wavy hem   mountains:  █▞▚█  ← squashed, eyes blink
 #
-_LLAMA_HEAD        = "▄▄"   # 2 chars, placed at P+2..P+3 in clouds row (lower-half block = small head)
-_LLAMA_NECK_CH     = "▓"    # 1 char,  placed at P+4       in sky row
-_LLAMA_BODY_FRAMES = [       # 3 chars, placed at P..P+2   in mountains row
-    "▓▒▓",   # stride neutral
-    "▓▓▒",   # right leg sweeps back
-    "▓▒▓",   # stride neutral
-    "▒▓▓",   # left leg sweeps back
-]
-_LLAMA_POS   = 4   # body anchor x in the 36-char window
-_LLAMA_SPEED = 7   # ticks per animation frame
+_GHOST_DOME  = "▗██▖"
+_GHOST_FACE  = "█''█"
+_GHOST_HEMS  = ["▀▚▞▀", "▀▞▚▀"]   # skirt flutter
+_GHOST_DIP   = "█▞▚█"
+_GHOST_POS   = 4    # anchor x in the 36-char window
+_GHOST_SPEED = 7    # ticks per bob phase
 
 
-def _inject_llama(cview: str, sview: str, nview: str, tick: int):
-    """Overlay the 3-row running llama onto the three terrain layers."""
-    frame = _LLAMA_BODY_FRAMES[(tick // _LLAMA_SPEED) % len(_LLAMA_BODY_FRAMES)]
+def _inject_ghost(cview: str, sview: str, nview: str, tick: int):
+    """Overlay the floating ghost onto the three terrain layers."""
+    phase = (tick // _GHOST_SPEED) % 4          # up, up, dip, up
+    sway = (0, 1, 1, 0)[(tick // (_GHOST_SPEED * 4)) % 4]
+    x = _GHOST_POS + sway
     cl = list(cview)
     sl = list(sview)
     nl = list(nview)
-    # head in clouds row
-    for k, ch in enumerate(_LLAMA_HEAD):
-        p = _LLAMA_POS + 2 + k
-        if p < len(cl):
-            cl[p] = ch
-    # neck in sky row
-    p = _LLAMA_POS + 2
-    if p < len(sl):
-        sl[p] = _LLAMA_NECK_CH
-    # body + legs in mountains row
-    for k, ch in enumerate(frame):
-        p = _LLAMA_POS + k
-        if p < len(nl):
-            nl[p] = ch
+
+    def put(row: list, sprite: str):
+        for k, ch in enumerate(sprite):
+            p = x + k
+            if p < len(row):
+                row[p] = ch
+
+    if phase == 2:      # dip: whole sprite drops one row, eyes 'blink'
+        put(sl, _GHOST_DOME)
+        put(nl, _GHOST_DIP)
+    else:               # floating: dome / eyes / fluttering hem
+        put(cl, _GHOST_DOME)
+        put(sl, _GHOST_FACE)
+        put(nl, _GHOST_HEMS[phase % 2])
     return "".join(cl), "".join(sl), "".join(nl)
 
 
-def _run_llama_spinner(stop_event: threading.Event, phase_ref: list):
-    """3-row parallax spinner with running llama and rotating phrases."""
+def _run_ghost_spinner(stop_event: threading.Event, phase_ref: list):
+    """3-row parallax spinner with floating ghost and rotating phrases."""
     import random
     import shutil
 
-    phrases = _LLAMA_PHRASES_LOADING[:]
+    phrases = _GHOST_PHRASES_LOADING[:]
     random.shuffle(phrases)
 
     phrase_idx = 0
@@ -1381,7 +1376,7 @@ def _run_llama_spinner(stop_event: threading.Event, phase_ref: list):
         cview = (_SPINNER_CLOUDS    * 2)[ci % len(_SPINNER_CLOUDS):    ci % len(_SPINNER_CLOUDS)    + _WINDOW]
         sview = (_SPINNER_SKY       * 2)[si % len(_SPINNER_SKY):       si % len(_SPINNER_SKY)       + _WINDOW]
         nview = (_SPINNER_MOUNTAINS * 2)[ni % len(_SPINNER_MOUNTAINS): ni % len(_SPINNER_MOUNTAINS) + _WINDOW]
-        cview, sview, nview = _inject_llama(cview, sview, nview, tick)
+        cview, sview, nview = _inject_ghost(cview, sview, nview, tick)
 
         cloud_line = f"  {cview}"
         sky_line   = f"  {sview}"
@@ -1445,7 +1440,7 @@ def cmd_launch(args):
     stop_spinner = threading.Event()
     phase_ref = ["start"]
     spinner = threading.Thread(
-        target=_run_llama_spinner, args=(stop_spinner, phase_ref), daemon=True
+        target=_run_ghost_spinner, args=(stop_spinner, phase_ref), daemon=True
     )
     spinner.start()
 
@@ -1502,7 +1497,7 @@ def cmd_launch(args):
         sys.exit(1)
 
     import random as _random
-    print(f"  ▲  {_random.choice(_LLAMA_PHRASES_READY)}")
+    print(f"  ✧ {_random.choice(_GHOST_PHRASES_READY)}")
 
     # 4 ─ Patch settings.json for local mode
     _apply_claude_local_fix()
@@ -1535,7 +1530,7 @@ def cmd_launch_hermes(args):
     stop_spinner = threading.Event()
     phase_ref = ["start"]
     spinner = threading.Thread(
-        target=_run_llama_spinner, args=(stop_spinner, phase_ref), daemon=True
+        target=_run_ghost_spinner, args=(stop_spinner, phase_ref), daemon=True
     )
     spinner.start()
 
@@ -1592,7 +1587,7 @@ def cmd_launch_hermes(args):
         sys.exit(1)
 
     import random as _random
-    print(f"  ▲  {_random.choice(_LLAMA_PHRASES_READY)}")
+    print(f"  ✧ {_random.choice(_GHOST_PHRASES_READY)}")
 
     # 4 ─ Launch hermes with model flag (hermes config already points to allma)
     hermes_cmd = [hermes_bin, "-m", model] + args.hermes_args
