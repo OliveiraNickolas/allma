@@ -4,14 +4,15 @@ Model loading: spinner, readiness check, ensure_base_model.
 import asyncio
 import os
 import signal
-import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from core.config import logger, BASE_MODELS, ALLMA_LOG_DIR, GPU_MEMORY_THRESHOLD_GB
+from core.config import logger, BASE_MODELS, ALLMA_LOG_DIR, GPU_MEMORY_THRESHOLD_GB, MODEL_LOAD_TIMEOUT
 import core.state as state
 from core.gpu import get_free_gpu_memory, get_model_vram_need, get_all_gpus
 from core.process import (
@@ -162,10 +163,20 @@ async def wait_for_model_ready(
 ) -> bool:
     READY_SIGNALS = {
         "vllm": ["Application startup complete", "Uvicorn running on"],
-        "llama.cpp": ["main: starting the main loop", "main: server is listening"],
+        # Match by substring so we survive llama.cpp log-format changes. Newer
+        # builds log "srv  llama_server: server is listening on http://..."; older
+        # builds logged "main: server is listening on ...". Keep the trailing "on"
+        # — llama.cpp binds its HTTP port BEFORE loading the model, and upstream
+        # builds log "main: HTTP server is listening, hostname: ..." at that point,
+        # which must NOT count as ready.
+        "llama.cpp": ["server is listening on", "all slots are idle"],
     }
 
-    use_tcp_fallback = backend == "vllm"
+    # Fallback probe: GET /health. Both backends expose it and only answer 200
+    # once the model is actually ready — keeps us working even if the log strings
+    # above change again. A bare TCP-connect check is not enough: llama.cpp binds
+    # its port before loading the model and serves 503 while loading.
+    use_health_fallback = backend in ("vllm", "llama.cpp")
     signals = READY_SIGNALS.get(backend, [])
     deadline = time.time() + timeout
     log_position = log_start_position
@@ -197,14 +208,15 @@ async def wait_for_model_ready(
             except Exception as e:
                 logger.debug(f"Error reading log for {displayname}: {e}")
 
-            if use_tcp_fallback:
+            if use_health_fallback:
                 try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        s.settimeout(0.5)
-                        if s.connect_ex(("127.0.0.1", port)) == 0:
+                    with urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}/health", timeout=1
+                    ) as resp:
+                        if resp.status == 200:
                             spinner.stop(success=True)
                             return True
-                except (ConnectionRefusedError, OSError, TimeoutError):
+                except (urllib.error.URLError, OSError, TimeoutError):
                     pass
 
             await asyncio.sleep(1)
@@ -221,11 +233,27 @@ async def wait_for_model_ready(
 # ==============================================================================
 # MODEL LOADING
 # ==============================================================================
+def _kv_ceiling_from_log(basename: str) -> int:
+    """Extract vLLM's 'estimated maximum model length is N' from the tail of
+    the backend log. Returns the LAST (most recent) match, or 0."""
+    import re as _re
+    logpath = ALLMA_LOG_DIR / f"{basename}.log"
+    try:
+        with open(logpath, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 65536))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return 0
+    matches = _re.findall(r"estimated maximum model length is (\d+)", tail)
+    return int(matches[-1]) if matches else 0
+
+
 async def ensure_base_model(basename: str, profilename: Optional[str] = None, gpu_id: Optional[int] = None):
     if basename not in BASE_MODELS:
         raise RuntimeError(f"Model {basename} not configured")
 
-    cfg = BASE_MODELS[basename]
+    cfg = state.effective_base_cfg(basename)
     # Honour pinned GPU from config if caller did not specify a gpu_id.
     # Accepts both "gpu_id" (used by process builders) and legacy "pinned_gpu".
     if gpu_id is None:
@@ -280,7 +308,32 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
 
     success = False
     try:
-        port = await _load_model_impl(basename, cfg, backend, displayname, gpu_id=gpu_id)
+        try:
+            port = await _load_model_impl(basename, cfg, backend, displayname, gpu_id=gpu_id)
+        except RuntimeError as first_err:
+            # Auto-fit: vLLM refuses to start when the configured context
+            # doesn't fit the KV cache budget, but tells us the ceiling:
+            #   "the estimated maximum model length is 46464"
+            # Retry ONCE at 95% of that ceiling (session-only override — the
+            # .allm on disk is untouched) instead of failing on the user.
+            fitted = _kv_ceiling_from_log(basename) if backend == "vllm" else 0
+            configured = int(cfg.get("max_model_len", 0) or 0)
+            if not fitted or (configured and fitted >= configured):
+                raise
+            new_len = max(4096, (int(fitted * 0.95) // 4096) * 4096)
+            logger.warning(
+                f"{displayname}: max_model_len={configured or '?'} doesn't fit "
+                f"(vLLM ceiling {fitted}). Auto-fit: retrying once with "
+                f"max_model_len={new_len}. Edit the .allm to make this permanent."
+            )
+            retry_cfg = dict(cfg)
+            retry_cfg["max_model_len"] = new_len
+            with state.global_lock:
+                state.session_load_overrides.setdefault(basename, {})["max_model_len"] = new_len
+            try:
+                port = await _load_model_impl(basename, retry_cfg, backend, displayname, gpu_id=gpu_id)
+            except RuntimeError:
+                raise first_err
         success = True
         return port
     finally:
@@ -289,6 +342,20 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
             with state.global_lock:
                 state.active_servers.pop(basename, None)
                 state.server_idle_time.pop(basename, None)
+
+
+def _cfg_tp_size(cfg: dict) -> int:
+    """Tensor-parallel size a vLLM config will use (extra_args wins over the field)."""
+    raw_extra = cfg.get("extra_args") or []
+    if "--tensor-parallel-size" in raw_extra:
+        try:
+            return max(1, int(raw_extra[raw_extra.index("--tensor-parallel-size") + 1]))
+        except (ValueError, IndexError):
+            pass
+    try:
+        return max(1, int(cfg.get("tensor_parallel", "1")))
+    except (TypeError, ValueError):
+        return 1
 
 
 async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: str, gpu_id: Optional[int] = None) -> int:
@@ -302,30 +369,66 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
     _max_single_usable = max((g["total_gb"] * _gpu_mem_util for g in _all_gpus_info), default=0.0)
     gpus = get_free_gpu_memory()
     max_free_gb = max((g["free_gb"] for g in gpus), default=0.0)
-    _llama_pinned   = backend == "llama.cpp" and int(cfg.get("gpu_id", -1)) >= 0
+    # Pinned placement. By the time we get here, gpu_id already reflects both an
+    # explicit --gpu flag and a config pin (merged upstream in ensure_base_model).
+    # A pinned model runs on a KNOWN GPU set (CUDA_VISIBLE_DEVICES) — llama.cpp on
+    # that single GPU, vLLM on TP contiguous GPUs starting there — so the VRAM
+    # check must look at those GPUs' free memory, not the most-free GPU elsewhere
+    # that the model can't even use.
+    if gpu_id is not None:
+        _target_gpus = list(range(gpu_id, gpu_id + _cfg_tp_size(cfg))) \
+            if backend == "vllm" else [gpu_id]
+    else:
+        _target_gpus = None
+    _pinned = _target_gpus is not None
+    _where = f" on GPU {','.join(map(str, _target_gpus))}" if _pinned else ""
+
     needs_multi_gpu = (backend == "vllm" and NEEDGB > _max_single_usable) or \
-                      (backend == "llama.cpp" and not _llama_pinned and NEEDGB > max_free_gb)
-    available_gb = sum(g["free_gb"] for g in gpus) if needs_multi_gpu else max_free_gb
+                      (backend == "llama.cpp" and not _pinned and NEEDGB > max_free_gb)
+
+    def _available(gpu_list) -> float:
+        """Free VRAM usable by THIS load given its placement."""
+        if _pinned:
+            return sum(g["free_gb"] for g in gpu_list if g["index"] in _target_gpus)
+        if needs_multi_gpu:
+            return sum(g["free_gb"] for g in gpu_list)
+        return max((g["free_gb"] for g in gpu_list), default=0.0)
+
+    available_gb = _available(gpus)
 
     if available_gb < NEEDGB + GPU_MEMORY_THRESHOLD_GB:
         with state.global_lock:
-            names_to_unload = [n for n in state.active_servers if n != basename]
+            if _pinned:
+                # Surgical swap: free only the model(s) occupying the target GPU(s),
+                # leaving models on other GPUs untouched. "gpus" covers every GPU a
+                # server occupies (TP shards included); gpu_allocation is a
+                # single-GPU fallback for entries loaded before this field existed.
+                names_to_unload = [
+                    n for n, srv in state.active_servers.items()
+                    if n != basename and any(
+                        g in srv.get("gpus", [state.gpu_allocation.get(n)])
+                        for g in _target_gpus
+                    )
+                ]
+            else:
+                names_to_unload = [n for n in state.active_servers if n != basename]
         loop = asyncio.get_event_loop()
         for name in names_to_unload:
-            logger.info(f"Unloading {name} to free VRAM")
+            logger.info(f"Unloading {name} to free VRAM{_where}")
             await loop.run_in_executor(None, lambda n=name: shutdown_server(n, "swap", fast=True))
-        await loop.run_in_executor(None, kill_vram_fast)
+        # kill_vram_fast nukes ALL allma backends — only safe when NOT doing a
+        # surgical, GPU-targeted swap (otherwise it would kill models on other GPUs).
+        if not _pinned:
+            await loop.run_in_executor(None, kill_vram_fast)
         # Poll until VRAM is actually freed (max 6s) instead of blind sleep
         for _ in range(12):
             await asyncio.sleep(0.5)
-            gpus_check = get_free_gpu_memory()
-            chk_free = sum(g["free_gb"] for g in gpus_check) if needs_multi_gpu else max((g["free_gb"] for g in gpus_check), default=0.0)
-            if chk_free >= NEEDGB:
+            if _available(get_free_gpu_memory()) >= NEEDGB:
                 break
 
         gpus = get_free_gpu_memory()
         max_free_gb = max((g["free_gb"] for g in gpus), default=0.0)
-        available_gb = sum(g["free_gb"] for g in gpus) if needs_multi_gpu else max_free_gb
+        available_gb = _available(gpus)
         if available_gb < NEEDGB:
             gpu_procs = list_gpu_processes()
             active_procs = [p for p in gpu_procs if p["memory_mb"] > 100]
@@ -336,7 +439,7 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                     tag = "allma" if p["pid"] in allma_pids else "external"
                     logger.error(f"  PID {p['pid']} ({p['name']}): {p['memory_mb']//1024:.0f}GB [{tag}]")
             raise RuntimeError(
-                f"Not enough VRAM: {displayname} needs {NEEDGB:.1f}GB, only {available_gb:.1f}GB free"
+                f"Not enough VRAM{_where}: {displayname} needs {NEEDGB:.1f}GB, only {available_gb:.1f}GB free"
             )
 
     logger.info(f"Loading {displayname} ({backend})")
@@ -373,24 +476,37 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
         if venv_bin not in current_path.split(os.pathsep):
             subprocess_env["PATH"] = venv_bin + os.pathsep + current_path
 
+        # Every GPU this server will occupy — recorded in active_servers so the
+        # surgical swap above can tell which models sit on a given GPU.
+        server_gpus = [current_gpu_id]
         if backend == "vllm":
-            if tp_from_cmd <= 1:
-                subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
-            else:
-                gpu_indices = ",".join(str(current_gpu_id + i) for i in range(tp_from_cmd))
-                subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_indices
-                logger.info(f"TP={tp_from_cmd} on GPUs [{gpu_indices}]")
+            if tp_from_cmd > 1:
+                server_gpus = [current_gpu_id + i for i in range(tp_from_cmd)]
+                logger.info(f"TP={tp_from_cmd} on GPUs [{','.join(map(str, server_gpus))}]")
+            subprocess_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in server_gpus)
             # Fix VRAM fragmentation (marlin_gemm OOM, quantized kernels) — zero downside
             subprocess_env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         elif backend == "llama.cpp":
-            if max_free_gb >= NEEDGB:
-                subprocess_env["CUDA_VISIBLE_DEVICES"] = str(current_gpu_id)
+            # CPU-only (n_gpu_layers=0 or --device none): hide all GPUs so the
+            # CUDA-enabled binary doesn't even create a CUDA context (which alone
+            # eats ~1GB VRAM). This is what makes it a true 0-VRAM CPU run.
+            _ea = cfg.get("extra_args", []) or []
+            _dev_none = any(
+                _ea[i + 1].strip().lower() == "none"
+                for i, a in enumerate(_ea[:-1]) if a in ("--device", "-dev")
+            )
+            _cpu_only = str(cfg.get("n_gpu_layers", "")).strip() == "0" or _dev_none
+            if _cpu_only:
+                subprocess_env["CUDA_VISIBLE_DEVICES"] = ""
+                logger.info(f"{basename}: CPU-only — GPUs hidden (CUDA_VISIBLE_DEVICES='')")
             else:
-                # Primary GPU first so it becomes CUDA0 (larger shard + mmproj land there)
-                all_gpu_ids = [g["index"] for g in _all_gpus_info]
-                ordered = [current_gpu_id] + [g for g in all_gpu_ids if g != current_gpu_id]
-                subprocess_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in ordered)
-                logger.info(f"llama.cpp multi-GPU: [{subprocess_env['CUDA_VISIBLE_DEVICES']}]")
+                if not (_pinned or max_free_gb >= NEEDGB):
+                    # Doesn't fit on one GPU and isn't pinned — spread across all GPUs,
+                    # primary first so it becomes CUDA0 (larger shard + mmproj land there)
+                    all_gpu_ids = [g["index"] for g in _all_gpus_info]
+                    server_gpus = [current_gpu_id] + [g for g in all_gpu_ids if g != current_gpu_id]
+                    logger.info(f"llama.cpp multi-GPU: [{','.join(map(str, server_gpus))}]")
+                subprocess_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in server_gpus)
 
         proc = _sp.Popen(
             cmd,
@@ -408,7 +524,9 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                 "pid": proc.pid,
                 "port": port,
                 "backend": backend,
+                "gpus": server_gpus,
                 "logfile": logfilepath,
+                "pin_loaded": bool(cfg.get("pin_loaded")),
             }
             state.server_idle_time[basename] = time.time()
 
@@ -417,7 +535,7 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
 
         ready = await wait_for_model_ready(
             proc, port, backend, logfilepath, displayname,
-            timeout=300, log_start_position=log_start_position,
+            timeout=MODEL_LOAD_TIMEOUT, log_start_position=log_start_position,
         )
 
         if not ready:
@@ -433,7 +551,7 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                         logger.error(f"   • {suggestion}")
                     state.last_error_analysis[basename] = error_analysis
                 raise RuntimeError(f"{displayname} startup failed (code {returncode})")
-            raise RuntimeError(f"{displayname} not ready after 300s")
+            raise RuntimeError(f"{displayname} not ready after {MODEL_LOAD_TIMEOUT}s")
 
         logger.info(f"{displayname} loaded on GPU {current_gpu_id}")
         return port
