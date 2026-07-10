@@ -97,7 +97,7 @@ def cleanup_orphaned_backends():
 # ==============================================================================
 def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | None = None) -> tuple[list, int, int]:
     """Build vLLM command with GPU and tensor parallelism configuration."""
-    cfg = BASE_MODELS[base_name]
+    cfg = state.effective_base_cfg(base_name)
 
     port = state.get_next_vllm_port()
     _attempts = 0
@@ -176,7 +176,7 @@ def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | No
 
 def build_llama_cmd(base_name: str, gpu_id: int | None = None) -> tuple[list, int, int]:
     """Build llama.cpp command with GPU configuration."""
-    cfg = BASE_MODELS[base_name]
+    cfg = state.effective_base_cfg(base_name)
 
     port = state.get_next_llama_port()
     _attempts = 0
@@ -227,10 +227,19 @@ def build_llama_cmd(base_name: str, gpu_id: int | None = None) -> tuple[list, in
             "-b", str(n_batch),
             "-ngl", str(cfg.get("n_gpu_layers", "-1")),
         ]
+        if cfg.get("n_ubatch"):
+            cmd.extend(["-ub", str(cfg["n_ubatch"])])
         if cfg.get("mmproj") and os.path.exists(cfg["mmproj"]):
             cmd.extend(["--mmproj", cfg["mmproj"]])
         if cfg.get("chat_template_file") and os.path.exists(cfg["chat_template_file"]):
             cmd.extend(["--chat-template-file", cfg["chat_template_file"]])
+        # Observability for `allma top`: modern llama-server ships /slots
+        # (per-slot context usage) disabled and /metrics (Prometheus token
+        # counters → live tok/s) off by default. Localhost-only server.
+        if "--slots" not in extra_args:
+            cmd.append("--slots")
+        if "--metrics" not in extra_args:
+            cmd.append("--metrics")
         cmd.extend(extra_args)
     return cmd, port, gpu_id
 

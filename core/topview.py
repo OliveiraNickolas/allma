@@ -110,20 +110,35 @@ def _vllm_stats(port: int) -> Optional[dict]:
 
 
 def _llama_stats(port: int) -> Optional[dict]:
-    """llama-server /slots: context used per slot."""
+    """llama-server /slots (context per slot) + /metrics (token counters).
+    Both need the server started with --slots/--metrics (allma adds them)."""
     slots = _http_json(f"http://127.0.0.1:{port}/slots")
-    if not isinstance(slots, list):
+    metrics = _http_text(f"http://127.0.0.1:{port}/metrics")
+    if not isinstance(slots, list) and metrics is None:
         return None
-    busy = 0
-    ctx_used = 0
-    n_ctx = 0
-    for s in slots:
-        n_ctx = max(n_ctx, int(s.get("n_ctx") or 0))
-        past = int(s.get("n_past") or s.get("n_ctx_used") or 0)
-        ctx_used = max(ctx_used, past)
-        if s.get("is_processing") or s.get("state") in (1, "processing"):
-            busy += 1
-    return {"busy": busy, "ctx_used": ctx_used, "n_ctx": n_ctx}
+    out = {"busy": 0, "ctx_used": 0, "n_ctx": 0, "pred_tokens": None}
+    if isinstance(slots, list):
+        for s in slots:
+            if not isinstance(s, dict):
+                continue
+            out["n_ctx"] = max(out["n_ctx"], int(s.get("n_ctx") or 0))
+            nt = s.get("next_token")
+            nt = nt if isinstance(nt, dict) else {}
+            past = int(s.get("n_past") or nt.get("n_past", 0)
+                       or s.get("n_ctx_used") or 0)
+            out["ctx_used"] = max(out["ctx_used"], past)
+            if s.get("is_processing") or s.get("state") in (1, "processing"):
+                out["busy"] += 1
+    if metrics is not None:
+        total = 0.0
+        for line in metrics.splitlines():
+            if line.startswith("llamacpp:tokens_predicted_total"):
+                try:
+                    total += float(line.rsplit(" ", 1)[1])
+                except (ValueError, IndexError):
+                    pass
+        out["pred_tokens"] = total
+    return out
 
 
 def _max_ctx_of(port: int) -> int:
@@ -155,6 +170,17 @@ class TopView:
         # per-model tok/s state: name -> (last_counter, last_ts, rate)
         self._rate: dict = {}
         self._maxctx: dict = {}
+        self._last_active: dict = {}   # name -> last rate seen while generating
+
+    def _rate_text(self, name: str, rate: float, active: bool) -> Text:
+        """Live rate while generating; the last active rate (dimmed) when idle."""
+        if active and rate > 0.05:
+            self._last_active[name] = rate
+            return Text(f"{rate:6.1f} tok/s", style=f"bold {C_ACCENT} on {C_BG}")
+        last = self._last_active.get(name)
+        if last:
+            return Text(f"idle · last {last:.1f} tok/s", style=f"{C_DIM} on {C_BG}")
+        return Text("idle", style=f"{C_DIM} on {C_BG}")
 
     def _model_rate(self, name: str, gen_tokens: float) -> float:
         now = time.time()
@@ -215,14 +241,14 @@ class TopView:
                 m = _vllm_stats(port)
                 if m:
                     rate = self._model_rate(name, m["gen_tokens"])
-                    head.append(f"   {rate:6.1f} tok/s",
-                                style=f"bold {C_ACCENT} on {C_BG}")
+                    head.append("   ")
+                    head.append_text(self._rate_text(name, rate, m["running"] > 0))
                     if name not in self._maxctx:
                         self._maxctx[name] = _max_ctx_of(port)
                     maxctx = self._maxctx.get(name) or 0
                     detail.append("   kv-cache ", style=f"{C_DIM} on {C_BG}")
                     detail.append_text(_bar(m["kv_perc"]))
-                    detail.append(f" {m['kv_perc'] * 100:3.0f}%", style=f"{C_FG} on {C_BG}")
+                    detail.append(f" {m['kv_perc'] * 100:4.1f}%", style=f"{C_FG} on {C_BG}")
                     detail.append(f"   reqs {m['running']:.0f} run · "
                                   f"{m['waiting']:.0f} wait", style=f"{C_DIM} on {C_BG}")
                     if maxctx:
@@ -231,15 +257,25 @@ class TopView:
                     detail.append("   metrics unavailable", style=f"{C_DIM} on {C_BG}")
             else:  # llama.cpp
                 m = _llama_stats(port)
-                if m and m["n_ctx"]:
-                    frac = m["ctx_used"] / m["n_ctx"] if m["n_ctx"] else 0.0
-                    detail.append("   ctx ", style=f"{C_DIM} on {C_BG}")
-                    detail.append_text(_bar(frac))
-                    detail.append(f" {m['ctx_used']}/{m['n_ctx']}",
-                                  style=f"{C_FG} on {C_BG}")
-                    detail.append(f"   slots busy {m['busy']}", style=f"{C_DIM} on {C_BG}")
+                if m:
+                    if m["pred_tokens"] is not None:
+                        rate = self._model_rate(name, m["pred_tokens"])
+                        head.append("   ")
+                        head.append_text(self._rate_text(name, rate, m["busy"] > 0))
+                    if m["n_ctx"]:
+                        frac = m["ctx_used"] / m["n_ctx"]
+                        detail.append("   ctx ", style=f"{C_DIM} on {C_BG}")
+                        detail.append_text(_bar(frac))
+                        detail.append(f" {m['ctx_used']}/{m['n_ctx']}",
+                                      style=f"{C_FG} on {C_BG}")
+                        detail.append(f"   slots busy {m['busy']}",
+                                      style=f"{C_DIM} on {C_BG}")
+                    else:
+                        detail.append("   (/slots off — 'allma reload' this model "
+                                      "to enable)", style=f"{C_DIM} on {C_BG}")
                 else:
-                    detail.append("   up (no /slots data)", style=f"{C_DIM} on {C_BG}")
+                    detail.append("   up (no /slots or /metrics — 'allma reload' "
+                                  "this model to enable)", style=f"{C_DIM} on {C_BG}")
             body.add_row(head)
             body.add_row(detail)
 
