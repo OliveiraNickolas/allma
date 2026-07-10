@@ -78,10 +78,6 @@ FAMILY_PRESETS = {
             "--async-scheduling",
             "--disable-custom-all-reduce",
         ],
-        "vllm_extra_fields": {
-            "generation_config": "vllm",
-            "limit_mm_per_prompt.video": "0",
-        },
         "llama_extra_args": ["--chat-template", "chatml", "--jinja"],
         "sampling": {
             "temperature": "0.7",
@@ -441,12 +437,28 @@ def suggest_max_len(max_ctx: int | None, size_gb: float, tp: int, gpus: list) ->
 # ==============================================================================
 # .allm file generation
 # ==============================================================================
-def render_extra_args(args: list) -> str:
-    """Render an extra_args list in the multi-line .allm format."""
-    if not args:
-        return "[]"
-    items = ",\n\t".join(f'"{a}"' for a in args)
-    return f"[\n\t{items}\n]"
+def render_flag_lines(args: list) -> list[str]:
+    """Convert a flat ['--flag', 'value', '--bool-flag', ...] list into
+    .allm v2 lines: 'flag value' / 'bool-flag' (leading dashes dropped —
+    the parser re-adds them)."""
+    lines: list[str] = []
+    i = 0
+    while i < len(args):
+        tok = str(args[i])
+        if tok.startswith("-"):
+            flag = tok.lstrip("-")
+            # value = next token unless it's another flag
+            if i + 1 < len(args) and not str(args[i + 1]).startswith("--"):
+                lines.append(f"{flag} {args[i + 1]}")
+                i += 2
+            else:
+                lines.append(flag)
+                i += 1
+        else:
+            # stray value without a flag — keep as-is
+            lines.append(tok)
+            i += 1
+    return lines
 
 
 def generate_base_allm(
@@ -458,40 +470,34 @@ def generate_base_allm(
     gguf_path: str | None,
     mmproj_path: str | None,
 ) -> str:
-    """Generate the content of the physical .allm file."""
-    lines = [f"# Base model: {name} ({info['backend']} backend)\n"]
+    """Generate the content of a base .allm file (v2 syntax)."""
+    lines = [f"# Base model: {name} ({info['backend']} backend)"]
 
     if info["backend"] == "vllm":
-        extra_args = render_extra_args(preset.get("vllm_extra_args", []))
         lines += [
-            f'backend = "vllm"',
-            f'path = "{info["path"]}"',
-            f'tokenizer = "{info["path"]}"',
-            f'tensor_parallel = "{tp}"',
-            f'gpu_memory_utilization = "0.90"',
-            f'max_model_len = "{max_len}"',
-            f'max_num_seqs = "8"',
+            "@vllm",
+            f"@path {info['path']}",
+            "",
+            f"tensor-parallel-size {tp}",
+            f"max-model-len {max_len}",
+            "max-num-seqs 8",
+            "gpu-memory-utilization 0.90",
         ]
-        for k, v in preset.get("vllm_extra_fields", {}).items():
-            lines.append(f'{k} = "{v}"')
-        lines += ["", f"extra_args = {extra_args}"]
+        lines += render_flag_lines(preset.get("vllm_extra_args", []))
 
     else:  # llama.cpp
-        extra_args = render_extra_args(preset.get("llama_extra_args", []))
         lines += [
-            f'backend = "llama.cpp"',
-            f'model = "{gguf_path}"',
+            "@llamacpp",
+            f"@path {gguf_path}",
+            "",
+            "-ngl -1",
+            f"-c {min(max_len, 40960)}",
+            "-b 1024",
+            "-t 16",
         ]
         if mmproj_path:
-            lines.append(f'mmproj = "{mmproj_path}"')
-        lines += [
-            f'n_ctx = "{min(max_len, 40960)}"',
-            f'n_batch = "1024"',
-            f'n_gpu_layers = "-1"',
-            f'n_threads = "16"',
-            "",
-            f"extra_args = {extra_args}",
-        ]
+            lines.append(f"--mmproj {mmproj_path}")
+        lines += render_flag_lines(preset.get("llama_extra_args", []))
 
     return "\n".join(lines) + "\n"
 
@@ -501,16 +507,18 @@ def generate_profile_allm(
     base_name: str,
     sampling: dict,
 ) -> str:
-    """Generate the content of the profile .allm file."""
+    """Generate the content of a profile .allm file (v2 syntax)."""
     lines = [
-        f"# Profile model: {profile_name}",
-        f'name = "{profile_name}"',
-        f'base = "{base_name}"',
-        "",
-        "[sampling]",
+        f"# Profile: {profile_name}",
+        f"@name {profile_name}",
+        f"@base {base_name}",
     ]
+    # Convention: profiles named *Instruct* run without chain-of-thought.
+    if "instruct" in profile_name.lower():
+        lines.append("@thinking-off")
+    lines.append("")
     for k, v in sampling.items():
-        lines.append(f"{k} = {v}")
+        lines.append(f"{k.replace('_', '-')} {v}")
     return "\n".join(lines) + "\n"
 
 
