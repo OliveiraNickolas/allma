@@ -363,6 +363,17 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
     NEEDGB = get_model_vram_need(cfg, basename)
     logger.info(f"{displayname} needs {NEEDGB:.1f}GB VRAM")
 
+    # vLLM validates its exact KV budget at startup, and the auto-fit retry
+    # resolves context overshoot — so the hard gate below only has to prove
+    # the model can start AT ALL (weights + a minimal 8k context). The full
+    # estimate still drives the swap/unload decisions.
+    if backend == "vllm":
+        _min_cfg = dict(cfg)
+        _min_cfg["max_model_len"] = 8192
+        NEED_GATE = get_model_vram_need(_min_cfg, basename)
+    else:
+        NEED_GATE = NEEDGB
+
     # VRAM check — unload other models if needed
     _all_gpus_info = get_all_gpus()
     _gpu_mem_util = float(cfg.get("gpu_memory_utilization", "0.90"))
@@ -429,7 +440,7 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
         gpus = get_free_gpu_memory()
         max_free_gb = max((g["free_gb"] for g in gpus), default=0.0)
         available_gb = _available(gpus)
-        if available_gb < NEEDGB:
+        if available_gb < NEED_GATE:
             gpu_procs = list_gpu_processes()
             active_procs = [p for p in gpu_procs if p["memory_mb"] > 100]
             if active_procs:
@@ -439,7 +450,14 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                     tag = "allma" if p["pid"] in allma_pids else "external"
                     logger.error(f"  PID {p['pid']} ({p['name']}): {p['memory_mb']//1024:.0f}GB [{tag}]")
             raise RuntimeError(
-                f"Not enough VRAM{_where}: {displayname} needs {NEEDGB:.1f}GB, only {available_gb:.1f}GB free"
+                f"Not enough VRAM{_where}: {displayname} needs {NEED_GATE:.1f}GB "
+                f"(weights + minimal context), only {available_gb:.1f}GB free"
+            )
+        if available_gb < NEEDGB:
+            logger.info(
+                f"{displayname}: configured context may not fit "
+                f"(estimate {NEEDGB:.1f}GB vs {available_gb:.1f}GB free) — "
+                f"vLLM will decide; auto-fit adjusts if needed"
             )
 
     logger.info(f"Loading {displayname} ({backend})")

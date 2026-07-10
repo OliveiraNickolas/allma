@@ -671,6 +671,145 @@ def cmd_logs(args):
         pass
 
 
+def cmd_tune(args):
+    """Calibrate a model's real context ceiling and benchmark generation.
+
+    vLLM flow: load asking for the model's NATIVE max context. vLLM refuses
+    with its exact KV ceiling, the loader's auto-fit retries at 95% of it,
+    and whatever context the model actually comes up with IS the calibrated
+    value. Then a short generation measures tok/s, and the calibrated
+    max-model-len can be written back to the base .allm.
+    llama.cpp flow: load as configured + benchmark only (no ceiling probe)."""
+    model = args.model
+
+    if not _is_running():
+        print("Starting Allma...")
+        _start_daemon()
+        if not _wait_for_server(30):
+            print("Allma failed to start. Check logs: allma logs")
+            sys.exit(1)
+
+    # ── resolve profile → base config ────────────────────────────────────
+    sys.path.insert(0, str(ALLMA_DIR))
+    from configs.allm_parser import load_models_from_configs
+    bases, profiles = load_models_from_configs(str(ALLMA_DIR / "configs"))
+    if model in profiles:
+        base_name = profiles[model]["base"]
+        profile_name = model
+    elif model in bases:
+        base_name = model
+        profile_name = next(
+            (n for n, p in profiles.items() if p.get("base") == model), model)
+    else:
+        print(f"Unknown model '{model}'. Available: {', '.join(sorted(profiles))}")
+        return
+    cfg = bases.get(base_name, {})
+    backend = cfg.get("backend", "vllm")
+    configured = int(cfg.get("max_model_len") or cfg.get("n_ctx") or 0)
+
+    # native max from the model's config.json (vLLM installs only)
+    native_max = 0
+    if backend == "vllm" and cfg.get("path"):
+        try:
+            mconf = json.loads((Path(cfg["path"]) / "config.json").read_text())
+            tc = mconf.get("text_config", mconf)
+            native_max = int(tc.get("max_position_embeddings") or 0)
+        except Exception:
+            pass
+
+    print(f"\n  Tune: {profile_name}  (base {base_name}, {backend})")
+    print(f"  configured context : {configured or '?'}")
+    if native_max:
+        print(f"  model native max   : {native_max}")
+
+    # ── probe / load ─────────────────────────────────────────────────────
+    overrides = {}
+    if backend == "vllm" and native_max and native_max > configured:
+        print(f"\n  Probing ceiling: loading at native max ({native_max}).")
+        print("  vLLM will report its exact KV budget and auto-fit settles it...")
+        overrides = {"max_model_len": native_max}
+    else:
+        print("\n  Loading as configured...")
+
+    t0 = time.time()
+    resp = _post("/v1/load", {"model": profile_name, "load_overrides": overrides},
+                 timeout=1200)
+    if not resp or "error" in (resp or {}):
+        print(f"  ✗ load failed: {(resp or {}).get('error', 'no response')}")
+        return
+    print(f"  ✓ loaded in {time.time() - t0:.0f}s")
+
+    # ── read the EFFECTIVE context straight from the backend ─────────────
+    eff_ctx = 0
+    ps = _get("/v1/ps") or {}
+    server = next((s for s in ps.get("servers", []) if s.get("alive")), None)
+    if server:
+        try:
+            import urllib.request as _ur
+            req = _ur.Request(
+                f"http://127.0.0.1:{server['port']}/v1/models",
+                headers={"Authorization": "Bearer dummy"})
+            with _ur.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+            eff_ctx = int((data.get("data") or [{}])[0].get("max_model_len") or 0)
+        except Exception:
+            pass
+    if eff_ctx:
+        print(f"  effective context  : {eff_ctx}")
+
+    # ── benchmark ────────────────────────────────────────────────────────
+    print("\n  Benchmarking generation (128 tokens)...")
+    t0 = time.time()
+    try:
+        bench = _post("/v1/chat/completions", {
+            "model": profile_name,
+            "messages": [{"role": "user",
+                          "content": "Write a vivid two-paragraph description of a lighthouse in a storm."}],
+            "max_tokens": 128,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }, timeout=300)
+        elapsed = time.time() - t0
+        toks = ((bench or {}).get("usage") or {}).get("completion_tokens", 0)
+        if toks:
+            print(f"  ✓ {toks} tokens in {elapsed:.1f}s → {toks / elapsed:.1f} tok/s")
+        else:
+            print("  ⚠ generation returned no usage data")
+    except Exception as e:
+        print(f"  ⚠ benchmark failed: {e}")
+
+    # ── offer write-back ─────────────────────────────────────────────────
+    if backend == "vllm" and eff_ctx and eff_ctx != configured:
+        base_file = ALLMA_DIR / "configs" / "base" / f"{base_name}.allm"
+        print(f"\n  Calibrated max-model-len: {eff_ctx}  (config has {configured or 'none'})")
+        if getattr(args, "yes", False):
+            do_write = True
+        else:
+            try:
+                do_write = input(
+                    f"  Write to {base_file.name}? [y/N] ").strip().lower() in ("y", "yes")
+            except (EOFError, KeyboardInterrupt):
+                do_write = False
+        if do_write and base_file.exists():
+            import re as _re
+            text = base_file.read_text()
+            new_line = f"max-model-len {eff_ctx}"
+            if _re.search(r"^-{0,2}max-model-len\s+\S+", text, _re.M):
+                text = _re.sub(r"^-{0,2}max-model-len\s+\S+", new_line, text, count=1, flags=_re.M)
+            else:
+                text = text.rstrip("\n") + f"\n{new_line}\n"
+            base_file.write_text(text)
+            _post("/v1/reload-configs", {})
+            print(f"  ✓ written. ('allma reload {profile_name}' applies it to the running backend)")
+        elif do_write:
+            print(f"  ✗ {base_file} not found")
+        else:
+            print("  Skipped. (The calibrated value stays active this session only.)")
+
+    if not getattr(args, "keep", False):
+        _post("/v1/unload", {"model": profile_name}, timeout=60)
+        print("\n  Model unloaded (use --keep to leave it running).")
+
+
 def cmd_quickstart(args):
     """Guided first-run: pick a goal, pick a curated model that fits the
     hardware, then download + configure + chat via the normal run flow."""
@@ -2212,6 +2351,14 @@ commands:
     p_qs.add_argument("--gpu", type=int, default=None, metavar="N",
                       help="Pin model to GPU N (0-based)")
     p_qs.set_defaults(func=cmd_quickstart, model=None)
+
+    p_tune = sub.add_parser("tune", help="Calibrate a model's real context ceiling + benchmark tok/s")
+    p_tune.add_argument("model", help="Profile or base name")
+    p_tune.add_argument("--yes", "-y", action="store_true",
+                        help="Write the calibrated max-model-len to the .allm without asking")
+    p_tune.add_argument("--keep", action="store_true",
+                        help="Leave the model loaded after tuning")
+    p_tune.set_defaults(func=cmd_tune)
 
     # launch
     p_launch = sub.add_parser("launch", help="Launch an AI client with a local model")
