@@ -281,6 +281,7 @@ allma stop               # stop server and all backends
 allma status             # is the server running?
 allma list               # show available profiles
 allma ps                 # show currently loaded models + GPU usage
+allma top                # live dashboard: GPU util/VRAM/temp + tok/s (q quits)
 
 # Models
 allma quickstart         # guided first model: goal → curated pick → chat

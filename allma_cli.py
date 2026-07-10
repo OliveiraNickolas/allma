@@ -671,6 +671,13 @@ def cmd_logs(args):
         pass
 
 
+def cmd_top(args):
+    """Live dashboard: GPUs (util/VRAM/temp/power/throttle) + loaded models
+    (tok/s, KV-cache usage, requests). q or Ctrl+C to exit."""
+    from core.topview import run_top
+    run_top(interval=args.interval, once=args.once)
+
+
 def cmd_tune(args):
     """Calibrate a model's real context ceiling and benchmark generation.
 
@@ -2351,6 +2358,13 @@ commands:
     p_qs.add_argument("--gpu", type=int, default=None, metavar="N",
                       help="Pin model to GPU N (0-based)")
     p_qs.set_defaults(func=cmd_quickstart, model=None)
+
+    p_top = sub.add_parser("top", help="Live dashboard: GPU util/VRAM/temp + model tok/s and context")
+    p_top.add_argument("--interval", type=float, default=1.0, metavar="SEC",
+                       help="Refresh interval in seconds (default 1.0)")
+    p_top.add_argument("--once", action="store_true",
+                       help="Print a single snapshot and exit")
+    p_top.set_defaults(func=cmd_top)
 
     p_tune = sub.add_parser("tune", help="Calibrate a model's real context ceiling + benchmark tok/s")
     p_tune.add_argument("model", help="Profile or base name")
