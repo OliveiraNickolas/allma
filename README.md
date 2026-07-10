@@ -288,6 +288,7 @@ allma run <profile>      # load model and open interactive chat
 allma run <hf-repo>      # download from HuggingFace (fit preview) and chat
 allma unload <model>     # unload a model immediately (free VRAM)
 allma reload <model>     # unload + load again (pick up config changes)
+allma tune <model>       # calibrate real max context + benchmark tok/s
 
 # Logs
 allma logs               # show recent allma logs
