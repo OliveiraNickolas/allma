@@ -286,8 +286,8 @@ def get_gpus() -> list[dict]:
 
 
 def _parse_allm(f: Path) -> dict:
-    from configs.loader import parse_all_file
-    return parse_all_file(f.read_text())
+    from configs.allm_parser import parse_allm
+    return parse_allm(f.read_text(), f.name)
 
 
 def _quant_of(text: str) -> str:
