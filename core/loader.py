@@ -74,8 +74,8 @@ class LoadingSpinner:
 
     # 3-row floating kawaii ghost (mirrored from allma_cli)
     _G_DOME  = " ▄████▄ "
-    _G_FACE  = "██ ██ ██"
-    _G_HEMS  = ["▝▚██ ██▘", "▝▞██ ██▘"]
+    _G_FACE  = "████▟█▟█"
+    _G_HEMS  = ["█▀██▀███", "██▀██▀██"]
     _G_POS   = 4
     _G_SPEED = 7
 

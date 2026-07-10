@@ -1312,9 +1312,9 @@ _SPINNER_SKY = (
 #   mountains:  ▀▚▞▀   ← wavy hem   mountains:  █▞▚█  ← squashed, eyes blink
 #
 _GHOST_DOME  = " ▄████▄ "     # rounded top (spaces = halo that clears terrain)
-_GHOST_FACE  = "██ ██ ██"     # gaps read as dark eyes on the light body
-_GHOST_HEMS  = ["▝▚██ ██▘",   # rounded bottom, mouth gap, tail flicking
-                "▝▞██ ██▘"]
+_GHOST_FACE  = "████▟█▟█"     # two small notch-eyes, right of center (moving →)
+_GHOST_HEMS  = ["█▀██▀███",   # straight sides + scalloped hem, waves alternating
+                "██▀██▀██"]
 _GHOST_POS   = 4    # anchor x in the 36-char window
 _GHOST_SPEED = 7    # ticks per flutter frame
 
