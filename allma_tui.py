@@ -674,11 +674,20 @@ class FlagRow(Horizontal):
             except Exception:
                 pass
 
+    class Changed(Message):
+        """A flag's toggle or value changed — lets the panel refresh anything
+        derived from extra_args (e.g. the VRAM breakdown bar)."""
+        def __init__(self, row: "FlagRow") -> None:
+            super().__init__()
+            self.row = row
+
     def on_input_changed(self, event: Input.Changed) -> None:
         event.stop()
+        self.post_message(self.Changed(self))
 
     def on_select_changed(self, event: Select.Changed) -> None:
         event.stop()
+        self.post_message(self.Changed(self))
 
 
 class _CtrBtn(Static):
@@ -1367,6 +1376,22 @@ class AllmaTUI(App):
         tid = event.toggle.id or ""
         if tid.startswith("flt-"):
             self._refresh_table()
+            return
+        # A FlagRow toggle flips extra_args → VRAM costs change (mtp,
+        # cudagraph, kv dtype...). Walk up to detect it.
+        w = event.toggle
+        while w is not None:
+            if isinstance(w, FlagRow):
+                if self.selected:
+                    self._update_vram_line(self.selected)
+                return
+            w = w.parent
+
+    def on_flag_row_changed(self, event: "FlagRow.Changed") -> None:
+        # Flag VALUE edited (Select/Input inside the row) — e.g. changing
+        # --cache-type-k from q8_0 to q4_0 halves the KV estimate.
+        if self.selected:
+            self._update_vram_line(self.selected)
 
     async def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key is None:
@@ -2086,6 +2111,10 @@ class AllmaTUI(App):
             self._dl_list_async(url)
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        # mmproj path affects the VRAM estimate (vision projector weight)
+        if (event.input.id or "") == "ld-mmproj" and self.selected:
+            self._update_vram_line(self.selected)
+            return
         # typing a new URL invalidates the previous listing
         if (event.input.id or "") == "dl-url" and self._dl_files is not None:
             self._dl_files = None
