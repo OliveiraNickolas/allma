@@ -49,8 +49,14 @@ FAMILY_PRESETS = {
             "--reasoning-parser", "qwen3",
             "--enable-auto-tool-choice",
             "--tool-call-parser", "qwen3_coder",
+            "--kv-cache-dtype", "fp8",
+            "--enable-prefix-caching",
         ],
-        "llama_extra_args": ["--chat-template", "chatml", "--jinja"],
+        "llama_extra_args": [
+            "--chat-template", "chatml", "--jinja",
+            "--flash-attn", "on",
+            "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+        ],
         "sampling": {
             "temperature": "0.7",
             "top_p": "0.8",
@@ -68,17 +74,31 @@ FAMILY_PRESETS = {
     # ── Qwen3.5-VL / Qwen3-VL (vision) ──────────────────────────────────────
     "qwen3_vl": {
         "label": "Qwen3-VL (vision)",
+        # Production lessons baked in:
+        # - hermes parser: VL models emit standard Qwen3 tool calls, not the
+        #   coder XML dialect (qwen3_coder broke tool calls on Qwythos).
+        # - mm-processor-kwargs caps images at ~1448x1448 (~2.6K tokens each
+        #   instead of ~16K at the 12MP default) — without it, 3 images blow
+        #   any consumer-GPU context and force chunked prefill stalls.
+        # - limit-mm-per-prompt guards against runaway multimodal batches.
+        # - NO prefix caching: it misbehaves with vision token invalidation.
         "vllm_extra_args": [
             "--reasoning-parser", "qwen3",
             "--enable-auto-tool-choice",
-            "--tool-call-parser", "qwen3_coder",
+            "--tool-call-parser", "hermes",
+            "--kv-cache-dtype", "fp8",
             "--mm-encoder-tp-mode", "data",
             "--generation-config", "vllm",
-            "--limit-mm-per-prompt.video", "0",
+            "--mm-processor-kwargs", '{"max_pixels": 2097152, "min_pixels": 3136}',
+            "--limit-mm-per-prompt", '{"image": 5, "video": 1}',
             "--async-scheduling",
             "--disable-custom-all-reduce",
         ],
-        "llama_extra_args": ["--chat-template", "chatml", "--jinja"],
+        "llama_extra_args": [
+            "--chat-template", "chatml", "--jinja",
+            "--flash-attn", "on",
+            "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+        ],
         "sampling": {
             "temperature": "0.7",
             "top_p": "0.8",
@@ -98,8 +118,14 @@ FAMILY_PRESETS = {
             "--reasoning-parser", "qwen3",
             "--enable-auto-tool-choice",
             "--tool-call-parser", "qwen3_coder",
+            "--kv-cache-dtype", "fp8",
+            "--enable-prefix-caching",
         ],
-        "llama_extra_args": ["--chat-template", "chatml", "--jinja"],
+        "llama_extra_args": [
+            "--chat-template", "chatml", "--jinja",
+            "--flash-attn", "on",
+            "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+        ],
         "sampling": {
             "temperature": "0.7",
             "top_p": "0.8",
@@ -498,6 +524,11 @@ def generate_base_allm(
         if mmproj_path:
             lines.append(f"--mmproj {mmproj_path}")
         lines += render_flag_lines(preset.get("llama_extra_args", []))
+        # MTP-head GGUFs (name carries "MTP"): enable speculative decoding.
+        # n_max=3 measured ~2x decode speed vs 6 (low draft acceptance
+        # wastes compute at higher depths).
+        if gguf_path and "mtp" in Path(gguf_path).name.lower():
+            lines += ["spec-type draft-mtp", "spec-draft-n-max 3"]
 
     return "\n".join(lines) + "\n"
 
