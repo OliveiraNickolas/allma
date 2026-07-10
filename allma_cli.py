@@ -126,60 +126,46 @@ def _run_simple_spinner(stop_event: threading.Event, label_ref: list):
     sys.stdout.flush()
 
 
-def _run_spinner(stop_event: threading.Event, label_ref: list):
-    """3-row parallax spinner with floating ghost."""
-    import shutil
+def _spinner_loop(stop_event: threading.Event, text_fn):
+    """Shared 3-row render loop: rainbow ghost rows + a text tail on row 3.
 
-    ci = si = ni = 0
-    last_c = last_s = last_n = 0
+    `text_fn(elapsed) -> (message, time_part)` supplies the trailing text.
+    ANSI-safe clearing via \\033[K (the rows carry color escapes)."""
+    import shutil
+    from core.ghost_art import render_rows, WIN
+
     start = time.time()
     tick = 0
-
     sys.stdout.write("\n\n")  # reserve 3 lines
 
     while not stop_event.is_set():
-        # Get terminal width dynamically (detects window resize)
         try:
             term_width = shutil.get_terminal_size().columns
         except Exception:
             term_width = 80
-
         elapsed = time.time() - start
-        cview = (_SPINNER_CLOUDS    * 2)[ci % len(_SPINNER_CLOUDS):    ci % len(_SPINNER_CLOUDS)    + _WINDOW]
-        sview = (_SPINNER_SKY       * 2)[si % len(_SPINNER_SKY):       si % len(_SPINNER_SKY)       + _WINDOW]
-        nview = (_SPINNER_MOUNTAINS * 2)[ni % len(_SPINNER_MOUNTAINS): ni % len(_SPINNER_MOUNTAINS) + _WINDOW]
-        cview, sview, nview = _inject_ghost(cview, sview, nview, tick)
-
-        cloud_line = f"  {cview}"
-        sky_line   = f"  {sview}"
-        spinner_part = f"  {nview}  "
-        time_part = f"{elapsed:.1f}s"
-        label = label_ref[0]
-
-        near_line = _limit_line_width(spinner_part, label, time_part, term_width)
-
-        sys.stdout.write(f"\033[2A\r{' ' * last_c}\r{cloud_line}\n")
-        sys.stdout.write(f"\r{' ' * last_s}\r{sky_line}\n")
-        sys.stdout.write(f"\r{' ' * last_n}\r{near_line}")
+        r1, r2, r3 = render_rows(tick)
+        message, time_part = text_fn(elapsed)
+        # visible width of the r3 prefix is fixed: 2 + WIN + 2
+        budget = term_width - (WIN + 4) - len(time_part) - 2
+        if len(message) > budget:
+            message = message[:max(0, budget - 1)] + "…"
+        sys.stdout.write(f"\033[2A\r\033[K  {r1}\n")
+        sys.stdout.write(f"\r\033[K  {r2}\n")
+        sys.stdout.write(f"\r\033[K  {r3}  {message}  {time_part}")
         sys.stdout.flush()
-
-        last_c = len(cloud_line)
-        last_s = len(sky_line)
-        last_n = len(near_line)
-
         time.sleep(0.06)
         tick += 1
-        if tick % 5 == 0:
-            ci += 1
-        if tick % 3 == 0:
-            si += 1
-        if tick % 2 == 0:
-            ni += 1
 
-    sys.stdout.write(f"\r{' ' * last_n}\r")
-    sys.stdout.write(f"\033[1A\r{' ' * last_s}\r")
-    sys.stdout.write(f"\033[1A\r{' ' * last_c}\r")
+    sys.stdout.write("\r\033[K")
+    sys.stdout.write("\033[1A\r\033[K")
+    sys.stdout.write("\033[1A\r\033[K")
     sys.stdout.flush()
+
+
+def _run_spinner(stop_event: threading.Event, label_ref: list):
+    """Rainbow-ghost spinner showing a live label."""
+    _spinner_loop(stop_event, lambda el: (label_ref[0], f"{el:.1f}s"))
 
 
 def _post(path: str, body: dict, timeout: float = 300.0):
@@ -1267,42 +1253,6 @@ _GHOST_PHRASES_READY = [
     "It floats, it glows, it generates.",
 ]
 
-_SPINNER_CLOUDS = (
-    "     ▁▂▃▂▁▁         "
-    "  ▁▂▃▄▃▂▁▁          "
-    "       ▁▁▂▃▃▂▁▁     "
-    "   ▁▂▂▃▂▂▁▁         "
-    "           ▁▂▃▄▃▂▁▁ "
-    "     ▁▂▃▂▁▂▃▂▁      "
-    "  ▁▁▂▃▂▁▁           "
-    "        ▁▂▃▃▂▁▁     "
-) * 4
-
-_SPINNER_MOUNTAINS = (
-    "▁▁▁▂▄▆█▆▄▂▁▁"
-    "▁▁▁▂▃▅▇█▇▅▃▂▁▁"
-    "▁▁▂▄▆█▆▄▂▁▁"
-    "▁▁▁▁▂▄▆█▆▄▂▁▁▁"
-    "▁▁▂▃▄▆█▆▄▃▂▁▁"
-    "▁▁▁▂▅▇█▇▅▂▁▁"
-    "▁▁▂▃▄▅▇█▇▅▄▃▂▁▁"
-    "▁▁▁▂▄▅▇█▇▅▄▂▁▁"
-) * 4
-
-_WINDOW = 36
-
-# ── Spinner middle layer (sparse sky between clouds and mountains) ─────────────
-_SPINNER_SKY = (
-    "                    "
-    "   ▁▁               "
-    "            ▁       "
-    "                ▁▁  "
-    "      ▁▁▁           "
-    "                    "
-    "           ▁▁       "
-    "    ▁               "
-) * 4
-
 # ── 3-row floating ghost sprite ───────────────────────────────────────────────
 # A little ghost bobbing over the landscape. Pac-Man-adjacent, not identical:
 #
@@ -1311,102 +1261,22 @@ _SPINNER_SKY = (
 #   sky:        █''█   ← eyes       sky:        ▗██▖
 #   mountains:  ▀▚▞▀   ← wavy hem   mountains:  █▞▚█  ← squashed, eyes blink
 #
-_GHOST_DOME  = " ▄██▄ "      # rounded top (spaces = halo that clears terrain)
-_GHOST_FACE  = "███▟▟█"      # two tiny adjacent eyes, right of center (moving →)
-_GHOST_HEMS  = ["█▀██▀█",    # straight sides + scalloped hem, waves alternating
-                "██▀█▀█"]
-_GHOST_POS   = 4    # anchor x in the 36-char window
-_GHOST_SPEED = 7    # ticks per flutter frame
-
-
-def _inject_ghost(cview: str, sview: str, nview: str, tick: int):
-    """Overlay the floating kawaii ghost onto the three terrain layers."""
-    hem = _GHOST_HEMS[(tick // _GHOST_SPEED) % 2]
-    sway = (0, 1, 1, 0)[(tick // (_GHOST_SPEED * 3)) % 4]
-    x = _GHOST_POS + sway
-    cl = list(cview)
-    sl = list(sview)
-    nl = list(nview)
-
-    def put(row: list, sprite: str):
-        for k, ch in enumerate(sprite):
-            p = x + k
-            if p < len(row):
-                row[p] = ch
-
-    put(cl, _GHOST_DOME)
-    put(sl, _GHOST_FACE)
-    put(nl, hem)
-    return "".join(cl), "".join(sl), "".join(nl)
+# Ghost sprite + rainbow trail live in core.ghost_art (shared with the daemon spinner).
 
 
 def _run_ghost_spinner(stop_event: threading.Event, phase_ref: list):
-    """3-row parallax spinner with floating ghost and rotating phrases."""
+    """Rainbow-ghost spinner with rotating spooky phrases."""
     import random
-    import shutil
 
     phrases = _GHOST_PHRASES_LOADING[:]
     random.shuffle(phrases)
+    phrase_seconds = 2.5   # 42 ticks × 0.06s of the old cadence
 
-    phrase_idx = 0
-    phrase_ticks = 0
-    phrase_interval = 42
+    def text(elapsed):
+        idx = int(elapsed / phrase_seconds) % len(phrases)
+        return phrases[idx], f"{elapsed:.1f}s"
 
-    ci = si = ni = 0
-    last_c = last_s = last_n = 0
-    start = time.time()
-    tick = 0
-
-    sys.stdout.write("\n\n")
-
-    while not stop_event.is_set():
-        # Get terminal width dynamically (detects window resize)
-        try:
-            term_width = shutil.get_terminal_size().columns
-        except Exception:
-            term_width = 80
-
-        elapsed = time.time() - start
-        phrase = phrases[phrase_idx % len(phrases)]
-
-        cview = (_SPINNER_CLOUDS    * 2)[ci % len(_SPINNER_CLOUDS):    ci % len(_SPINNER_CLOUDS)    + _WINDOW]
-        sview = (_SPINNER_SKY       * 2)[si % len(_SPINNER_SKY):       si % len(_SPINNER_SKY)       + _WINDOW]
-        nview = (_SPINNER_MOUNTAINS * 2)[ni % len(_SPINNER_MOUNTAINS): ni % len(_SPINNER_MOUNTAINS) + _WINDOW]
-        cview, sview, nview = _inject_ghost(cview, sview, nview, tick)
-
-        cloud_line = f"  {cview}"
-        sky_line   = f"  {sview}"
-        spinner_part = f"  {nview}  "
-        time_part = f"{elapsed:.1f}s"
-
-        near_line = _limit_line_width(spinner_part, phrase, time_part, term_width)
-
-        sys.stdout.write(f"\033[2A\r{' ' * last_c}\r{cloud_line}\n")
-        sys.stdout.write(f"\r{' ' * last_s}\r{sky_line}\n")
-        sys.stdout.write(f"\r{' ' * last_n}\r{near_line}")
-        sys.stdout.flush()
-
-        last_c = len(cloud_line)
-        last_s = len(sky_line)
-        last_n = len(near_line)
-
-        time.sleep(0.06)
-        tick += 1
-        if tick % 5 == 0:
-            ci += 1
-        if tick % 3 == 0:
-            si += 1
-        if tick % 2 == 0:
-            ni += 1
-        phrase_ticks += 1
-        if phrase_ticks >= phrase_interval:
-            phrase_ticks = 0
-            phrase_idx += 1
-
-    sys.stdout.write(f"\r{' ' * last_n}\r")
-    sys.stdout.write(f"\033[1A\r{' ' * last_s}\r")
-    sys.stdout.write(f"\033[1A\r{' ' * last_c}\r")
-    sys.stdout.flush()
+    _spinner_loop(stop_event, text)
 
 
 def _apply_claude_local_fix():

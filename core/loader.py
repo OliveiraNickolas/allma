@@ -29,41 +29,6 @@ from core.error_detector import ErrorDetector, tail_file
 # ==============================================================================
 # LOADING UI
 # ==============================================================================
-_CLOUDS = (
-    "     ▁▂▃▂▁▁         "
-    "  ▁▂▃▄▃▂▁▁          "
-    "       ▁▁▂▃▃▂▁▁     "
-    "   ▁▂▂▃▂▂▁▁         "
-    "           ▁▂▃▄▃▂▁▁ "
-    "     ▁▂▃▂▁▂▃▂▁      "
-    "  ▁▁▂▃▂▁▁           "
-    "        ▁▂▃▃▂▁▁     "
-) * 4
-
-_SKY = (
-    "                    "
-    "   ▁▁               "
-    "            ▁       "
-    "                ▁▁  "
-    "      ▁▁▁           "
-    "                    "
-    "           ▁▁       "
-    "    ▁               "
-) * 4
-
-_MOUNTAINS = (
-    "▁▁▁▂▄▆█▆▄▂▁▁"
-    "▁▁▁▂▃▅▇█▇▅▃▂▁▁"
-    "▁▁▂▄▆█▆▄▂▁▁"
-    "▁▁▁▁▂▄▆█▆▄▂▁▁▁"
-    "▁▁▂▃▄▆█▆▄▃▂▁▁"
-    "▁▁▁▂▅▇█▇▅▂▁▁"
-    "▁▁▂▃▄▅▇█▇▅▄▃▂▁▁"
-    "▁▁▁▂▄▅▇█▇▅▄▂▁▁"
-) * 4
-
-_WIN = 36
-
 
 class LoadingSpinner:
     def __init__(self, message: str = "Loading"):
@@ -72,34 +37,9 @@ class LoadingSpinner:
         self._thread = None
         self._start_time = None
 
-    # 3-row floating kawaii ghost (mirrored from allma_cli)
-    _G_DOME  = " ▄██▄ "
-    _G_FACE  = "███▟▟█"
-    _G_HEMS  = ["█▀██▀█", "██▀█▀█"]
-    _G_POS   = 4
-    _G_SPEED = 7
-
-    def _inject(self, cview, sview, nview, tick):
-        hem = self._G_HEMS[(tick // self._G_SPEED) % 2]
-        sway = (0, 1, 1, 0)[(tick // (self._G_SPEED * 3)) % 4]
-        x = self._G_POS + sway
-        cl, sl, nl = list(cview), list(sview), list(nview)
-
-        def put(row, sprite):
-            for k, ch in enumerate(sprite):
-                p = x + k
-                if p < len(row):
-                    row[p] = ch
-
-        put(cl, self._G_DOME)
-        put(sl, self._G_FACE)
-        put(nl, hem)
-        return "".join(cl), "".join(sl), "".join(nl)
-
     def _spin(self):
         import shutil
-        ci = si = ni = 0
-        last_c = last_s = last_n = 0
+        from core.ghost_art import render_rows, WIN
         tick = 0
         sys.stdout.write("\n\n")
         while self.running:
@@ -108,33 +48,20 @@ class LoadingSpinner:
                 term_w = shutil.get_terminal_size().columns
             except Exception:
                 term_w = 80
-            cview = (_CLOUDS * 2)[ci % len(_CLOUDS): ci % len(_CLOUDS) + _WIN]
-            sview = (_SKY    * 2)[si % len(_SKY):    si % len(_SKY)    + _WIN]
-            nview = (_MOUNTAINS * 2)[ni % len(_MOUNTAINS): ni % len(_MOUNTAINS) + _WIN]
-            cview, sview, nview = self._inject(cview, sview, nview, tick)
-            cloud_line = f"  {cview}"
-            sky_line   = f"  {sview}"
-            prefix     = f"  {nview}  "
-            time_part  = f"  [{elapsed:.0f}s]"
-            # Truncate message so the full near_line fits within terminal width
-            max_msg = term_w - len(prefix) - len(time_part) - 1
+            r1, r2, r3 = render_rows(tick)
+            time_part = f"  [{elapsed:.0f}s]"
+            # visible width of the r3 prefix is fixed: 2 + WIN + 2
+            max_msg = term_w - (WIN + 4) - len(time_part) - 1
             msg = self.message if len(self.message) <= max_msg else self.message[:max_msg - 1] + "…"
-            near_line  = f"{prefix}{msg}{time_part}"
-            sys.stdout.write(f"\033[2A\r{' ' * last_c}\r{cloud_line}\n")
-            sys.stdout.write(f"\r{' ' * last_s}\r{sky_line}\n")
-            sys.stdout.write(f"\r{' ' * last_n}\r{near_line}")
+            sys.stdout.write(f"\033[2A\r\033[K  {r1}\n")
+            sys.stdout.write(f"\r\033[K  {r2}\n")
+            sys.stdout.write(f"\r\033[K  {r3}  {msg}{time_part}")
             sys.stdout.flush()
-            last_c = len(cloud_line)
-            last_s = len(sky_line)
-            last_n = len(near_line)
             time.sleep(0.06)
             tick += 1
-            if tick % 5 == 0: ci += 1
-            if tick % 3 == 0: si += 1
-            if tick % 2 == 0: ni += 1
-        sys.stdout.write(f"\r{' ' * last_n}\r")
-        sys.stdout.write(f"\033[1A\r{' ' * last_s}\r")
-        sys.stdout.write(f"\033[1A\r{' ' * last_c}\r")
+        sys.stdout.write("\r\033[K")
+        sys.stdout.write("\033[1A\r\033[K")
+        sys.stdout.write("\033[1A\r\033[K")
         sys.stdout.flush()
 
     def start(self):
