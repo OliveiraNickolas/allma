@@ -66,7 +66,8 @@ def _row(label: str, value: str) -> Text:
 
 
 def _W() -> int:
-    return min(max(shutil.get_terminal_size().columns - 4, 50), 90)
+    # Full terminal width (small margin), floor of 50 for tiny windows.
+    return max(shutil.get_terminal_size().columns - 2, 50)
 
 
 def _file_size_str(size_bytes: Optional[int]) -> str:
