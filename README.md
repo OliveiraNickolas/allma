@@ -283,8 +283,11 @@ allma list               # show available profiles
 allma ps                 # show currently loaded models + GPU usage
 
 # Models
+allma quickstart         # guided first model: goal → curated pick → chat
 allma run <profile>      # load model and open interactive chat
+allma run <hf-repo>      # download from HuggingFace (fit preview) and chat
 allma unload <model>     # unload a model immediately (free VRAM)
+allma reload <model>     # unload + load again (pick up config changes)
 
 # Logs
 allma logs               # show recent allma logs

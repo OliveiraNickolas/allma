@@ -671,6 +671,17 @@ def cmd_logs(args):
         pass
 
 
+def cmd_quickstart(args):
+    """Guided first-run: pick a goal, pick a curated model that fits the
+    hardware, then download + configure + chat via the normal run flow."""
+    from core.quickstart import run_quickstart
+    repo = run_quickstart()
+    if not repo:
+        return
+    args.model = repo
+    cmd_run(args)
+
+
 def cmd_run(args):
     """Load a model and open an interactive chat session.
 
@@ -2192,10 +2203,15 @@ commands:
 
     # run
     p_run = sub.add_parser("run", help="Chat with a model interactively")
-    p_run.add_argument("model", help="Model name (e.g. 'Qwen3.5:27b')")
+    p_run.add_argument("model", help="Model name (e.g. 'Qwen3.5:27b') or a HuggingFace repo/URL")
     p_run.add_argument("--gpu", type=int, default=None, metavar="N",
                       help="Pin model to GPU N (0-based). If not specified, auto-select by available VRAM")
     p_run.set_defaults(func=cmd_run)
+
+    p_qs = sub.add_parser("quickstart", help="Guided first model: goal → curated pick → download → chat")
+    p_qs.add_argument("--gpu", type=int, default=None, metavar="N",
+                      help="Pin model to GPU N (0-based)")
+    p_qs.set_defaults(func=cmd_quickstart, model=None)
 
     # launch
     p_launch = sub.add_parser("launch", help="Launch an AI client with a local model")
