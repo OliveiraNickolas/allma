@@ -72,17 +72,16 @@ class LoadingSpinner:
         self._thread = None
         self._start_time = None
 
-    # 3-row floating ghost sprite (mirrored from allma_cli)
-    _G_DOME  = "▗██▖"
-    _G_FACE  = "█''█"
-    _G_HEMS  = ["▀▚▞▀", "▀▞▚▀"]
-    _G_DIP   = "█▞▚█"
+    # 3-row floating kawaii ghost (mirrored from allma_cli)
+    _G_DOME  = " ▄████▄ "
+    _G_FACE  = "██ ██ ██"
+    _G_HEMS  = ["▝▚██ ██▘", "▝▞██ ██▘"]
     _G_POS   = 4
     _G_SPEED = 7
 
     def _inject(self, cview, sview, nview, tick):
-        phase = (tick // self._G_SPEED) % 4          # up, up, dip, up
-        sway = (0, 1, 1, 0)[(tick // (self._G_SPEED * 4)) % 4]
+        hem = self._G_HEMS[(tick // self._G_SPEED) % 2]
+        sway = (0, 1, 1, 0)[(tick // (self._G_SPEED * 3)) % 4]
         x = self._G_POS + sway
         cl, sl, nl = list(cview), list(sview), list(nview)
 
@@ -92,13 +91,9 @@ class LoadingSpinner:
                 if p < len(row):
                     row[p] = ch
 
-        if phase == 2:      # dip: sprite drops one row, eyes 'blink'
-            put(sl, self._G_DOME)
-            put(nl, self._G_DIP)
-        else:               # floating: dome / eyes / fluttering hem
-            put(cl, self._G_DOME)
-            put(sl, self._G_FACE)
-            put(nl, self._G_HEMS[phase % 2])
+        put(cl, self._G_DOME)
+        put(sl, self._G_FACE)
+        put(nl, hem)
         return "".join(cl), "".join(sl), "".join(nl)
 
     def _spin(self):

@@ -1311,18 +1311,18 @@ _SPINNER_SKY = (
 #   sky:        █''█   ← eyes       sky:        ▗██▖
 #   mountains:  ▀▚▞▀   ← wavy hem   mountains:  █▞▚█  ← squashed, eyes blink
 #
-_GHOST_DOME  = "▗██▖"
-_GHOST_FACE  = "█''█"
-_GHOST_HEMS  = ["▀▚▞▀", "▀▞▚▀"]   # skirt flutter
-_GHOST_DIP   = "█▞▚█"
+_GHOST_DOME  = " ▄████▄ "     # rounded top (spaces = halo that clears terrain)
+_GHOST_FACE  = "██ ██ ██"     # gaps read as dark eyes on the light body
+_GHOST_HEMS  = ["▝▚██ ██▘",   # rounded bottom, mouth gap, tail flicking
+                "▝▞██ ██▘"]
 _GHOST_POS   = 4    # anchor x in the 36-char window
-_GHOST_SPEED = 7    # ticks per bob phase
+_GHOST_SPEED = 7    # ticks per flutter frame
 
 
 def _inject_ghost(cview: str, sview: str, nview: str, tick: int):
-    """Overlay the floating ghost onto the three terrain layers."""
-    phase = (tick // _GHOST_SPEED) % 4          # up, up, dip, up
-    sway = (0, 1, 1, 0)[(tick // (_GHOST_SPEED * 4)) % 4]
+    """Overlay the floating kawaii ghost onto the three terrain layers."""
+    hem = _GHOST_HEMS[(tick // _GHOST_SPEED) % 2]
+    sway = (0, 1, 1, 0)[(tick // (_GHOST_SPEED * 3)) % 4]
     x = _GHOST_POS + sway
     cl = list(cview)
     sl = list(sview)
@@ -1334,13 +1334,9 @@ def _inject_ghost(cview: str, sview: str, nview: str, tick: int):
             if p < len(row):
                 row[p] = ch
 
-    if phase == 2:      # dip: whole sprite drops one row, eyes 'blink'
-        put(sl, _GHOST_DOME)
-        put(nl, _GHOST_DIP)
-    else:               # floating: dome / eyes / fluttering hem
-        put(cl, _GHOST_DOME)
-        put(sl, _GHOST_FACE)
-        put(nl, _GHOST_HEMS[phase % 2])
+    put(cl, _GHOST_DOME)
+    put(sl, _GHOST_FACE)
+    put(nl, hem)
     return "".join(cl), "".join(sl), "".join(nl)
 
 
