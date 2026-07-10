@@ -5,10 +5,12 @@ Single source of truth for both spinners (allma_cli and core.loader).
 `render_rows(tick)` returns FOUR ANSI-styled strings, each exactly WIN
 visible columns wide. Colors are skipped when stdout isn't a TTY.
 
-How the wiggle works: the canvas is 4 rows. The trail is a 2-row band
-whose top row follows a triangle wave (0 → 1 → 2 → 1) along x, so it
-snakes as it scrolls. The ghost is 3 rows tall (dome / eyes / hem) and
-rides the same wave at its own column, bobbing between rows 0-2 and 1-3.
+How the wiggle works: the canvas is 4 rows. The trail is a continuous
+six-stripe ribbon that shifts down by HALF a cell in alternating
+segments (the shift lives inside the half-block glyphs, so the ribbon
+never breaks) — the same mechanism as the original Nyan Cat trail. The
+ghost is 3 rows tall (dome / eyes / hem) and rides the same wave at its
+own column, bobbing between rows 0-2 and 1-3.
 """
 import random
 import sys
@@ -17,11 +19,13 @@ WIN = 36          # visible columns of the animation window
 ROWS = 4          # canvas height
 _GHOST_X = 24     # ghost anchor (trail fills everything to its left)
 
-# ── allma palette rainbow (4 stripes → 2 rows via half-blocks) ───────────────
+# ── allma palette rainbow (6 stripes, nyan-style continuous ribbon) ──────────
 _STRIPES = [
     (229, 37, 41),    # red     #e52529
+    (247, 148, 29),   # orange  #f7941d
     (255, 215, 95),   # yellow  #ffd75f
     (67, 176, 71),    # green   #43b047
+    (0, 157, 220),    # blue    #009ddc
     (0, 136, 136),    # teal    #008888
 ]
 _GHOST_RGB = (240, 232, 208)   # cream — reads white on dark terminals
@@ -46,8 +50,9 @@ _HEM_SPEED = 7
 
 
 def _wave_pos(tick: int, x: int) -> int:
-    """Top row of the 2-row trail band at column x: triangle wave 0→1→2→1."""
-    return (0, 1, 2, 1)[((tick // 4) + (x // 3)) % 4]
+    """Trail ribbon state at column x: 0 = up, 1 = shifted down HALF a cell.
+    The ribbon stays continuous — the shift happens inside the half-blocks."""
+    return ((tick // 5) + (x // 4)) % 2
 
 
 class _Stars:
@@ -84,18 +89,32 @@ def render_rows(tick: int, colored=None):
     gx = _GHOST_X
     rows = [[" "] * WIN for _ in range(ROWS)]
 
-    # ── trail: 2-row band snaking through the 4-row canvas ──────────────
+    # ── trail: continuous 6-stripe ribbon, undulating by HALF a cell ────
+    # up state:   rows 0-2 hold the six stripes as ▀(top,bottom) pairs.
+    # down state: everything slides half a cell — ▄ paints the first
+    # half-stripe at the top edge, ▀ without bg paints the last at row 3.
+    s = _STRIPES
     for x in range(gx - 1):
-        top = _wave_pos(tick, x)
-        if colored:
-            rows[top][x] = f"{_fg(_STRIPES[0])}{_bg(_STRIPES[1])}▀{_RESET}"
-            rows[top + 1][x] = f"{_fg(_STRIPES[2])}{_bg(_STRIPES[3])}▀{_RESET}"
-        else:
-            rows[top][x] = "▀"
-            rows[top + 1][x] = "▄"
+        if _wave_pos(tick, x) == 0:   # up
+            if colored:
+                rows[0][x] = f"{_fg(s[0])}{_bg(s[1])}▀{_RESET}"
+                rows[1][x] = f"{_fg(s[2])}{_bg(s[3])}▀{_RESET}"
+                rows[2][x] = f"{_fg(s[4])}{_bg(s[5])}▀{_RESET}"
+            else:
+                rows[0][x] = rows[1][x] = rows[2][x] = "█"
+        else:                          # down (half-cell shift)
+            if colored:
+                rows[0][x] = f"{_fg(s[0])}▄{_RESET}"
+                rows[1][x] = f"{_fg(s[1])}{_bg(s[2])}▀{_RESET}"
+                rows[2][x] = f"{_fg(s[3])}{_bg(s[4])}▀{_RESET}"
+                rows[3][x] = f"{_fg(s[5])}▀{_RESET}"
+            else:
+                rows[0][x] = "▄"
+                rows[1][x] = rows[2][x] = "█"
+                rows[3][x] = "▀"
 
     # ── ghost rides the wave at its own column ──────────────────────────
-    bob = 1 if _wave_pos(tick, gx) == 2 else 0    # mostly high, dips on the low crest
+    bob = _wave_pos(tick, gx)                     # rides the ribbon's shift
     hem = _GHOST_HEMS[(tick // _HEM_SPEED) % 2]
     paint = _fg(_GHOST_RGB) if colored else ""
     reset = _RESET if colored else ""
