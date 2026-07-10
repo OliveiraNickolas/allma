@@ -29,6 +29,7 @@ C_BORDER = "#008888"
 # (terminal-bright green/yellow wash out on #e8dfc8).
 C_GOOD   = "#1e7d23"
 C_WARN   = "#8a6d00"
+C_ORANGE = "#b45f06"
 C_BAD    = "#c11a1e"
 _S       = f"on {C_BG}"
 
@@ -323,7 +324,16 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
             row = [str(i), f["name"], _file_size_str(f["size"])]
             if gpu:
                 score = rec.get(f["name"], 0)
-                bar_style = f"bold {C_GOOD}" if score >= 4 else (C_WARN if score >= 2 else C_DIM)
+                # gauge coloring: short fill = light load (green), mid =
+                # yellow, long fill = heavy (orange)
+                if score == 0:
+                    bar_style = C_DIM
+                elif score <= 2:
+                    bar_style = f"bold {C_GOOD}"
+                elif score == 3:
+                    bar_style = C_WARN
+                else:
+                    bar_style = f"bold {C_ORANGE}"
                 row.append(Text("▰" * score + "▱" * (5 - score), style=bar_style))
                 ctx = _max_ctx_tokens(f["size"], gpu, kv_bpt, native_max)
                 ctx_style = (f"bold {C_GOOD}" if ctx >= 32768
