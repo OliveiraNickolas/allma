@@ -55,6 +55,23 @@ _VENV_PYTHON = ALLMA_DIR / "venv" / "bin" / "python"
 PYTHON      = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 SERVER_SCRIPT = str(ALLMA_DIR / "allma.py")
 
+# Re-exec under the project venv so `allma` works from anywhere without
+# activating it manually (textual/rich/httpx live inside the venv).
+# sys.prefix check avoids exec loops: inside the venv it equals the venv dir.
+_VENV_DIR = ALLMA_DIR / "venv"
+if _VENV_PYTHON.exists() and Path(sys.prefix).resolve() != _VENV_DIR.resolve():
+    os.execv(str(_VENV_PYTHON),
+             [str(_VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+# Warm cream / teal palette shared by the REPL header, the model switcher and
+# the backend-log banner (same scheme as the main server banner)
+C_BG     = "#e8dfc8"
+C_SCREEN = "#d0c4a8"
+C_FG     = "#1a1408"
+C_DIM    = "#6a5a48"
+C_ACCENT = "#007878"
+C_BORDER = "#008888"
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _get(path: str, timeout: float = 3.0):
     """Simple HTTP GET, returns parsed JSON or None."""
@@ -615,6 +632,30 @@ def cmd_unload(args):
     print(f"Unloaded: {resp.get('model', model)}")
 
 
+def cmd_reload(args):
+    """Unload a running model then load it again — no server restart."""
+    if not _is_running():
+        print("Allma is not running.")
+        return
+    model = args.model
+    resp = _post("/v1/unload", {"model": model})
+    if resp is None:
+        print("Failed to reach Allma server.")
+        return
+    if "error" in resp and "not loaded" not in resp["error"]:
+        print(f"Unload error: {resp['error']}")
+        return
+    print(f"Unloaded: {model}. Reloading...")
+    resp = _post("/v1/load", {"model": model})
+    if resp is None:
+        print("Failed to reach Allma server on reload.")
+        return
+    if "error" in resp:
+        print(f"Load error: {resp['error']}")
+        return
+    print(f"Reloaded: {resp.get('model', model)}")
+
+
 def cmd_logs(args):
     """Tail the Allma log file."""
     if not LOG_FILE.exists():
@@ -713,13 +754,6 @@ def _print_repl_header(console, model: str):
     from rich.text import Text
 
     import shutil as _shutil
-    # Same warm cream / teal palette as the main server banner
-    C_BG     = "#e8dfc8"
-    C_SCREEN = "#d0c4a8"
-    C_FG     = "#1a1408"
-    C_DIM    = "#6a5a48"
-    C_ACCENT = "#007878"
-    C_BORDER = "#008888"
     W = min(max(_shutil.get_terminal_size().columns - 4, 40), 90)
     _S = f"on {C_BG}"
 
@@ -815,8 +849,6 @@ def _repl_switch_model(current_model: str, console) -> str | None:
         from rich.text import Text
         import shutil as _shutil
 
-        C_BG = "#e8dfc8"; C_SCREEN = "#d0c4a8"; C_FG = "#1a1408"
-        C_DIM = "#6a5a48"; C_ACCENT = "#007878"; C_BORDER = "#008888"
         W = min(max(_shutil.get_terminal_size().columns - 4, 40), 90)
         _S = f"on {C_BG}"
 
@@ -1393,8 +1425,105 @@ def cmd_launch_hermes(args):
 
 
 def cmd_backend_logs(args):
-    """Tail the log of the currently running backend process."""
+    """Tail logs of running backend processes; colour-coded per GPU when multiple are active."""
     import time as _time
+    import threading as _threading
+    import queue as _queue
+
+    # One colour per GPU slot. Cycles if > 6 GPUs.
+    _GPU_COLORS = [
+        "\033[0;36m",   # GPU 0 — cyan
+        "\033[0;32m",   # GPU 1 — green
+        "\033[1;33m",   # GPU 2 — yellow
+        "\033[0;35m",   # GPU 3 — magenta
+        "\033[0;34m",   # GPU 4 — blue
+        "\033[0;31m",   # GPU 5 — red
+    ]
+    _NC = "\033[0m"
+    _LABEL_W = 14  # fixed prefix width so columns stay aligned
+
+    # rich colour names matching _GPU_COLORS order, for the sticky banner legend
+    _GPU_RICH = ["cyan", "green", "yellow", "magenta", "blue", "red"]
+
+    def _color_for(gpu_id):
+        if gpu_id is None:
+            return _GPU_COLORS[0]
+        return _GPU_COLORS[int(gpu_id) % len(_GPU_COLORS)]
+
+    def _rich_color_for(gpu_id):
+        if gpu_id is None:
+            return _GPU_RICH[0]
+        return _GPU_RICH[int(gpu_id) % len(_GPU_RICH)]
+
+    def _render_banner(servers):
+        """Sticky header in the `allma serve --verbose` style. Returns (text, height)."""
+        from io import StringIO
+        from rich.console import Console
+        from rich import box as _box
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+        import shutil as _shutil
+
+        W = min(max(_shutil.get_terminal_size().columns - 2, 40), 100)
+        _S = f"on {C_BG}"
+
+        title = Text()
+        title.append("[ ", style=C_DIM)
+        title.append("Backend Log" if len(servers) == 1 else f"Backend Logs · {len(servers)} models",
+                     style=f"bold {C_ACCENT}")
+        title.append(" ]", style=C_DIM)
+
+        tbl = Table.grid(expand=True, padding=(0, 1))
+        tbl.add_column()
+        for s in servers:
+            gpu = s.get("gpu")
+            col = _rich_color_for(gpu)
+            row = Text(style=_S)
+            row.append("  ● ", style=f"bold {col} on {C_BG}")
+            row.append(s["name"], style=f"bold {col} on {C_BG}")
+            meta = f"   {s.get('backend', '?')}"
+            meta += f"  ·  GPU {gpu}" if isinstance(gpu, int) else "  ·  CPU"
+            if s.get("port"):
+                meta += f"  ·  :{s['port']}"
+            row.append(meta, style=f"{C_DIM} on {C_BG}")
+            tbl.add_row(row)
+
+        panel = Panel(
+            tbl, title=title, title_align="left", box=_box.DOUBLE,
+            border_style=C_BORDER, style=f"on {C_SCREEN}", padding=(0, 0), width=W,
+        )
+        buf = StringIO()
+        Console(file=buf, force_terminal=True, color_system="truecolor", width=W).print(panel)
+        text = buf.getvalue().rstrip("\n")
+        return text, text.count("\n") + 1
+
+    def _short_label(name):
+        """Compact fixed-width label: strip common noisy suffixes, truncate/pad."""
+        label = name
+        for noise in ["-Instruct", "-instruct", "-Chat", "-chat", "-GGUF",
+                      "-MTP", "-OCR", "-FP8", "-Q4", "-Q8",
+                      "-Uncensored", "-Abliterated"]:
+            label = label.replace(noise, "")
+        label = label.replace(":", "-")
+        return label[:_LABEL_W].ljust(_LABEL_W)
+
+    def _tail_reader(proc, prefix, stop_event, out_queue):
+        """Thread: stream tail -f output into the shared print queue.
+
+        The tail process is owned by the main thread (_start_watcher/_stop_watcher);
+        readline() may block until the log grows, so the only reliable way to stop
+        this thread is terminating the process — which makes readline return EOF.
+        """
+        try:
+            while not stop_event.is_set():
+                line = proc.stdout.readline()
+                if line:
+                    out_queue.put(prefix + line.rstrip("\n"))
+                elif proc.poll() is not None:
+                    break
+        except Exception:
+            pass
 
     if not _is_running():
         print("Allma is not running.")
@@ -1402,89 +1531,176 @@ def cmd_backend_logs(args):
 
     follow = args.follow if hasattr(args, "follow") else True
 
-    def _get_target():
-        """Return the best matching alive backend, or None."""
+    # ── static (no -f): show last N lines from each matching backend ─────────
+    if not follow:
         data = _get("/v1/ps")
         servers = (data or {}).get("servers", [])
         alive = [s for s in servers if s.get("alive")]
         if not alive:
-            return None
-        if args.name:
-            matches = [s for s in alive if args.name.lower() in s["name"].lower()]
-            return matches[0] if matches else None
-        if len(alive) == 1:
-            return alive[0]
-        # Multiple backends, no filter — pick the one most recently changed
-        return alive[0]
-
-    if not follow:
-        # Static mode: show last N lines of whatever is running right now
-        target = _get_target()
-        if not target:
             print("No backend is currently loaded.")
             return
-        logfile = target.get("logfile", "")
-        if not logfile or not Path(logfile).exists():
-            print(f"Log file not found for '{target['name']}'.")
+        if args.name:
+            alive = [s for s in alive if args.name.lower() in s["name"].lower()]
+        if not alive:
+            print(f"No backend matching '{args.name}'.")
             return
-        print(f"● {target['name']} ({target['backend']})  —  {logfile}\n")
-        subprocess.run(["tail", f"-{args.lines}", logfile])
+        for s in alive:
+            logfile = s.get("logfile", "")
+            if logfile and Path(logfile).exists():
+                print(f"● {s['name']} ({s['backend']})  —  {logfile}\n")
+                subprocess.run(["tail", f"-{args.lines}", logfile])
+            else:
+                print(f"Log file not found for '{s['name']}'.")
         return
 
-    # Follow mode: wait for a backend, tail it, and switch if it changes
-    tail_proc = None
-    current_logfile = None
-    current_name = None
-    waiting_printed = False
+    # ── follow mode: multiplex all alive backends under a sticky header ───────
+    import shutil as _shutil
+    tty = sys.stdout.isatty()
+    CSI = "\033["
+
+    out_queue = _queue.Queue()
+    # logfile → (stop_event, thread, tail_proc)
+    watchers: dict = {}
+    last_check = 0.0
+    banner_keys = None              # identity of the currently drawn banner
+    current_servers: list = []
+    resized = {"flag": False}
+
+    old_winch = None
+    if tty and hasattr(signal, "SIGWINCH"):
+        def _on_winch(_sig, _frm):
+            resized["flag"] = True
+        old_winch = signal.signal(signal.SIGWINCH, _on_winch)
+
+    def _draw_banner(servers):
+        """Paint the fixed header and confine scrolling to the area below it."""
+        if not tty or not servers:
+            return
+        text, h = _render_banner(servers)
+        rows = _shutil.get_terminal_size((80, 24)).lines
+        sys.stdout.write(CSI + "r")                   # reset any scroll region
+        sys.stdout.write(CSI + "2J" + CSI + "H")      # clear + cursor home
+        sys.stdout.write(text + "\n")
+        if h + 2 < rows:                              # leave room for the log area
+            sys.stdout.write(f"{CSI}{h + 1};{rows}r")  # lock region below banner
+            sys.stdout.write(f"{CSI}{rows};1H")        # park cursor at the bottom
+        sys.stdout.flush()
+
+    def _start_watcher(s):
+        logfile = s.get("logfile", "")
+        if not logfile or not Path(logfile).exists() or logfile in watchers:
+            return
+        prefix = f"{_color_for(s.get('gpu'))}[{_short_label(s['name'])}]{_NC} "
+        try:
+            proc = subprocess.Popen(
+                ["tail", "-f", "-n", "30", logfile],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, bufsize=1,
+            )
+        except Exception:
+            return
+        stop_ev = _threading.Event()
+        t = _threading.Thread(
+            target=_tail_reader,
+            args=(proc, prefix, stop_ev, out_queue),
+            daemon=True,
+        )
+        t.start()
+        watchers[logfile] = (stop_ev, t, proc)
+
+    def _stop_watcher(logfile):
+        if logfile not in watchers:
+            return
+        stop_ev, _t, proc = watchers.pop(logfile)
+        stop_ev.set()
+        # Terminating the tail unblocks the reader thread's readline() with EOF.
+        try:
+            proc.terminate()
+        except Exception:
+            pass
 
     try:
         while True:
-            target = _get_target()
+            # Drain the print queue — block up to 0.1 s waiting for the first line,
+            # then flush everything buffered without further waiting.
+            try:
+                print(out_queue.get(timeout=0.1), flush=True)
+                try:
+                    while True:
+                        print(out_queue.get_nowait(), flush=True)
+                except _queue.Empty:
+                    pass
+            except _queue.Empty:
+                pass
 
-            if target is None:
-                # No backend running — kill any existing tail and wait
-                if tail_proc and tail_proc.poll() is None:
-                    tail_proc.terminate()
-                    tail_proc = None
-                    current_logfile = None
-                    current_name = None
-                    print("\n⏳ Backend unloaded — waiting for a new one...")
-                elif not waiting_printed:
-                    print("⏳ No backend loaded — waiting... (Ctrl+C to exit)")
-                    waiting_printed = True
-                _time.sleep(2)
+            # Terminal was resized — repaint the header for the new geometry.
+            if resized["flag"]:
+                resized["flag"] = False
+                _draw_banner(current_servers)
+
+            # Refresh the backend list every 2 seconds
+            now = _time.monotonic()
+            if now - last_check < 2.0:
+                continue
+            last_check = now
+
+            data = _get("/v1/ps")
+            servers = (data or {}).get("servers", [])
+            alive_servers = [
+                s for s in servers
+                if s.get("alive") and s.get("logfile") and Path(s["logfile"]).exists()
+            ]
+            if args.name:
+                alive_servers = [s for s in alive_servers if args.name.lower() in s["name"].lower()]
+            alive_servers.sort(
+                key=lambda s: (s.get("gpu") if isinstance(s.get("gpu"), int) else 99, s["name"])
+            )
+            alive_logfiles = {s["logfile"] for s in alive_servers}
+
+            if not alive_logfiles:
+                for lf in list(watchers):
+                    _stop_watcher(lf)
+                if banner_keys != ():
+                    if tty:
+                        sys.stdout.write(CSI + "r" + CSI + "2J" + CSI + "H")
+                    print("⏳ No backend loaded — waiting... (Ctrl+C to exit)", flush=True)
+                    banner_keys = ()
+                    current_servers = []
                 continue
 
-            waiting_printed = False
-            logfile = target.get("logfile", "")
+            keys = tuple((s["name"], s.get("gpu"), s["logfile"]) for s in alive_servers)
 
-            if not logfile or not Path(logfile).exists():
-                _time.sleep(2)
-                continue
+            # Stop watchers whose backends have unloaded
+            for lf in list(watchers):
+                if lf not in alive_logfiles:
+                    _stop_watcher(lf)
+            # Reap watchers whose tail died (e.g. log rotated/truncated) so they
+            # get restarted below instead of going silent for an alive backend
+            for lf, (_ev, t, proc) in list(watchers.items()):
+                if proc.poll() is not None or not t.is_alive():
+                    _stop_watcher(lf)
+            # Start watchers for newly loaded backends
+            for s in alive_servers:
+                _start_watcher(s)
 
-            # Backend changed (or first start) — switch tail
-            if logfile != current_logfile:
-                if tail_proc and tail_proc.poll() is None:
-                    tail_proc.terminate()
-                    tail_proc.wait(timeout=2)
-                    print(f"\n⟳ Switching to {target['name']} ({target['backend']})...")
-
-                print(f"● {target['name']} ({target['backend']})  —  {logfile}\n")
-                tail_proc = subprocess.Popen(["tail", "-f", "-n", "50", logfile])
-                current_logfile = logfile
-                current_name = target["name"]
-
-            # Check if tail died (e.g. log file rotated)
-            if tail_proc and tail_proc.poll() is not None:
-                tail_proc = None
-                current_logfile = None
-
-            _time.sleep(2)
+            # Repaint the sticky header only when the set of models changes.
+            if keys != banner_keys:
+                current_servers = alive_servers
+                banner_keys = keys
+                _draw_banner(alive_servers)
 
     except KeyboardInterrupt:
-        if tail_proc and tail_proc.poll() is None:
-            tail_proc.terminate()
-        print("")
+        pass
+    finally:
+        for lf in list(watchers):
+            _stop_watcher(lf)
+        if tty:
+            sys.stdout.write(CSI + "r")        # release the scroll region
+            sys.stdout.write(CSI + "?25h")     # make sure the cursor is visible
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        if old_winch is not None:
+            signal.signal(signal.SIGWINCH, old_winch)
 
 
 def cmd_hardware_detect(args):
@@ -1580,9 +1796,10 @@ def cmd_download(args):
     run_download(args.url)
 
 
-def cmd_wizard(_args):
-    from wizard import WizardApp
-    WizardApp().run()
+def cmd_tui(_args):
+    """Open the configuration panel (3-column TUI, replaces the old wizard)."""
+    from allma_tui import AllmaTUI
+    AllmaTUI().run()
 
 
 def cmd_update(args):
@@ -1708,11 +1925,17 @@ def cmd_update(args):
                     ok2 = _run("cmake build", ["cmake", "--build", str(build_dir / "build"),
                                                "--config", "Release", "-j", jobs, "--target", "llama-server"])
                     if ok2:
-                        # Copy updated binary
+                        # Copy updated binary — skip when LLAMA_CPP_PATH already
+                        # points at the build output (avoids SameFileError).
                         built = build_dir / "build" / "bin" / "llama-server"
                         if built.exists():
-                            import shutil as _sh
-                            _sh.copy2(str(built), LLAMA_CPP_PATH)
+                            try:
+                                same = built.resolve() == Path(LLAMA_CPP_PATH).resolve()
+                            except (OSError, RuntimeError):
+                                same = False
+                            if not same:
+                                import shutil as _sh
+                                _sh.copy2(str(built), LLAMA_CPP_PATH)
                         after = _ver([LLAMA_CPP_PATH, "--version"])
                         if before != after:
                             print(f"  {before} → {after}")
@@ -1835,6 +2058,10 @@ commands:
     p_unload.add_argument("model", help="Base model name (e.g. 'Qwen3.5-27b') or profile name")
     p_unload.set_defaults(func=cmd_unload)
 
+    p_reload = sub.add_parser("reload", help="Unload a model and load it again (pick up config changes)")
+    p_reload.add_argument("model", help="Base model name or profile name")
+    p_reload.set_defaults(func=cmd_reload)
+
     # logs
     p_logs = sub.add_parser("logs", help="Show Allma logs")
     p_logs.add_argument("-f", "--follow", action="store_true", help="Follow log output")
@@ -1862,7 +2089,7 @@ commands:
     p_lc.set_defaults(func=cmd_launch)
 
     p_lh = launch_sub.add_parser("hermes", help="Open hermes-agent with a local model")
-    p_lh.add_argument("model", help="Profile model name (e.g. 'Qwen3.6:27b-Hermes')")
+    p_lh.add_argument("model", help="Profile model name (e.g. 'Qwen3.6_ABT:27B-Q4')")
     p_lh.add_argument("--gpu", type=int, default=None, metavar="ID",
                       help="Force model onto a specific GPU (0-indexed)")
     p_lh.add_argument("hermes_args", nargs=argparse.REMAINDER,
@@ -1895,8 +2122,9 @@ commands:
     p_dl.set_defaults(func=cmd_download)
 
     # wizard
-    p_wz = sub.add_parser("wizard", help="Interactive wizard to create model configs")
-    p_wz.set_defaults(func=cmd_wizard)
+    p_tui = sub.add_parser("tui", aliases=["wizard"],
+                           help="Configuration panel (models, base config, profiles)")
+    p_tui.set_defaults(func=cmd_tui)
 
     # update
     p_up = sub.add_parser("update", help="Update allma and/or backends to latest versions")
