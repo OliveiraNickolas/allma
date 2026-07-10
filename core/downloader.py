@@ -87,6 +87,56 @@ def _quant_key(filename: str) -> int:
 
 
 # ── VRAM fit preview ──────────────────────────────────────────────────────────
+def _fetch_repo_config(repo_id: str, files: dict) -> Optional[dict]:
+    """Grab the repo's config.json (a few KB) so context math is exact."""
+    if "config.json" not in files.get("config", []):
+        return None
+    try:
+        import json
+        from huggingface_hub import hf_hub_download
+        p = hf_hub_download(repo_id=repo_id, filename="config.json")
+        return json.loads(Path(p).read_text())
+    except Exception:
+        return None
+
+
+def _kv_bytes_per_token(conf: Optional[dict]) -> tuple[int, int]:
+    """(bytes_per_token_fp16, native_max_ctx). Mirrors core.gpu's KV math,
+    including hybrid models where only every Nth layer holds KV."""
+    if not conf:
+        return 65536, 0  # conservative dense-8B-ish fallback, unknown max
+    tc = conf.get("text_config", conf)
+    layers = tc.get("num_hidden_layers", 32)
+    kv_heads = tc.get("num_key_value_heads") or tc.get("num_attention_heads", 8)
+    hidden = tc.get("hidden_size", 4096)
+    heads = tc.get("num_attention_heads", 16)
+    head_dim = tc.get("head_dim") or (hidden // heads)
+    interval = tc.get("full_attention_interval")
+    kv_layers = max(1, layers // interval) if interval else layers
+    bpt = 2 * kv_heads * head_dim * kv_layers * 2  # K+V, fp16
+    return bpt, int(tc.get("max_position_embeddings") or 0)
+
+
+def _max_ctx_tokens(size_bytes: Optional[int], gpu: Optional[dict],
+                    kv_bpt: int, native_max: int) -> int:
+    """Largest context that fits on the best GPU after weights + overhead."""
+    if not size_bytes or not gpu or kv_bpt <= 0:
+        return 0
+    usable_gb = gpu["total_gb"] * 0.93 - size_bytes / (1024 ** 3) * 1.01 - 1.5
+    if usable_gb <= 0:
+        return 0
+    tokens = int(usable_gb * (1024 ** 3) / kv_bpt)
+    return min(tokens, native_max) if native_max else tokens
+
+
+def _fmt_ctx(tokens: int) -> str:
+    if tokens < 4096:
+        return "✗"
+    if tokens >= 1024 ** 2:
+        return f"{tokens // 1024 // 1024}M"
+    return f"{tokens // 1024}k"
+
+
 def _gpu_stats() -> Optional[dict]:
     """Best single GPU (total/free GB) — None when nvidia-smi is unavailable."""
     try:
@@ -123,10 +173,13 @@ def _fit_verdict(size_bytes: Optional[int], gpu: Optional[dict]) -> tuple[str, s
     return "✗ too big", f"bold {C_BAD}"
 
 
-def _recommendation_bars(gguf_files: list[dict], gpu: Optional[dict]) -> dict:
+def _recommendation_bars(gguf_files: list[dict], gpu: Optional[dict],
+                         kv_bpt: int = 65536, native_max: int = 0) -> dict:
     """filename → 0-5 score. The highest-quality quant that fits comfortably
     (≤80% of the best GPU) gets 5; other fitting quants rank below it; files
-    that only fit tightly or not at all get 1/0."""
+    that only fit tightly or not at all get 1/0. Context capacity caps the
+    score: a quant that leaves no room for a usable context can't rank high
+    no matter its quality."""
     scores: dict = {}
     if not gpu:
         return {f["name"]: 0 for f in gguf_files}
@@ -146,6 +199,15 @@ def _recommendation_bars(gguf_files: list[dict], gpu: Optional[dict]) -> dict:
     fitting.sort(key=lambda f: _quant_key(f["name"]))
     for rank, f in enumerate(fitting):
         scores[f["name"]] = max(2, 5 - rank)
+    # context cap: little KV headroom = low recommendation, quality regardless
+    for f in gguf_files:
+        if not f.get("size"):
+            continue
+        ctx = _max_ctx_tokens(f["size"], gpu, kv_bpt, native_max)
+        if ctx < 8192:
+            scores[f["name"]] = min(scores.get(f["name"], 0), 1)
+        elif ctx < 32768:
+            scores[f["name"]] = min(scores.get(f["name"], 0), 3)
     return scores
 
 
@@ -245,13 +307,16 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
         row_styles=[f"on {C_BG}", "on #ddd2b4"],
     )
     gpu = _gpu_stats()
-    rec = _recommendation_bars(gguf_files, gpu)
+    conf = _fetch_repo_config(repo_id, files) if gpu else None
+    kv_bpt, native_max = _kv_bytes_per_token(conf)
+    rec = _recommendation_bars(gguf_files, gpu, kv_bpt, native_max)
 
     tbl.add_column("#",    style=f"bold {C_ACCENT}", width=4, justify="right")
     tbl.add_column("File", style=f"{C_FG}", overflow="fold")
     tbl.add_column("Size", style=f"bold {C_ACCENT}", justify="right", width=10)
     if gpu:
         tbl.add_column("Rec",  justify="left", width=7)
+        tbl.add_column("Max ctx", justify="right", width=8)
         tbl.add_column("Fits", justify="left", width=15)
 
     for i, f in enumerate(gguf_files, 1):
@@ -260,12 +325,16 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
             score = rec.get(f["name"], 0)
             bar_style = f"bold {C_GOOD}" if score >= 4 else (C_WARN if score >= 2 else C_DIM)
             row.append(Text("▰" * score + "▱" * (5 - score), style=bar_style))
+            ctx = _max_ctx_tokens(f["size"], gpu, kv_bpt, native_max)
+            ctx_style = (f"bold {C_GOOD}" if ctx >= 32768
+                         else (C_WARN if ctx >= 8192 else f"bold {C_BAD}"))
+            row.append(Text(_fmt_ctx(ctx), style=ctx_style))
             label, style = _fit_verdict(f["size"], gpu)
             row.append(Text(label, style=style))
         tbl.add_row(*row)
 
     if mmproj_files:
-        tbl.add_row(*([""] * (5 if gpu else 3)))
+        tbl.add_row(*([""] * (6 if gpu else 3)))
         for i, f in enumerate(mmproj_files, len(gguf_files) + 1):
             row = [
                 Text(str(i), style=f"bold {C_DIM}"),
@@ -273,7 +342,8 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
                 Text(_file_size_str(f["size"]), style=C_DIM),
             ]
             if gpu:
-                row += [Text("", style=C_DIM), Text("(vision)", style=C_DIM)]
+                row += [Text("", style=C_DIM), Text("", style=C_DIM),
+                        Text("(vision)", style=C_DIM)]
             tbl.add_row(*row)
 
     hint = Text(style=_S)
