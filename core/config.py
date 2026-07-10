@@ -107,6 +107,8 @@ VLLM_BASE_PORT = _parse_int("VLLM_BASE_PORT", 8000)
 LLAMA_BASE_PORT = _parse_int("LLAMA_BASE_PORT", 9001)
 KEEP_ALIVE_SECONDS = _parse_int("KEEP_ALIVE_SECONDS", 600)
 HEALTH_CHECK_INTERVAL = _parse_int("HEALTH_CHECK_INTERVAL", 60)
+# Max seconds to wait for a backend to become ready before giving up on a load.
+MODEL_LOAD_TIMEOUT = _parse_int("MODEL_LOAD_TIMEOUT", 300)
 AUTO_SWAP_ENABLED = os.environ.get("AUTO_SWAP_ENABLED", "true").lower() == "true"
 MAX_MESSAGES = _parse_int("MAX_MESSAGES", 50)
 
@@ -285,7 +287,7 @@ def load_models_from_configs() -> tuple[dict, dict]:
     try:
         sys.path.insert(0, str(SCRIPT_DIR))
         try:
-            from configs.loader import load_models_from_configs as _load
+            from configs.allm_parser import load_models_from_configs as _load
         finally:
             if str(SCRIPT_DIR) in sys.path:
                 sys.path.remove(str(SCRIPT_DIR))
