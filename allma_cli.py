@@ -1805,6 +1805,7 @@ def cmd_tui(_args):
 def cmd_update(args):
     """Update allma, vLLM, and/or llama.cpp to their latest versions."""
     target = args.target  # "all" | "allma" | "vllm" | "llama"
+    auto_yes = getattr(args, "yes", False)
 
     def _banner(title):
         print(f"\n  ── {title} {'─' * max(0, 44 - len(title))}")
@@ -1828,7 +1829,65 @@ def cmd_update(args):
         except Exception:
             return ""
 
+    def _has_uv() -> bool:
+        """True when `uv` is on PATH — its resolver beats pip's for CUDA stacks."""
+        import shutil as _sh
+        return _sh.which("uv") is not None
+
+    def _pip_install_cmd(*extra_args: str) -> list:
+        """Build `pip install ...` — prefers `uv pip` when available.
+
+        Always targets the venv Python explicitly so upgrades hit the right
+        environment even when the user runs `allma update` outside of it."""
+        if _has_uv():
+            return ["uv", "pip", "install", "--python", PYTHON, *extra_args]
+        return [PYTHON, "-m", "pip", "install", *extra_args]
+
+    def _confirm(question: str) -> bool:
+        """Interactive y/N gate. Auto-approved when `--yes` was passed or
+        stdin is not a TTY (e.g. running from a script)."""
+        if auto_yes:
+            return True
+        import sys as _sys
+        if not _sys.stdin.isatty():
+            print(f"  {question} [non-interactive: aborting; pass --yes to skip]")
+            return False
+        try:
+            reply = input(f"  {question} [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        return reply in ("y", "yes")
+
+    def _backends_running() -> list:
+        """Return the list of backend names currently loaded — the caller
+        should refuse to touch Python libs while any backend is alive."""
+        import urllib.request as _ur
+        import urllib.error as _ue
+        import json as _json
+        try:
+            with _ur.urlopen("http://127.0.0.1:9000/v1/ps", timeout=1.5) as r:
+                data = _json.load(r)
+        except (_ue.URLError, TimeoutError, ConnectionError, OSError):
+            return []
+        except Exception:
+            return []
+        return [s["name"] for s in data.get("servers", []) if s.get("alive")]
+
     updated_anything = False
+
+    # Refuse to touch Python libs when a backend is still holding them open.
+    # (Doesn't gate the llama.cpp binary rebuild — that copies over disk-only.)
+    python_libs_targeted = target in ("all", "allma", "vllm")
+    if python_libs_targeted:
+        alive = _backends_running()
+        if alive:
+            print()
+            print(f"  ✗ {len(alive)} backend(s) still running: {', '.join(alive)}")
+            print("  Python libs (allma/vllm) can't be safely upgraded while they")
+            print("  are in use. Stop everything first:")
+            print("      allma stop")
+            return
 
     # ── allma (git pull) ────────────────────────────────────────────────────────
     if target in ("all", "allma"):
@@ -1847,7 +1906,8 @@ def cmd_update(args):
                     # Reinstall Python deps in case requirements changed
                     req = ALLMA_DIR / "requirements.txt"
                     if req.exists():
-                        _run("pip install -r requirements.txt", [PYTHON, "-m", "pip", "install", "-q", "-r", str(req)])
+                        _run("install requirements",
+                             _pip_install_cmd("-q", "-r", str(req)))
                 else:
                     print("  Already up to date.")
 
@@ -1857,17 +1917,61 @@ def cmd_update(args):
         before = _ver([PYTHON, "-c", "import vllm; print(vllm.__version__)"])
         if not before:
             print("  vLLM not installed. Install it with:")
-            print(f"  {PYTHON} -m pip install vllm")
+            print(f"  {' '.join(_pip_install_cmd('vllm'))}")
         else:
-            print(f"  Current: {before}")
-            ok = _run("pip upgrade vllm", [PYTHON, "-m", "pip", "install", "-q", "--upgrade", "vllm"])
-            if ok:
-                after = _ver([PYTHON, "-c", "import vllm; print(vllm.__version__)"])
-                if before != after:
-                    print(f"  {before} → {after}")
-                    updated_anything = True
-                else:
-                    print("  Already up to date.")
+            using = "uv" if _has_uv() else "pip"
+            print(f"  Current: {before}  (using {using})")
+
+            # Dry-run first — surfaces breaking upgrades (torch major bump,
+            # xformers/triton downgrade) BEFORE anything touches the venv.
+            if _has_uv():
+                dry = ["uv", "pip", "install", "--python", PYTHON,
+                       "--upgrade", "vllm", "--dry-run"]
+            else:
+                dry = [PYTHON, "-m", "pip", "install", "--upgrade", "vllm",
+                       "--dry-run"]
+
+            print("  Planning changes:")
+            import subprocess as _sp3
+            plan = _sp3.run(dry, capture_output=True, text=True)
+            plan_text = (plan.stdout or "") + (plan.stderr or "")
+            for line in plan_text.splitlines():
+                print(f"    {line}")
+
+            # Cheap sanity checks against known-bad transitions.
+            import re as _re3
+            warnings: list[str] = []
+            for m in _re3.finditer(
+                r"(torch|triton|xformers|flash-attn|vllm-flash-attn)\s+"
+                r"([0-9.+a-z]+)\s*(?:->|→)\s*([0-9.+a-z]+)",
+                plan_text.lower(),
+            ):
+                pkg, old, new = m.group(1), m.group(2), m.group(3)
+                if old.split(".")[0] > new.split(".")[0]:
+                    warnings.append(f"    ⚠ {pkg}: {old} → {new} (major DOWNGRADE)")
+                elif pkg == "torch" and old.split(".")[0] != new.split(".")[0]:
+                    warnings.append(f"    ⚠ {pkg}: {old} → {new} (major bump — may break flash-attn/triton)")
+            if warnings:
+                print("  Sanity check flagged:")
+                for w in warnings:
+                    print(w)
+
+            if plan.returncode != 0:
+                print("  ✗ dry-run failed — aborting; check output above.")
+            elif not _confirm("Apply this vLLM upgrade?"):
+                print("  Aborted. No changes.")
+            else:
+                ok = _run("upgrade vllm",
+                          _pip_install_cmd("--upgrade", "vllm"))
+                if ok:
+                    after = _ver([PYTHON, "-c", "import vllm; print(vllm.__version__)"])
+                    if before != after:
+                        print(f"  {before} → {after}")
+                        updated_anything = True
+                        print(f"  Rollback if needed:  "
+                              f"{' '.join(_pip_install_cmd(f'vllm=={before}'))}")
+                    else:
+                        print("  Already up to date.")
 
     # ── llama.cpp ────────────────────────────────────────────────────────────────
     if target in ("all", "llama"):
@@ -1889,10 +1993,10 @@ def cmd_update(args):
                     cuda_ver = m.group(1)
             except Exception:
                 pass
-            pip_cmd = [PYTHON, "-m", "pip", "install", "--upgrade", "llama-cpp-python[server]"]
+            pip_cmd = _pip_install_cmd("--upgrade", "llama-cpp-python[server]")
             if cuda_ver:
                 pip_cmd += ["--extra-index-url", f"https://abetlen.github.io/llama-cpp-python/whl/cu{cuda_ver}"]
-            ok = _run("pip upgrade llama-cpp-python", pip_cmd)
+            ok = _run("upgrade llama-cpp-python", pip_cmd)
             if ok:
                 after = _ver([PYTHON, "-c", "import llama_cpp; print(llama_cpp.__version__)"])
                 if before != after:
@@ -2134,6 +2238,11 @@ commands:
         default="all",
         choices=["all", "allma", "vllm", "llama"],
         help="What to update: all (default), allma, vllm, llama",
+    )
+    p_up.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt after the dry-run (useful for scripts)",
     )
     p_up.set_defaults(func=cmd_update)
 
