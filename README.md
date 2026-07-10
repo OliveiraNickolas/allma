@@ -131,63 +131,96 @@ configs/
 └── profile/     ← one file per "personality" (which base, sampling overrides)
 ```
 
-**Base config** — describes a model on disk:
+Both files use the same tiny `.allm` syntax — think of it as a shell command
+with a few Allma-specific directives on top.
 
-```ini
+**Syntax rules**
+
+- Lines starting with `@` are Allma meta-directives.
+- Lines without `@` are backend flags (in a base) or sampling params (in a profile).
+- No `=`, no quotes, no brackets. Hyphens on flag names are optional — Allma
+  prepends `--` when they're missing.
+- Boolean flags follow **presence semantics**: writing the flag enables it;
+  omitting it uses the backend default. There is no `true`/`false` form.
+- `#` starts a comment. Blank lines are decorative.
+
+**Base config — vLLM:**
+
+```
 # configs/base/MyModel.allm
 
-backend = "vllm"
-path = "/path/to/Models/Qwen3.5-27B-FP8"
-tokenizer = "/path/to/Models/Qwen3.5-27B-FP8"
-gpu_memory_utilization = "0.92"
-max_model_len = 131072
-max_num_seqs = 4
+@vllm
+@path /path/to/Models/Qwen3.5-27B-FP8
+@gpu 0
 
-extra_args = [
-    "--reasoning-parser", "qwen3",
-    "--enable-auto-tool-choice",
-    "--tool-call-parser", "qwen3_coder"
-]
+tensor-parallel-size 2
+max-model-len 131072
+max-num-seqs 4
+gpu-memory-utilization 0.92
+reasoning-parser qwen3
+enable-auto-tool-choice
+tool-call-parser qwen3_coder
+kv-cache-dtype fp8
 ```
 
-```ini
-# configs/base/MyGGUF.allm  (llama.cpp)
+**Base config — llama.cpp:**
 
-backend = "llama.cpp"
-model = "/path/to/Models/model-Q4_K_M.gguf"
-# mmproj = "/path/to/Models/mmproj-f16.gguf"  # optional: enables vision
+```
+# configs/base/MyGGUF.allm
 
-n_ctx = 65536
-n_gpu_layers = "-1"
-n_threads = "8"
-n_batch = "1024"
+@llamacpp
+@path /path/to/Models/model-Q4_K_M.gguf
+@gpu 1
 
-extra_args = [
-    "--jinja",
-    "--flash-attn", "on",
-    "--cache-type-k", "q8_0",
-    "--cache-type-v", "q8_0",
-    "--cont-batching"
-]
+-ngl -1
+-c 65536
+-b 1024
+-t 8
+--jinja
+--flash-attn on
+--cache-type-k q8_0
+--cache-type-v q8_0
+--cont-batching
 ```
 
-**Profile config** — describes how to talk to a base model:
+**Profile config — describes how to talk to a base model:**
 
-```ini
+```
 # configs/profile/MyModel-Instruct.allm
 
-name = "MyModel:Instruct"
-base = "MyModel"          # matches the base config filename (without .allm)
-enable_thinking = false   # disable chain-of-thought
+@name MyModel:Instruct
+@base MyModel
+@thinking-off
 
-[sampling]
-temperature = 0.7
-top_p = 0.9
-top_k = 40
-min_p = 0.0
-presence_penalty = 0.0
-repetition_penalty = 1.0
+temperature 0.7
+top-p 0.9
+top-k 40
+min-p 0.0
+presence-penalty 0.0
+repetition-penalty 1.0
 ```
+
+**Meta directives**
+
+Bases:
+
+| Directive | Effect |
+|---|---|
+| `@vllm` / `@llamacpp` | Choose the backend |
+| `@path <abs-path>` | Model file (GGUF) or model directory (vLLM). Absolute path required. |
+| `@tokenizer <abs-path>` | Override tokenizer path (defaults to `@path`) |
+| `@gpu N` | Pin the model to a single GPU |
+| `@gpus 0,1` | Multi-GPU list (uses the first for pinning today) |
+| `@pin` | Never auto-unload this model, even after `KEEP_ALIVE_SECONDS` idle |
+| `@keep-alive N` | Per-model override of the idle timeout, in seconds |
+
+Profiles:
+
+| Directive | Effect |
+|---|---|
+| `@name <shown-name>` | Name exposed to clients (e.g. `Qwen3.5:27B-FP8`) |
+| `@base <base-config>` | Which base config in `configs/base/` to use |
+| `@thinking-off` | Disable chain-of-thought reasoning (default: enabled) |
 
 ### Creating your first config
 
@@ -457,11 +490,13 @@ claude
 
 ### Tensor parallelism (vLLM)
 
-For models too large for a single GPU, set `tensor_parallel` in the base config:
+For models too large for a single GPU, add the `tensor-parallel-size` flag:
 
-```ini
-backend = "vllm"
-tensor_parallel = "2"   # split across 2 GPUs
+```
+@vllm
+@path /path/to/Models/BigModel
+
+tensor-parallel-size 2
 ```
 
 Allma automatically selects consecutive GPUs (e.g. 0+1, 1+2) with enough free VRAM. If no consecutive pair fits, it reports a clear error.
@@ -470,8 +505,8 @@ Allma automatically selects consecutive GPUs (e.g. 0+1, 1+2) with enough free VR
 
 To pin a model to a specific GPU (e.g. GPU 1 while GPU 0 runs ComfyUI):
 
-```ini
-gpu_id = 1
+```
+@gpu 1
 ```
 
 This works for both vLLM and llama.cpp backends.
@@ -493,21 +528,22 @@ Allma estimates each model's VRAM requirement before loading and unloads other m
 - KV cache (from model architecture — respects quantization, sliding window, hybrid architectures)
 - Fixed overhead (~0.25 GB for llama.cpp, ~1 GB for vLLM)
 
-For llama.cpp the KV cache size scales linearly with `n_ctx`. To reduce it, lower `n_ctx` or use KV quantization:
+For llama.cpp the KV cache size scales linearly with `-c`. To reduce it, lower `-c` or use KV quantization:
 
-```ini
-extra_args = ["--cache-type-k", "q4_0", "--cache-type-v", "q4_0"]
+```
+--cache-type-k q4_0
+--cache-type-v q4_0
 ```
 
 ---
 
 ## How configs auto-detect arguments
 
-If a base config has no `extra_args`, Allma reads the model's `config.json` (or GGUF metadata) to identify the model family (Qwen3, Gemma4, Llama, Phi, etc.) and applies appropriate defaults automatically. This means a minimal config like:
+If a base config has no backend flags beyond the required `@vllm`/`@path`, Allma reads the model's `config.json` (or GGUF metadata) to identify the model family (Qwen3, Gemma4, Llama, Phi, etc.) and applies appropriate defaults automatically. A minimal config like:
 
-```ini
-backend = "vllm"
-path = "/path/to/Models/Qwen3-8B"
+```
+@vllm
+@path /path/to/Models/Qwen3-8B
 ```
 
 …will still get the right `--reasoning-parser`, `--tool-call-parser`, and other settings applied automatically.
@@ -516,21 +552,18 @@ path = "/path/to/Models/Qwen3-8B"
 
 ## Profiles: thinking mode
 
-Models that support chain-of-thought (e.g. Qwen3, DeepSeek-R1) can have thinking enabled or disabled per profile:
+Models that support chain-of-thought (e.g. Qwen3, DeepSeek-R1) can have thinking enabled or disabled per profile. Thinking is **enabled by default**; add `@thinking-off` to disable:
 
-```ini
+```
 # configs/profile/MyModel-Reasoning.allm
-name = "MyModel:Reasoning"
-base = "MyModel"
-enable_thinking = true   # default for non-instruct profiles
+@name MyModel:Reasoning
+@base MyModel
 
 # configs/profile/MyModel-Instruct.allm
-name = "MyModel:Instruct"
-base = "MyModel"
-enable_thinking = false  # fast, no <think> blocks
+@name MyModel:Instruct
+@base MyModel
+@thinking-off        # fast, no <think> blocks
 ```
-
-Profiles with "instruct" in the name disable thinking automatically.
 
 ---
 
@@ -592,7 +625,7 @@ allma/
 ├── configs/
 │   ├── base/           # *.allm (gitignored) + *.allm.example (committed)
 │   ├── profile/        # *.allm profile configs (committed, no paths)
-│   └── loader.py       # .allm file parser
+│   └── allm_parser.py  # .allm file parser (v2 syntax)
 │
 ├── docs/               # extended documentation
 ├── scripts/            # benchmark and utility scripts
