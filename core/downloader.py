@@ -81,6 +81,69 @@ def _quant_key(filename: str) -> int:
     return len(QUANT_ORDER)
 
 
+# ── VRAM fit preview ──────────────────────────────────────────────────────────
+def _gpu_stats() -> Optional[dict]:
+    """Best single GPU (total/free GB) — None when nvidia-smi is unavailable."""
+    try:
+        from core.gpu import get_all_gpus
+        gpus = get_all_gpus()
+        if not gpus:
+            return None
+        best = max(gpus, key=lambda g: g.get("total_mb", 0))
+        return {
+            "total_gb": best.get("total_mb", 0) / 1024,
+            "free_gb": best.get("free_gb", 0.0),
+            "sum_total_gb": sum(g.get("total_mb", 0) for g in gpus) / 1024,
+            "sum_free_gb": sum(g.get("free_gb", 0.0) for g in gpus),
+        }
+    except Exception:
+        return None
+
+
+def _fit_verdict(size_bytes: Optional[int], gpu: Optional[dict]) -> tuple[str, str]:
+    """(label, rich_style) — does this file fit, sized against the best GPU?
+
+    Reserve ~2 GB beyond the weights for KV cache + runtime overhead — the
+    floor for a usable context. Multi-GPU spillover counts as a tight fit.
+    """
+    if not size_bytes or not gpu:
+        return "?", C_DIM
+    need = size_bytes / (1024 ** 3) * 1.01 + 2.0
+    if need <= gpu["free_gb"]:
+        return "✓ fits", "bold green"
+    if need <= gpu["total_gb"]:
+        return "◐ after unload", "yellow"
+    if need <= gpu["sum_total_gb"]:
+        return "◑ multi-gpu", "yellow"
+    return "✗ too big", "bold red"
+
+
+def _recommendation_bars(gguf_files: list[dict], gpu: Optional[dict]) -> dict:
+    """filename → 0-5 score. The highest-quality quant that fits comfortably
+    (≤80% of the best GPU) gets 5; other fitting quants rank below it; files
+    that only fit tightly or not at all get 1/0."""
+    scores: dict = {}
+    if not gpu:
+        return {f["name"]: 0 for f in gguf_files}
+    fitting = []
+    for f in gguf_files:
+        if not f.get("size"):
+            scores[f["name"]] = 0
+            continue
+        need = f["size"] / (1024 ** 3) * 1.01 + 2.0
+        if need <= gpu["total_gb"] * 0.80:
+            fitting.append(f)
+        elif need <= gpu["total_gb"]:
+            scores[f["name"]] = 1   # fits, but no headroom for real context
+        else:
+            scores[f["name"]] = 0
+    # fitting files: rank by quant quality (QUANT_ORDER: best first)
+    fitting.sort(key=lambda f: _quant_key(f["name"]))
+    for rank, f in enumerate(fitting):
+        scores[f["name"]] = max(2, 5 - rank)
+    return scores
+
+
 # ── URL parsing ───────────────────────────────────────────────────────────────
 def parse_hf_url(url_or_id: str) -> str:
     url_or_id = url_or_id.strip().rstrip("/")
@@ -174,21 +237,37 @@ def select_gguf_interactive(files: dict, repo_id: str) -> list[str]:
         style=_S,
         expand=True,
     )
+    gpu = _gpu_stats()
+    rec = _recommendation_bars(gguf_files, gpu)
+
     tbl.add_column("#",    style=f"bold {C_ACCENT}", width=4, justify="right")
     tbl.add_column("File", style=f"{C_FG}")
     tbl.add_column("Size", style=f"bold {C_ACCENT}", justify="right", width=10)
+    if gpu:
+        tbl.add_column("Rec",  justify="left", width=7)
+        tbl.add_column("Fits", justify="left", width=15)
 
     for i, f in enumerate(gguf_files, 1):
-        tbl.add_row(str(i), f["name"], _file_size_str(f["size"]))
+        row = [str(i), f["name"], _file_size_str(f["size"])]
+        if gpu:
+            score = rec.get(f["name"], 0)
+            bar_style = "bold green" if score >= 4 else ("yellow" if score >= 2 else C_DIM)
+            row.append(Text("▰" * score + "▱" * (5 - score), style=bar_style))
+            label, style = _fit_verdict(f["size"], gpu)
+            row.append(Text(label, style=style))
+        tbl.add_row(*row)
 
     if mmproj_files:
-        tbl.add_row("", "", "")
+        tbl.add_row(*([""] * (5 if gpu else 3)))
         for i, f in enumerate(mmproj_files, len(gguf_files) + 1):
-            tbl.add_row(
+            row = [
                 Text(str(i), style=f"bold {C_DIM}"),
                 Text(f["name"], style=C_DIM),
                 Text(_file_size_str(f["size"]), style=C_DIM),
-            )
+            ]
+            if gpu:
+                row += [Text("", style=C_DIM), Text("(vision)", style=C_DIM)]
+            tbl.add_row(*row)
 
     hint = Text(style=_S)
     hint.append("  Enter numbers to download  ", style=f"{C_DIM} on {C_BG}")
@@ -431,7 +510,9 @@ def _print_result(base_path: Path, profile_paths: list[Path]):
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-def run_download(url_or_id: str):
+def run_download(url_or_id: str) -> Optional[str]:
+    """Full download flow. Returns the first generated profile name (for
+    chaining into `allma run`), or None when configs couldn't be created."""
     try:
         repo_id = parse_hf_url(url_or_id)
     except ValueError as e:
@@ -484,6 +565,7 @@ def run_download(url_or_id: str):
         except Exception as e:
             console.print(Text(f"  ⚠ Config generation failed: {e}", style=f"bold {C_DIM}"))
             console.print(Text(f"  Model downloaded to {dest_dir}", style=C_DIM))
-            sys.exit(0)
+            return None
 
     _print_result(base_path, profile_paths)
+    return profile_paths[0].stem if profile_paths else None

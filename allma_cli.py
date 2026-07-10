@@ -672,8 +672,26 @@ def cmd_logs(args):
 
 
 def cmd_run(args):
-    """Load a model and open an interactive chat session."""
+    """Load a model and open an interactive chat session.
+
+    Also accepts a HuggingFace repo id or URL: downloads the model
+    (interactive quant picker with fit/recommendation preview), generates
+    configs, and runs the resulting profile in one flow."""
     model = args.model
+
+    # Profile names never contain "/" — a slash (or an HF URL) means the user
+    # pasted a repo straight from HuggingFace.
+    if "/" in model or "huggingface.co" in model:
+        from core.downloader import run_download
+        profile = run_download(model)
+        if not profile:
+            print("Download finished but no profile was generated — cannot run.")
+            return
+        # A running server loaded its configs at startup; pick up the new ones.
+        if _is_running():
+            _post("/v1/reload-configs", {})
+        model = profile
+        print(f"Starting chat with {model}...")
 
     already_running = _is_running()
 
