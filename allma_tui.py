@@ -1560,30 +1560,44 @@ class AllmaTUI(App):
         except Exception:
             return default
 
-    def _vram_estimate(self, m: dict) -> tuple[float, float]:
-        """(needed_gb, available_gb) for the current form state."""
-        weights = m["size_gb"] * 1.15 if m["size_gb"] else 4.0
+    def _breakdown_cfg(self, m: dict) -> dict:
+        """Assemble a cfg dict from disk config + live form state, in the shape
+        core.gpu.get_vram_breakdown expects."""
+        cfg = dict(m.get("cfg") or {})
+        cfg.update(self._load_form_values(m))
+        cfg["backend"] = m["backend"]
         if m["backend"] == "llama.cpp":
-            ctx = self._ps_value("ld-n_ctx", 40960) or 0
-            layers = self._ps_value("ld-n_gpu_layers", -1)
-            frac = 1.0 if layers in (-1, None) else min(1.0, max(0.0, layers / 99))
-            kv = ctx * m["size_gb"] / 500_000 if m["size_gb"] else 0.5
-            need = weights * frac + kv
+            cfg.setdefault("model", m["path"])
         else:
-            ctx = self._ps_value("ld-max_model_len", 131072) or 0
-            seqs = self._ps_value("ld-max_num_seqs", 8) or 1
-            kv = ctx * seqs * m["size_gb"] / 4_000_000 if m["size_gb"] else 0.5
-            need = weights + kv
+            cfg.setdefault("path", m["path"])
+        return cfg
+
+    def _vram_breakdown(self, m: dict) -> dict:
+        from core.gpu import get_vram_breakdown
+        try:
+            return get_vram_breakdown(self._breakdown_cfg(m), m.get("key", ""))
+        except Exception:
+            return {"weights_gb": m["size_gb"] * 1.15 if m["size_gb"] else 4.0,
+                    "kv_cache_gb": 0.5, "mmproj_gb": 0.0, "vision_gb": 0.0,
+                    "cudagraph_gb": 0.0, "mtp_gb": 0.0, "overhead_gb": 0.5,
+                    "total_gb": (m["size_gb"] * 1.15 if m["size_gb"] else 4.0) + 1.0}
+
+    def _target_gpus(self, m: dict) -> list[dict]:
+        """GPUs the current form targets: the pinned one, or the top-TP by free."""
         try:
             pin = int(self.query_one("#ld-gpu_id", RadioRow).value)
         except (Exception, ValueError):
             pin = None
         if pin is not None:
-            avail = next((g["free_gb"] for g in self.gpus if g["index"] == pin), 0.0)
-        else:
-            tp = self._ps_value("ld-tensor_parallel", 1) or 1
-            frees = sorted((g["free_gb"] for g in self.gpus), reverse=True)
-            avail = sum(frees[:max(1, int(tp))]) if frees else 0.0
+            return [g for g in self.gpus if g["index"] == pin]
+        tp = self._ps_value("ld-tensor_parallel", 1) or 1
+        ranked = sorted(self.gpus, key=lambda g: g["free_gb"], reverse=True)
+        return ranked[:max(1, int(tp))] or self.gpus[:1]
+
+    def _vram_estimate(self, m: dict) -> tuple[float, float]:
+        """(needed_gb, available_gb) for the current form state."""
+        need = self._vram_breakdown(m)["total_gb"]
+        avail = sum(g["free_gb"] for g in self._target_gpus(m))
         return need, avail
 
     def _update_vram_line(self, m: dict) -> None:
@@ -1591,19 +1605,57 @@ class AllmaTUI(App):
             line = self.query_one("#vram-line", Static)
         except Exception:
             return
-        need, avail = self._vram_estimate(m)
-        frac = min(1.0, need / avail) if avail else 1.0
-        # retro gradient: green → orange → red as it gets tight
-        if need > avail:
-            color = ACC_RED
-        elif frac > 0.85:
-            color = ACC_ORANGE
-        else:
-            color = ACC_GREEN
-        width = 20
-        filled = round(frac * width)
-        bar = f"[{color}]{'▰' * filled}[/][#a89878]{'▱' * (width - filled)}[/]"
-        line.update(f"VRAM est. [bold {color}]{need:.1f}[/] / {avail:.1f} GB  {bar}")
+        bd = self._vram_breakdown(m)
+        targets = self._target_gpus(m)
+        total_gb = sum(g["total_gb"] for g in targets) or 24.0
+        free_gb = sum(g["free_gb"] for g in targets)
+        sys_gb = max(0.0, total_gb - free_gb)
+
+        extras_gb = (bd["mmproj_gb"] + bd["vision_gb"] + bd["cudagraph_gb"]
+                     + bd["mtp_gb"] + bd["overhead_gb"])
+        need = bd["total_gb"]
+        fits = need <= free_gb
+
+        # Segmented bar over the target GPUs' TOTAL capacity:
+        #   system-in-use │ weights │ kv cache │ extras │ free
+        width = 30
+        segs = [
+            (sys_gb,           "#a89878"),   # already used by system/other models
+            (bd["weights_gb"], ACC_BLUE),    # model weights
+            (bd["kv_cache_gb"], ACC_ORANGE), # kv cache
+            (extras_gb,        ACC_YELLOW),  # mtp / cudagraph / vision / overhead
+        ]
+        cells = []
+        used_cells = 0
+        for gb, color in segs:
+            n = round(gb / total_gb * width)
+            n = min(n, width - used_cells)
+            if gb > 0 and n == 0 and used_cells < width:
+                n = 1  # never hide a non-zero component entirely
+            used_cells += n
+            cells.append((n, color))
+        over = used_cells > width or (sys_gb + need) > total_gb
+        bar = "".join(f"[{c}]{'▰' * n}[/]" for n, c in cells if n)
+        bar += f"[#d8cfae]{'▱' * max(0, width - used_cells)}[/]"
+
+        status_color = ACC_GREEN if fits else ACC_RED
+        verdict = "fits" if fits else "DOESN'T FIT"
+        parts = [f"[#a89878]sys {sys_gb:.1f}[/]",
+                 f"[{ACC_BLUE}]weights {bd['weights_gb']:.1f}[/]",
+                 f"[{ACC_ORANGE}]kv {bd['kv_cache_gb']:.1f}[/]"]
+        if bd["mtp_gb"]:
+            parts.append(f"[{ACC_YELLOW}]mtp {bd['mtp_gb']:.1f}[/]")
+        if bd["cudagraph_gb"]:
+            parts.append(f"[{ACC_YELLOW}]cudagraph {bd['cudagraph_gb']:.1f}[/]")
+        if bd["vision_gb"] or bd["mmproj_gb"]:
+            parts.append(f"[{ACC_YELLOW}]vision {bd['vision_gb'] + bd['mmproj_gb']:.1f}[/]")
+        parts.append(f"[{ACC_YELLOW}]ovh {bd['overhead_gb']:.1f}[/]")
+        legend = "  ".join(parts)
+        line.update(
+            f"{bar} [bold {status_color}]{verdict}[/] "
+            f"[bold]{need:.1f}[/]/{free_gb:.1f} GB free of {total_gb:.0f}\n{legend}"
+            + (f"\n[{ACC_RED}]⚠ over capacity — reduce context or offload[/]" if over and not fits else "")
+        )
 
     def on_param_slider_changed(self, event: ParamSlider.Changed) -> None:
         m = self.selected
