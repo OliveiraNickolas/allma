@@ -269,6 +269,53 @@ FLAG_PRESETS = {
     ],
 }
 
+# Group the flag checklist by purpose. Kept as a flag→category map (separate
+# from the catalogs) so parse/serialize stay untouched; the form emits a dim
+# header before each non-empty group, in CATEGORY_ORDER. Anything unmapped
+# falls into "Advanced".
+CATEGORY_ORDER = [
+    "Output & tools", "Sampling", "Performance", "Memory / VRAM",
+    "Context", "Multimodal", "Speculative", "Advanced",
+]
+FLAG_CATEGORY = {
+    # output & tools
+    "--reasoning-parser": "Output & tools", "--enable-auto-tool-choice": "Output & tools",
+    "--tool-call-parser": "Output & tools", "--generation-config": "Output & tools",
+    "--jinja": "Output & tools",
+    # sampling
+    "--seed": "Sampling", "--temp": "Sampling", "--repeat-penalty": "Sampling",
+    # performance
+    "--enable-prefix-caching": "Performance", "--enable-chunked-prefill": "Performance",
+    "--async-scheduling": "Performance", "--enforce-eager": "Performance",
+    "--max-cudagraph-capture-size": "Performance", "--flash-attn": "Performance",
+    "--cont-batching": "Performance", "--parallel": "Performance",
+    "--kv-unified": "Performance", "--threads-batch": "Performance",
+    "--no-warmup": "Performance", "--defrag-thold": "Performance",
+    # memory / vram
+    "--kv-cache-dtype": "Memory / VRAM", "--quantization": "Memory / VRAM",
+    "--swap-space": "Memory / VRAM", "--cpu-offload-gb": "Memory / VRAM",
+    "--cache-type-k": "Memory / VRAM", "--cache-type-v": "Memory / VRAM",
+    "--no-kv-offload": "Memory / VRAM", "--no-mmap": "Memory / VRAM",
+    "--mlock": "Memory / VRAM", "--n-cpu-moe": "Memory / VRAM",
+    "--override-tensor": "Memory / VRAM",
+    # context
+    "--disable-sliding-window": "Context", "--keep": "Context", "--ctx-shift": "Context",
+    "--rope-freq-base": "Context", "--rope-freq-scale": "Context",
+    "--rope-scaling": "Context", "--cache-reuse": "Context",
+    # multimodal
+    "--mm-processor-kwargs": "Multimodal", "--limit-mm-per-prompt": "Multimodal",
+    "--mm-encoder-tp-mode": "Multimodal",
+    # speculative
+    "--speculative-config": "Speculative", "--spec-type": "Speculative",
+    "--spec-draft-n-max": "Speculative", "--model-draft": "Speculative",
+    "--draft-max": "Speculative",
+    # advanced
+    "--trust-remote-code": "Advanced", "--disable-log-requests": "Advanced",
+    "--disable-custom-all-reduce": "Advanced", "--split-mode": "Advanced",
+    "--device": "Advanced", "--no-webui": "Advanced", "--metrics": "Advanced",
+    "--embeddings": "Advanced",
+}
+
 # extra_args flags that duplicate base-config fields: absorbed into the sliders
 # (and written back as proper .allm fields on save)
 LLAMA_FIELD_ALIASES = {
@@ -1220,6 +1267,7 @@ TabPane { background: #e8dfc8; padding: 0 0 0 1; }
     border-bottom: solid #008888; margin: 1 2 0 0;
 }
 .field-hint { color: #6a5a48; margin: 0 2 0 0; }
+.flag-cat   { color: #8a7a60; text-style: bold; margin: 1 0 0 1; height: 1; }
 .vram-line  { color: #1a1408; margin: 0 2 1 0; }
 
 /* sliders */
@@ -1725,11 +1773,20 @@ class AllmaTUI(App):
                 Button("📂", id="btn-browse-mmproj", classes="mini"),
                 classes="mmproj-row",
             ))
-        # extra args — checklist with editable values and per-flag (i) help
+        # extra args — checklist grouped by category, each with a dim header
         widgets.append(Static(f"[{ACC_ORANGE}]▮[/] Features & tuning", classes="section-hdr"))
-        for flag, defaults, desc in catalog:
-            widgets.append(FlagRow(flag, defaults, desc,
-                                   on=flag in enabled, vals=enabled.get(flag)))
+        by_cat: dict[str, list] = {}
+        for entry in catalog:
+            cat = FLAG_CATEGORY.get(entry[0], "Advanced")
+            by_cat.setdefault(cat, []).append(entry)
+        for cat in CATEGORY_ORDER:
+            group = by_cat.get(cat)
+            if not group:
+                continue
+            widgets.append(Static(f"── {cat} ──", classes="flag-cat"))
+            for flag, defaults, desc in group:
+                widgets.append(FlagRow(flag, defaults, desc,
+                                       on=flag in enabled, vals=enabled.get(flag)))
         widgets.append(Collapsible(
             Static("Flags outside the list, original spelling (--flag value). "
                    "Enter moves known flags to the list above.",
