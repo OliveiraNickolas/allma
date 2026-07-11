@@ -232,20 +232,20 @@ FLAG_CHOICES = {
 # JSON. First entry is the default when the flag is switched on.
 FLAG_PRESETS = {
     "--mm-processor-kwargs": [
-        ("images: balanced (≈1448px)", '{"max_pixels": 2097152, "min_pixels": 3136}'),
-        ("images: low VRAM (≈1024px)", '{"max_pixels": 1048576, "min_pixels": 3136}'),
-        ("images: high detail (≈2048px)", '{"max_pixels": 4194304, "min_pixels": 3136}'),
-        ("images: max detail (≈2560px)", '{"max_pixels": 6553600, "min_pixels": 3136}'),
+        ("balanced ~1448px", '{"max_pixels": 2097152, "min_pixels": 3136}'),
+        ("low VRAM ~1024px", '{"max_pixels": 1048576, "min_pixels": 3136}'),
+        ("hi-detail ~2048px", '{"max_pixels": 4194304, "min_pixels": 3136}'),
+        ("max ~2560px", '{"max_pixels": 6553600, "min_pixels": 3136}'),
     ],
     "--limit-mm-per-prompt": [
-        ("up to 5 images, 1 video", '{"image": 5, "video": 1}'),
-        ("up to 3 images, no video", '{"image": 3, "video": 0}'),
-        ("up to 10 images, 1 video", '{"image": 10, "video": 1}'),
-        ("1 image only", '{"image": 1, "video": 0}'),
+        ("5 img · 1 vid", '{"image": 5, "video": 1}'),
+        ("3 img · 0 vid", '{"image": 3, "video": 0}'),
+        ("10 img · 1 vid", '{"image": 10, "video": 1}'),
+        ("1 img only", '{"image": 1, "video": 0}'),
     ],
     "--speculative-config": [
-        ("MTP: 1 draft token (safe)", '{"method": "mtp", "num_speculative_tokens": 1}'),
-        ("MTP: 2 draft tokens", '{"method": "mtp", "num_speculative_tokens": 2}'),
+        ("MTP · 1 token", '{"method": "mtp", "num_speculative_tokens": 1}'),
+        ("MTP · 2 tokens", '{"method": "mtp", "num_speculative_tokens": 2}'),
     ],
 }
 
@@ -518,12 +518,28 @@ def parse_extra_args(args: list, catalog: list) -> tuple[dict, list]:
     return enabled, leftover
 
 
+def _split_flag_value(raw: str) -> list:
+    """Split a flag's value string into tokens WITHOUT mangling JSON.
+
+    shlex.split() strips the quotes inside {"max_pixels": ...} and shatters
+    it on spaces — the exact corruption that turned a valid config into
+    `{max_pixels:`. When the value looks like JSON (starts with { or [),
+    keep it as a single token; otherwise fall back to shlex."""
+    raw = raw.strip()
+    if raw.startswith("{") or raw.startswith("["):
+        return [raw]
+    try:
+        return shlex.split(raw)
+    except ValueError:
+        return [raw]
+
+
 def serialize_extra_args(enabled: dict, custom: str) -> list:
     out: list[str] = []
     for flag, vals in enabled.items():
         out.append(flag)
         out.extend(vals)
-    out.extend(shlex.split(custom or ""))
+    out.extend(_split_flag_value(custom) if custom else [])
     return out
 
 
@@ -707,7 +723,7 @@ class FlagRow(Horizontal):
             pass
         try:
             raw = self.query_one(".flag-val", Input).value
-            return shlex.split(raw) if raw.strip() else list(self.defaults)
+            return _split_flag_value(raw) if raw.strip() else list(self.defaults)
         except Exception:
             return self._vals
 
@@ -1110,7 +1126,9 @@ Toggle.line.-on {
    1-row field to 3 rows (same trap as Input:focus) */
 .flag-sel:focus SelectCurrent { border: none; background: #fff8e0; }
 .flag-sel:focus SelectCurrent Static { background: #fff8e0; }
-.flag-sel SelectOverlay { width: 16; height: auto; max-height: 10; }
+/* overlay is wider than the collapsed field so long preset labels fit on
+   one line; it floats above the row so the extra width doesn't reflow it */
+.flag-sel SelectOverlay { width: 24; height: auto; max-height: 12; }
 .info-mark { width: 4; height: 1; color: #6a5a48; }
 .info-mark:hover { color: #007878; text-style: bold; }
 .param-counter { height: 1; margin: 0 2 1 0; }
