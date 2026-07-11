@@ -1924,41 +1924,81 @@ class AllmaTUI(App):
         return profs[0] if profs else None
 
     # — save base —
+    # Promoted-field → v2 flag-name map (mirror of the parser's promotions).
+    _V2_VLLM = {
+        "tensor_parallel": "tensor-parallel-size", "max_model_len": "max-model-len",
+        "max_num_seqs": "max-num-seqs", "max_num_batched_tokens": "max-num-batched-tokens",
+        "gpu_memory_utilization": "gpu-memory-utilization",
+    }
+    _V2_LLAMA = {
+        "n_ctx": "-c", "n_batch": "-b", "n_gpu_layers": "-ngl",
+        "n_threads": "-t", "n_ubatch": "-ub",
+    }
+
+    def _render_base_allm(self, m: dict, values: dict, extra: list) -> str:
+        """Build a complete v2 .allm from the form state (always full-rewrite —
+        the old field-patcher emitted TOML and corrupted v2 files)."""
+        is_llama = m["backend"] == "llama.cpp"
+        promo = self._V2_LLAMA if is_llama else self._V2_VLLM
+        lines = [f"# Base model: {m['key']} ({m['backend']} backend)"]
+        lines.append("@llamacpp" if is_llama else "@vllm")
+        # model path: for llama the gguf; for vllm the model dir
+        if is_llama:
+            model_path = m["cfg"].get("model") or m["path"]
+            lines.append(f"@path {model_path}")
+        else:
+            lines.append(f"@path {m['path']}")
+        gid = values.get("gpu_id", m["cfg"].get("gpu_id"))
+        if gid not in (None, "", "-1"):
+            lines.append(f"@gpu {gid}")
+        if m["cfg"].get("pin_loaded"):
+            lines.append("@pin")
+        if is_llama:
+            mm = values.get("mmproj") or m["cfg"].get("mmproj")
+            lines.append("")
+            for key, flag in promo.items():
+                if key in values:
+                    lines.append(f"{flag} {values[key]}")
+            if mm:
+                lines.append(f"--mmproj {mm}")
+        else:
+            lines.append("")
+            for key, flag in promo.items():
+                if key in values:
+                    lines.append(f"{flag} {values[key]}")
+        # extra_args: emit as bare flag lines (dashes preserved, JSON verbatim)
+        i = 0
+        extra = [str(a) for a in extra]
+        while i < len(extra):
+            tok = extra[i]
+            if tok.startswith("-"):
+                name = tok.lstrip("-")
+                if i + 1 < len(extra) and not extra[i + 1].startswith("--"):
+                    lines.append(f"{name} {extra[i + 1]}")
+                    i += 2
+                else:
+                    lines.append(name)
+                    i += 1
+            else:
+                lines.append(tok)
+                i += 1
+        return "\n".join(lines) + "\n"
+
     async def _save_base(self, m: dict) -> None:
         values = self._load_form_values(m)
         extra = values.pop("extra_args", [])
-        if m["configured"]:
-            for k, v in values.items():
-                if not self._values_equal(m["cfg"].get(k, ""), v):
-                    update_allm_param(m["file"], None, k, f'"{v}"')
-            if not self._values_equal(m["cfg"].get("extra_args", []), extra):
-                update_allm_param(m["file"], None, "extra_args", _fmt_args_list(extra))
-            if "mmproj" not in values and m["cfg"].get("mmproj"):
-                remove_allm_param(m["file"], None, "mmproj")
-            if "gpu_id" not in values and "gpu_id" in m["cfg"]:
-                remove_allm_param(m["file"], None, "gpu_id")
-            self._status(f"💾 {m['file'].name} saved")
-        else:
+        if not m["configured"]:
             path = Path(m["path"])
             info = self._detect_cache.get(str(path)) or detect_model(path)
-            f = CONFIG_DIR / "base" / f"{m['key']}.allm"
-            lines = [f"# Base model: {m['key']} ({m['backend']} backend)", ""]
             if m["backend"] == "llama.cpp":
                 ggufs = [g for g in info.get("gguf_files", []) if "mmproj" not in g.lower()]
-                lines += ['backend = "llama.cpp"',
-                          f'model = "{ggufs[0] if ggufs else m["path"]}"']
+                m["cfg"].setdefault("model", ggufs[0] if ggufs else m["path"])
                 mmprojs = info.get("mmproj_files", [])
                 if mmprojs and not values.get("mmproj"):
                     values["mmproj"] = mmprojs[0]
-            else:
-                lines += ['backend = "vllm"', f'path = "{m["path"]}"',
-                          f'tokenizer = "{m["path"]}"']
-            for k, v in values.items():
-                lines.append(f'{k} = "{v}"')
-            if extra:
-                lines += ["", f"extra_args = {_fmt_args_list(extra)}"]
-            f.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            self._status(f"💾 {f.name} created")
+        f = m["file"] if m["configured"] else CONFIG_DIR / "base" / f"{m['key']}.allm"
+        f.write_text(self._render_base_allm(m, values, extra), encoding="utf-8")
+        self._status(f"💾 {f.name} {'saved' if m['configured'] else 'created'}")
         await self._after_save()
 
     # — save profile (with rename) —
@@ -1968,30 +2008,35 @@ class AllmaTUI(App):
         sampling = self._profile_form_values(idx)
         thinking = self.query_one(f"#pf{idx}-thinking", Toggle).value
         new_name = self.query_one(f"#pf{idx}-name", Input).value.strip() or p["name"]
+        base = p.get("base") or m["key"]
+        content = self._render_profile_allm(new_name, base, thinking, sampling)
         if getattr(c, "_allma_new", False):
             fname = new_name.replace(":", "-").replace("/", "-")
             f = CONFIG_DIR / "profile" / f"{fname}.allm"
-            lines = [f"# Profile model: {new_name}", f'name = "{new_name}"',
-                     f'base = "{m["key"]}"',
-                     f"enable_thinking = {str(thinking).lower()}", "", "[sampling]"]
-            for k, v in sampling.items():
-                lines.append(f"{k} = {v}")
-            f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            f.write_text(content, encoding="utf-8")
             self._status(f"💾 {f.name} created")
         else:
             f = p["file"]
-            for k, v in sampling.items():
-                update_allm_param(f, "sampling", k, v)
-            update_allm_param(f, None, "enable_thinking", str(thinking).lower())
+            f.write_text(content, encoding="utf-8")
             if new_name != p["name"]:
-                update_allm_param(f, None, "name", f'"{new_name}"')
                 new_file = f.with_name(new_name.replace(":", "-").replace("/", "-") + ".allm")
                 if not new_file.exists():
                     f.rename(new_file)
+                    f = new_file
                 self._status(f"💾 renamed: {p['name']} → {new_name}")
             else:
                 self._status(f"💾 {f.name} saved")
         await self._after_save()
+
+    @staticmethod
+    def _render_profile_allm(name: str, base: str, thinking: bool, sampling: dict) -> str:
+        lines = [f"# Profile: {name}", f"@name {name}", f"@base {base}"]
+        if not thinking:
+            lines.append("@thinking-off")
+        lines.append("")
+        for k, v in sampling.items():
+            lines.append(f"{k.replace('_', '-')} {v}")
+        return "\n".join(lines) + "\n"
 
     async def _after_save(self) -> None:
         self.profiles = scan_profiles()
