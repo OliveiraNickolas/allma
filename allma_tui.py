@@ -19,6 +19,8 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -33,7 +35,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import (
-    Button, Collapsible, DataTable, DirectoryTree, Input, Select, Static,
+    Button, Collapsible, DataTable, DirectoryTree, Input, Log, Select, Static,
     TabbedContent, TabPane,
 )
 
@@ -1185,6 +1187,13 @@ Toggle.line.-on {
     height: 1; background: #c8b898; color: #007878; padding: 0 1;
 }
 #models-footer:hover { background: #b8a888; text-style: bold; }
+/* backend-log tail at the bottom of the middle column */
+#log-collapsible { height: auto; background: #c8b898; }
+#log-collapsible CollapsibleTitle { color: #007878; text-style: bold; }
+#backend-log {
+    height: 12; background: #1a1408; color: #cfc7ac;
+    scrollbar-color: #007878; scrollbar-background: #2a2418; scrollbar-size: 1 1;
+}
 
 /* ── SETUP ── */
 TabbedContent { height: 1fr; }
@@ -1325,6 +1334,9 @@ class AllmaTUI(App):
         # download state
         self._dl_repo: str | None = None
         self._dl_files: dict | None = None
+        # backend-log tail state
+        self._tail_stop = threading.Event()
+        self._tail_key: str | None = None
         self._dl_busy = False
         self._dl_dest: Path | None = None
         self._dl_expected = 0
@@ -1353,6 +1365,9 @@ class AllmaTUI(App):
                 with Vertical(id="col-mid", classes="panel"):
                     yield DataTable(id="models-table", cursor_type="row", zebra_stripes=True)
                     yield Static("", id="models-footer")
+                    with Collapsible(title="▸ backend logs", collapsed=True,
+                                     id="log-collapsible"):
+                        yield Log(id="backend-log", highlight=False, max_lines=2000)
                 with Vertical(id="col-right", classes="panel"):
                     with TabbedContent(id="setup-tabs"):
                         with TabPane("LOAD", id="tab-load"):
@@ -1495,6 +1510,75 @@ class AllmaTUI(App):
         if model and model is not self.selected:
             self.selected = model
             await self._show_model(model)
+            self._maybe_retail()
+
+    # ── backend log tail (allma backend logs -f, inside the middle column) ──
+    def on_collapsible_toggled(self, event: Collapsible.Toggled) -> None:
+        if (event.collapsible.id or "") != "log-collapsible":
+            return
+        title = self.query_one("#log-collapsible", Collapsible)
+        if event.collapsible.collapsed:
+            title.title = "▸ backend logs"
+            self._stop_tail()
+        else:
+            title.title = "▾ backend logs"
+            self._start_tail()
+
+    def _maybe_retail(self) -> None:
+        """Selection changed — if the log panel is open, follow the new one."""
+        try:
+            col = self.query_one("#log-collapsible", Collapsible)
+        except Exception:
+            return
+        if not col.collapsed:
+            self._start_tail()
+
+    def _stop_tail(self) -> None:
+        self._tail_stop.set()
+
+    def _start_tail(self) -> None:
+        self._stop_tail()
+        key = self.selected["key"] if self.selected else None
+        log = self.query_one("#backend-log", Log)
+        log.clear()
+        if not key:
+            log.write_line("Select a model to follow its backend log.")
+            return
+        logfile = BASE_DIR / "logs" / f"{key}.log"
+        log.write_line(f"── tail -f logs/{key}.log ──")
+        self._tail_stop = threading.Event()
+        self._tail_key = key
+        self._tail_worker(logfile, self._tail_stop)
+
+    @work(thread=True, group="tail", exclusive=True)
+    def _tail_worker(self, logfile: Path, stop: threading.Event) -> None:
+        log = self.query_one("#backend-log", Log)
+        # wait for the file to appear (backend may still be starting)
+        for _ in range(600):
+            if stop.is_set():
+                return
+            if logfile.exists():
+                break
+            time.sleep(0.5)
+        else:
+            self.app.call_from_thread(log.write_line, "(no log file yet)")
+            return
+        try:
+            with open(logfile, "r", errors="replace") as f:
+                # seed with the last ~200 lines, then follow
+                tail = f.readlines()[-200:]
+                if tail:
+                    self.app.call_from_thread(
+                        log.write_lines, [ln.rstrip("\n") for ln in tail])
+                f.seek(0, os.SEEK_END)
+                while not stop.is_set():
+                    line = f.readline()
+                    if line:
+                        self.app.call_from_thread(log.write_line, line.rstrip("\n"))
+                    else:
+                        time.sleep(0.3)
+        except Exception as e:
+            self.app.call_from_thread(log.write_line, f"(tail error: {e})")
 
     # footer click → change models folder
     def on_click(self, event: events.Click) -> None:
