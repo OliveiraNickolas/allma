@@ -182,6 +182,22 @@ VLLM_EXTRA_CATALOG = [
      "Split long prompts into chunks interleaved with generation. Better latency under load."),
     ("--enforce-eager",            [],
      "Disable CUDA graphs. Less VRAM and faster startup, slightly slower generation."),
+    ("--max-cudagraph-capture-size", ["8"],
+     "Cap CUDA-graph capture batch size. Small values (8) cut graph VRAM a lot; needs eager OFF."),
+    ("--quantization",             ["fp8"],
+     "Quantize a full-precision model on load (fp8, awq, gptq…). Halves weight VRAM on BF16 models."),
+    ("--mm-processor-kwargs",      ['{"max_pixels": 2097152, "min_pixels": 3136}'],
+     "Vision preprocessing. max_pixels caps image resolution (2097152 ≈ 1448²) so images don't blow the context."),
+    ("--limit-mm-per-prompt",      ['{"image": 5, "video": 1}'],
+     "Cap how many images/videos a single prompt may carry (JSON)."),
+    ("--mm-encoder-tp-mode",       ["data"],
+     "How the vision encoder is sharded under tensor parallel. 'data' is usually fastest."),
+    ("--speculative-config",       ['{"method": "mtp", "num_speculative_tokens": 1}'],
+     "Speculative decoding config (JSON). MTP models: {\"method\":\"mtp\",\"num_speculative_tokens\":1}."),
+    ("--generation-config",        ["vllm"],
+     "Where default sampling comes from: 'vllm' ignores the model's generation_config.json."),
+    ("--async-scheduling",         [],
+     "Overlap scheduling with GPU work. Lower latency for streaming; slight complexity cost."),
     ("--trust-remote-code",        [],
      "Allow custom Python code from the model repository to run (required by some models)."),
     ("--disable-log-requests",     [],
@@ -206,6 +222,8 @@ FLAG_CHOICES = {
     "--rope-scaling":   ["none", "linear", "yarn"],
     "--split-mode":     ["none", "layer", "row"],
     "--kv-cache-dtype": ["auto", "fp8", "fp8_e4m3", "fp8_e5m2"],
+    "--quantization":   ["fp8", "awq", "gptq", "bitsandbytes"],
+    "--mm-encoder-tp-mode": ["data", "weights"],
 }
 
 # extra_args flags that duplicate base-config fields: absorbed into the sliders
@@ -1548,7 +1566,7 @@ class AllmaTUI(App):
                 classes="mmproj-row",
             ))
         # extra args — checklist with editable values and per-flag (i) help
-        widgets.append(Static(f"[{ACC_ORANGE}]▮[/] Extra args", classes="section-hdr"))
+        widgets.append(Static(f"[{ACC_ORANGE}]▮[/] Features & tuning", classes="section-hdr"))
         for flag, defaults, desc in catalog:
             widgets.append(FlagRow(flag, defaults, desc,
                                    on=flag in enabled, vals=enabled.get(flag)))
