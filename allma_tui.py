@@ -226,6 +226,29 @@ FLAG_CHOICES = {
     "--mm-encoder-tp-mode": ["data", "weights"],
 }
 
+# Human-readable dropdowns for flags whose real value is fiddly JSON. Each entry
+# is (label shown to the user, actual value string). The FlagRow renders the
+# labels in a Select and maps back to the value on save — the user never types
+# JSON. First entry is the default when the flag is switched on.
+FLAG_PRESETS = {
+    "--mm-processor-kwargs": [
+        ("images: balanced (≈1448px)", '{"max_pixels": 2097152, "min_pixels": 3136}'),
+        ("images: low VRAM (≈1024px)", '{"max_pixels": 1048576, "min_pixels": 3136}'),
+        ("images: high detail (≈2048px)", '{"max_pixels": 4194304, "min_pixels": 3136}'),
+        ("images: max detail (≈2560px)", '{"max_pixels": 6553600, "min_pixels": 3136}'),
+    ],
+    "--limit-mm-per-prompt": [
+        ("up to 5 images, 1 video", '{"image": 5, "video": 1}'),
+        ("up to 3 images, no video", '{"image": 3, "video": 0}'),
+        ("up to 10 images, 1 video", '{"image": 10, "video": 1}'),
+        ("1 image only", '{"image": 1, "video": 0}'),
+    ],
+    "--speculative-config": [
+        ("MTP: 1 draft token (safe)", '{"method": "mtp", "num_speculative_tokens": 1}'),
+        ("MTP: 2 draft tokens", '{"method": "mtp", "num_speculative_tokens": 2}'),
+    ],
+}
+
 # extra_args flags that duplicate base-config fields: absorbed into the sliders
 # (and written back as proper .allm fields on save)
 LLAMA_FIELD_ALIASES = {
@@ -644,8 +667,18 @@ class FlagRow(Horizontal):
     def compose(self) -> ComposeResult:
         yield Toggle(self.flag.lstrip("-"), value=self._on)
         if self._has_val:
+            presets = FLAG_PRESETS.get(self.flag)
             choices = FLAG_CHOICES.get(self.flag)
-            if choices:
+            if presets:
+                # Human labels in the dropdown; the raw value is carried on the
+                # option value so we can map back on save. Keep an unknown
+                # current value visible as its own entry.
+                cur = " ".join(self._vals) if self._vals else presets[0][1]
+                opts = [(lbl, val) for lbl, val in presets]
+                if cur not in {v for _l, v in opts}:
+                    opts = [(f"custom: {cur[:24]}…", cur)] + opts
+                yield Select(opts, value=cur, allow_blank=False, classes="flag-sel")
+            elif choices:
                 current = self._vals[0] if self._vals else (self.defaults or [choices[0]])[0]
                 opts = list(dict.fromkeys([current] + choices))  # keep unknown current
                 yield Select([(c, c) for c in opts], value=current,
@@ -666,7 +699,10 @@ class FlagRow(Horizontal):
             return []
         try:
             sel = self.query_one(".flag-sel", Select)
-            return [str(sel.value)]
+            val = str(sel.value)
+            # preset dropdown values may be a whole JSON blob (one token with
+            # spaces) — keep it as a single arg; plain choices are one word.
+            return [val] if self.flag in FLAG_PRESETS else [val]
         except Exception:
             pass
         try:
@@ -680,15 +716,19 @@ class FlagRow(Horizontal):
         t.value = on
         t._sync()
         if vals and self._has_val:
+            want = " ".join(vals)
             try:
                 sel = self.query_one(".flag-sel", Select)
-                if vals[0] in {v for _l, v in sel._options}:
+                known = {v for _l, v in sel._options}
+                if want in known:
+                    sel.value = want
+                elif vals[0] in known:
                     sel.value = vals[0]
                 return
             except Exception:
                 pass
             try:
-                self.query_one(".flag-val", Input).value = " ".join(vals)
+                self.query_one(".flag-val", Input).value = want
             except Exception:
                 pass
 
