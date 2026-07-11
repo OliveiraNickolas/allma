@@ -1517,6 +1517,12 @@ class AllmaTUI(App):
         # absorbed into the sliders instead of sitting in "Other (advanced)"
         catalog = LLAMA_EXTRA_CATALOG if m["backend"] == "llama.cpp" else VLLM_EXTRA_CATALOG
         enabled, leftover = parse_extra_args(cfg.get("extra_args", []), catalog)
+        # Some boolean flags are "promoted" by the parser into top-level cfg
+        # fields (e.g. `enforce-eager` → cfg["enforce_eager"]=True) instead of
+        # living in extra_args. They'd otherwise be invisible in the flag
+        # checklist — surface them as enabled so the toggle reflects reality.
+        if str(cfg.get("enforce_eager", "")).lower() in ("true", "1", "yes"):
+            enabled.setdefault("--enforce-eager", [])
         absorbed: dict[str, str] = {}
         if m["backend"] == "llama.cpp":
             absorbed, leftover = absorb_field_aliases(leftover, LLAMA_FIELD_ALIASES)
