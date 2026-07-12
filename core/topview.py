@@ -126,9 +126,10 @@ def _llama_stats(port: int) -> Optional[dict]:
     metrics = _http_text(f"http://127.0.0.1:{port}/metrics")
     if not isinstance(slots, list) and metrics is None:
         return None
-    out = {"busy": 0, "ctx_used": 0, "n_ctx": 0,
+    out = {"busy": 0, "n_slots": 0, "ctx_used": 0, "n_ctx": 0,
            "gen_tps": None, "prompt_tps": None, "pred_tokens": None}
     if isinstance(slots, list):
+        out["n_slots"] = len(slots)
         for s in slots:
             if not isinstance(s, dict):
                 continue
@@ -195,30 +196,31 @@ class TopView:
     def __init__(self):
         # per-model tok/s state: name -> (last_counter, last_ts, rate)
         self._rate: dict = {}
+        self._prate: dict = {}         # same, for prompt/prefill tokens
         self._maxctx: dict = {}
         self._last_active: dict = {}   # name -> last rate seen while generating
 
-    def _rate_text(self, name: str, rate: float, active: bool) -> Text:
+    def _speed_text(self, name: str, rate: float, active: bool) -> Text:
         """Live rate while generating; the last active rate (dimmed) when idle."""
         if active and rate > 0.05:
             self._last_active[name] = rate
-            return Text(f"{rate:6.1f} tok/s", style=f"bold {C_ACCENT} on {C_BG}")
+            return Text(f"{rate:.1f} tok/s", style=f"bold {C_ACCENT} on {C_BG}")
         last = self._last_active.get(name)
         if last:
-            return Text(f"idle · last {last:.1f} tok/s", style=f"{C_DIM} on {C_BG}")
+            return Text(f"idle · last {last:.0f}", style=f"{C_DIM} on {C_BG}")
         return Text("idle", style=f"{C_DIM} on {C_BG}")
 
-    def _model_rate(self, name: str, gen_tokens: float) -> float:
+    def _delta_rate(self, store: dict, name: str, counter: float) -> float:
         now = time.time()
-        last = self._rate.get(name)
+        last = store.get(name)
         rate = 0.0
         if last:
             dt = now - last[1]
-            if dt > 0 and gen_tokens >= last[0]:
-                inst = (gen_tokens - last[0]) / dt
+            if dt > 0 and counter >= last[0]:
+                inst = (counter - last[0]) / dt
                 # light smoothing so the number doesn't jitter
                 rate = inst if last[2] == 0 else (0.6 * inst + 0.4 * last[2])
-        self._rate[name] = (gen_tokens, now, rate)
+        store[name] = (counter, now, rate)
         return rate
 
     # ── card builders ─────────────────────────────────────────────────────
@@ -245,71 +247,82 @@ class TopView:
         foot.append(f"  {g['power']:.0f}W", style=f"{C_DIM} on {C_BG}")
         if g["fan"]:
             foot.append(f"  ~{g['fan']:.0f}%", style=f"{C_DIM} on {C_BG}")
-        if g["throttled"]:
-            foot.append("  ⚠ throttle", style=f"bold {C_BAD} on {C_BG}")
         grid.add_row(foot)
         title = Text.assemble((f" GPU {g['index']} ", f"bold {C_ACCENT}"),
                               (short, C_DIM))
+        if g["throttled"]:
+            title.append("  ⚠ throttle", style=f"bold {C_BAD}")
         return Panel(grid, title=title, title_align="left", box=_box.ROUNDED,
                      border_style=C_DIM, style=_S, padding=(0, 1), width=34)
 
-    def _model_card(self, s: dict) -> Panel:
-        name, port, backend = s["name"], s["port"], s.get("backend", "?")
-        grid = Table.grid(padding=(0, 0))
-        grid.add_column()
+    def _ctx_bar(self, frac: float, value: str) -> Text:
+        """A bar + label, for the fixed 'context' stat row."""
+        t = Text(style=_S)
+        t.append_text(_bar(frac, width=10))
+        t.append(f" {value}", style=f"{C_FG} on {C_BG}")
+        return t
 
-        rate_line = Text("idle", style=f"{C_DIM} on {C_BG}")   # the big number
-        detail = Table.grid(padding=(0, 0))
-        detail.add_column()
+    def _model_card(self, s: dict) -> Panel:
+        """A fixed 'stat card' — the same four labelled rows on every card,
+        so nothing shifts around as values come and go (Pokémon-card style)."""
+        name, port, backend = s["name"], s["port"], s.get("backend", "?")
+        _dim = f"{C_DIM} on {C_BG}"
+        _val = f"{C_FG} on {C_BG}"
+
+        # defaults — every row is always present, '—' means "not reporting"
+        speed = Text("idle", style=_dim)
+        prefill = Text("—", style=_dim)
+        context = Text("—", style=_dim)
+        load = Text("—", style=_dim)
+        note = None
 
         if backend == "vllm":
             m = _vllm_stats(port)
             if m:
-                rate = self._model_rate(name, m["gen_tokens"])
-                rate_line = self._rate_text(name, rate, m["running"] > 0)
-                if name not in self._maxctx:
-                    self._maxctx[name] = _max_ctx_of(port)
-                maxctx = self._maxctx.get(name) or 0
-                detail.add_row(self._barrow("kv", m["kv_perc"],
-                               f"{m['kv_perc'] * 100:.0f}%", width=12))
-                foot = Text(style=_S)
-                foot.append(f"reqs {m['running']:.0f}▶ {m['waiting']:.0f}⏸",
-                            style=f"{C_DIM} on {C_BG}")
-                foot.append(f"   gen {_kfmt(m['gen_tokens'])}", style=f"{C_DIM} on {C_BG}")
-                if maxctx:
-                    foot.append(f"   ctx≤{_kfmt(maxctx)}", style=f"{C_DIM} on {C_BG}")
-                detail.add_row(foot)
+                gen = self._delta_rate(self._rate, name, m["gen_tokens"])
+                speed = self._speed_text(name, gen, m["running"] > 0)
+                pre = self._delta_rate(self._prate, name, m["prompt_tokens"])
+                if pre > 1:
+                    prefill = Text(f"{pre:.0f} tok/s", style=_val)
+                context = self._ctx_bar(m["kv_perc"], f"{m['kv_perc'] * 100:.0f}% kv")
+                load = Text(f"{m['running']:.0f} active · {m['waiting']:.0f} queued",
+                            style=_val)
             else:
-                detail.add_row(Text("metrics unavailable", style=f"{C_DIM} on {C_BG}"))
+                note = "metrics unavailable"
         else:  # llama.cpp
             m = _llama_stats(port)
             if m:
                 if m["gen_tps"] is not None:
-                    rate_line = self._rate_text(name, m["gen_tps"], m["busy"] > 0)
-                if m["n_ctx"]:
-                    detail.add_row(self._barrow(
-                        "ctx", m["ctx_used"] / m["n_ctx"],
-                        f"{_kfmt(m['ctx_used'])}/{_kfmt(m['n_ctx'])}", width=12))
-                foot = Text(style=_S)
+                    speed = self._speed_text(name, m["gen_tps"], m["busy"] > 0)
                 if m["prompt_tps"]:
-                    foot.append(f"prefill {m['prompt_tps']:.0f} t/s",
-                                style=f"{C_DIM} on {C_BG}")
-                foot.append(f"   slots {m['busy']}▶", style=f"{C_DIM} on {C_BG}")
-                detail.add_row(foot)
+                    prefill = Text(f"{m['prompt_tps']:.0f} tok/s", style=_val)
+                if m["n_ctx"]:
+                    context = self._ctx_bar(
+                        m["ctx_used"] / m["n_ctx"],
+                        f"{_kfmt(m['ctx_used'])}/{_kfmt(m['n_ctx'])}")
+                idle = max(0, m["n_slots"] - m["busy"])
+                load = Text(f"{m['busy']} active · {idle} idle", style=_val)
                 if not m["n_ctx"] and m["gen_tps"] is None:
-                    detail.add_row(Text("'allma reload' to enable metrics",
-                                        style=f"{C_DIM} on {C_BG}"))
+                    note = "run 'allma reload' for metrics"
             else:
-                detail.add_row(Text("up — 'allma reload' to enable metrics",
-                                    style=f"{C_DIM} on {C_BG}"))
+                note = "run 'allma reload' for metrics"
 
-        grid.add_row(rate_line)
-        grid.add_row(detail)
-        short = name if len(name) <= 22 else name[:21] + "…"
-        title = Text.assemble(("● ", C_GOOD), (short, f"bold {C_FG}"),
-                              (f"  {backend}·gpu{s.get('gpu', '?')}", C_DIM))
-        return Panel(grid, title=title, title_align="left", box=_box.ROUNDED,
-                     border_style=C_DIM, style=_S, padding=(0, 1), width=44)
+        body = Table.grid(padding=(0, 1))
+        body.add_column(justify="left", style=_dim, no_wrap=True)  # labels
+        body.add_column(justify="left")                            # values
+        for label, val in (("speed", speed), ("prefill", prefill),
+                           ("context", context), ("requests", load)):
+            body.add_row(label, val)
+        if note:
+            body.add_row("", Text(note, style=_dim))
+
+        short = name if len(name) <= 24 else name[:23] + "…"
+        title = Text.assemble(("● ", C_GOOD), (short, f"bold {C_FG}"))
+        sub = Text(f" {backend} · gpu {s.get('gpu', '?')} ", style=_dim)
+        return Panel(body, title=title, title_align="left",
+                     subtitle=sub, subtitle_align="right",
+                     box=_box.ROUNDED, border_style=C_DIM, style=_S,
+                     padding=(0, 1), width=40)
 
     def snapshot(self) -> Panel:
         gpus = _gpus()
