@@ -318,7 +318,20 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
     # that single GPU, vLLM on TP contiguous GPUs starting there — so the VRAM
     # check must look at those GPUs' free memory, not the most-free GPU elsewhere
     # that the model can't even use.
-    if gpu_id is not None:
+    # Explicit multi-GPU for llama.cpp: `@gpus 0,1` spreads the model (weights
+    # AND KV cache) across those GPUs — the way to run a huge context that a
+    # single card's VRAM can't hold. Distinct from `@gpu N` (single pin).
+    _explicit_gpus = None
+    _g = cfg.get("gpus")
+    if backend == "llama.cpp" and isinstance(_g, list) and len(_g) > 1:
+        try:
+            _explicit_gpus = [int(x) for x in _g]
+        except (TypeError, ValueError):
+            _explicit_gpus = None
+
+    if _explicit_gpus:
+        _target_gpus = _explicit_gpus
+    elif gpu_id is not None:
         _target_gpus = list(range(gpu_id, gpu_id + _cfg_tp_size(cfg))) \
             if backend == "vllm" else [gpu_id]
     else:
@@ -450,12 +463,17 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                 subprocess_env["CUDA_VISIBLE_DEVICES"] = ""
                 logger.info(f"{basename}: CPU-only — GPUs hidden (CUDA_VISIBLE_DEVICES='')")
             else:
-                if not (_pinned or max_free_gb >= NEEDGB):
+                if _explicit_gpus:
+                    # `@gpus 0,1` — user asked for a specific multi-GPU split
+                    # (usually to hold a bigger context than one card can).
+                    server_gpus = _explicit_gpus
+                    logger.info(f"llama.cpp multi-GPU (@gpus): [{','.join(map(str, server_gpus))}]")
+                elif not (_pinned or max_free_gb >= NEEDGB):
                     # Doesn't fit on one GPU and isn't pinned — spread across all GPUs,
                     # primary first so it becomes CUDA0 (larger shard + mmproj land there)
                     all_gpu_ids = [g["index"] for g in _all_gpus_info]
                     server_gpus = [current_gpu_id] + [g for g in all_gpu_ids if g != current_gpu_id]
-                    logger.info(f"llama.cpp multi-GPU: [{','.join(map(str, server_gpus))}]")
+                    logger.info(f"llama.cpp multi-GPU (auto): [{','.join(map(str, server_gpus))}]")
                 subprocess_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in server_gpus)
 
         proc = _sp.Popen(

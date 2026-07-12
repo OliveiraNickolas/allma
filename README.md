@@ -210,7 +210,7 @@ Bases:
 | `@path <abs-path>` | Model file (GGUF) or model directory (vLLM). Absolute path required. |
 | `@tokenizer <abs-path>` | Override tokenizer path (defaults to `@path`) |
 | `@gpu N` | Pin the model to a single GPU |
-| `@gpus 0,1` | Multi-GPU list (uses the first for pinning today) |
+| `@gpus 0,1` | Spread a llama.cpp model across these GPUs (weights + KV cache) — use it to hold a context bigger than one card's VRAM |
 | `@pin` | Never auto-unload this model, even after `KEEP_ALIVE_SECONDS` idle |
 | `@keep-alive N` | Per-model override of the idle timeout, in seconds |
 
