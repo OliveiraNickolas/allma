@@ -269,8 +269,11 @@ class TopView:
         _dim = f"{C_DIM} on {C_BG}"
         _val = f"{C_FG} on {C_BG}"
 
-        # defaults — every row is always present, '—' means "not reporting"
-        speed = Text("—", style=_dim)
+        # defaults — every row is always present. speed keeps the last rate
+        # we ever measured so a transient metrics timeout doesn't blank it.
+        _seen = self._last_active.get(name)
+        speed = (Text(f"{_seen:.1f} tok/s", style=f"bold {C_ACCENT} on {C_BG}")
+                 if _seen else Text("—", style=_dim))
         prefill = Text("—", style=_dim)
         context = Text("—", style=_dim)
         load = Text("—", style=_dim)
