@@ -1575,22 +1575,33 @@ class AllmaTUI(App):
         self._tail_stop.set()
 
     def _start_tail(self) -> None:
+        try:
+            log = self.query_one("#backend-log", Log)
+        except Exception:
+            return
         self._stop_tail()
-        key = self.selected["key"] if self.selected else None
-        log = self.query_one("#backend-log", Log)
         log.clear()
+        key = self.selected["key"] if self.selected else None
         if not key:
             log.write_line("Select a model to follow its backend log.")
             return
         logfile = BASE_DIR / "logs" / f"{key}.log"
         log.write_line(f"── tail -f logs/{key}.log ──")
-        self._tail_stop = threading.Event()
+        stop = threading.Event()
+        self._tail_stop = stop
         self._tail_key = key
-        self._tail_worker(logfile, self._tail_stop)
+        # Plain daemon thread — Textual thread-workers were swallowing the
+        # exclusive-cancel and never populating the widget.
+        threading.Thread(target=self._tail_run, args=(logfile, stop),
+                         daemon=True).start()
 
-    @work(thread=True, group="tail", exclusive=True)
-    def _tail_worker(self, logfile: Path, stop: threading.Event) -> None:
-        log = self.query_one("#backend-log", Log)
+    def _tail_run(self, logfile: Path, stop: threading.Event) -> None:
+        def emit(*lines):
+            try:
+                log = self.query_one("#backend-log", Log)
+                self.call_from_thread(log.write_lines, list(lines))
+            except Exception:
+                pass
         # wait for the file to appear (backend may still be starting)
         for _ in range(600):
             if stop.is_set():
@@ -1599,24 +1610,22 @@ class AllmaTUI(App):
                 break
             time.sleep(0.5)
         else:
-            self.app.call_from_thread(log.write_line, "(no log file yet)")
+            emit("(no log file yet — is this model loaded?)")
             return
         try:
             with open(logfile, "r", errors="replace") as f:
-                # seed with the last ~200 lines, then follow
                 tail = f.readlines()[-200:]
                 if tail:
-                    self.app.call_from_thread(
-                        log.write_lines, [ln.rstrip("\n") for ln in tail])
+                    emit(*[ln.rstrip("\n") for ln in tail])
                 f.seek(0, os.SEEK_END)
                 while not stop.is_set():
                     line = f.readline()
                     if line:
-                        self.app.call_from_thread(log.write_line, line.rstrip("\n"))
+                        emit(line.rstrip("\n"))
                     else:
                         time.sleep(0.3)
         except Exception as e:
-            self.app.call_from_thread(log.write_line, f"(tail error: {e})")
+            emit(f"(tail error: {e})")
 
     # footer click → change models folder
     def on_click(self, event: events.Click) -> None:
