@@ -57,7 +57,8 @@ def _gpus() -> list[dict]:
         out = subprocess.run(
             ["nvidia-smi",
              "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,"
-             "temperature.gpu,power.draw,power.limit,clocks_throttle_reasons.active",
+             "temperature.gpu,power.draw,power.limit,clocks_throttle_reasons.active,"
+             "clocks.current.sm,clocks.max.sm,fan.speed",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=3).stdout
     except Exception:
@@ -71,6 +72,9 @@ def _gpus() -> list[dict]:
             throttle = int(p[8], 16) if p[8].startswith("0x") else 0
         except ValueError:
             throttle = 0
+        def _f(i, d=0.0):
+            try: return float(p[i])
+            except (ValueError, IndexError): return d
         try:
             rows.append({
                 "index": int(p[0]), "name": p[1],
@@ -78,6 +82,7 @@ def _gpus() -> list[dict]:
                 "total": float(p[4] or 1) / 1024, "temp": float(p[5] or 0),
                 "power": float(p[6] or 0), "plimit": float(p[7] or 1),
                 "throttled": bool(throttle & _THROTTLE_MASK),
+                "clock": _f(9), "clock_max": _f(10, 1), "fan": _f(11),
             })
         except ValueError:
             continue
@@ -89,7 +94,8 @@ def _vllm_stats(port: int) -> Optional[dict]:
     text = _http_text(f"http://127.0.0.1:{port}/metrics")
     if text is None:
         return None
-    out = {"gen_tokens": 0.0, "kv_perc": 0.0, "running": 0.0, "waiting": 0.0}
+    out = {"gen_tokens": 0.0, "prompt_tokens": 0.0, "kv_perc": 0.0,
+           "running": 0.0, "waiting": 0.0}
     for line in text.splitlines():
         if line.startswith("#"):
             continue
@@ -100,6 +106,8 @@ def _vllm_stats(port: int) -> Optional[dict]:
             continue
         if metric.startswith("vllm:generation_tokens_total"):
             out["gen_tokens"] += v
+        elif metric.startswith("vllm:prompt_tokens_total"):
+            out["prompt_tokens"] += v
         elif metric.startswith("vllm:gpu_cache_usage_perc"):
             out["kv_perc"] = max(out["kv_perc"], v)
         elif metric.startswith("vllm:num_requests_running"):
@@ -110,28 +118,35 @@ def _vllm_stats(port: int) -> Optional[dict]:
 
 
 def _llama_stats(port: int) -> Optional[dict]:
-    """llama-server /slots (context per slot) + /metrics (token counters).
-    Both need the server started with --slots/--metrics (allma adds them)."""
+    """llama-server /slots (context) + /metrics. llama.cpp exposes the
+    instantaneous gen/prefill rates directly, so no delta math is needed.
+    Both endpoints need --slots/--metrics (allma adds them)."""
     slots = _http_json(f"http://127.0.0.1:{port}/slots")
     metrics = _http_text(f"http://127.0.0.1:{port}/metrics")
     if not isinstance(slots, list) and metrics is None:
         return None
-    out = {"busy": 0, "ctx_used": 0, "n_ctx": 0, "pred_tokens": None}
+    out = {"busy": 0, "ctx_used": 0, "n_ctx": 0,
+           "gen_tps": None, "prompt_tps": None, "pred_tokens": None}
     if isinstance(slots, list):
         for s in slots:
             if not isinstance(s, dict):
                 continue
             out["n_ctx"] = max(out["n_ctx"], int(s.get("n_ctx") or 0))
-            nt = s.get("next_token")
-            nt = nt if isinstance(nt, dict) else {}
-            past = int(s.get("n_past") or nt.get("n_past", 0)
-                       or s.get("n_ctx_used") or 0)
-            out["ctx_used"] = max(out["ctx_used"], past)
-            if s.get("is_processing") or s.get("state") in (1, "processing"):
+            # no n_past field in modern llama-server; n_prompt_tokens is the
+            # slot's current context fill (prompt + generated so far).
+            used = int(s.get("n_prompt_tokens") or s.get("n_past") or 0)
+            out["ctx_used"] = max(out["ctx_used"], used)
+            if s.get("is_processing"):
                 out["busy"] += 1
     if metrics is not None:
         total = 0.0
         for line in metrics.splitlines():
+            if line.startswith("llamacpp:predicted_tokens_seconds"):
+                try: out["gen_tps"] = float(line.rsplit(" ", 1)[1])
+                except (ValueError, IndexError): pass
+            elif line.startswith("llamacpp:prompt_tokens_seconds"):
+                try: out["prompt_tps"] = float(line.rsplit(" ", 1)[1])
+                except (ValueError, IndexError): pass
             if line.startswith("llamacpp:tokens_predicted_total"):
                 try:
                     total += float(line.rsplit(" ", 1)[1])
@@ -163,6 +178,16 @@ def _bar(frac: float, width: int = 10, color: Optional[str] = None) -> Text:
 
 def _temp_style(temp: float) -> str:
     return C_GOOD if temp < 70 else (C_WARN if temp < 80 else f"bold {C_BAD}")
+
+
+def _kfmt(n) -> str:
+    """Compact token counts: 21491 → 21.5k, 1250000 → 1.2M."""
+    n = float(n or 0)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return f"{n:.0f}"
 
 
 class TopView:
@@ -216,8 +241,13 @@ class TopView:
             line.append("vram ", style=f"{C_DIM} on {C_BG}")
             line.append_text(_bar(g["used"] / g["total"], width=8))
             line.append(f" {g['used']:4.1f}/{g['total']:.0f}G ", style=f"{C_FG} on {C_BG}")
+            line.append(f"{g['clock']:4.0f}/{g['clock_max']:.0f}MHz ",
+                        style=f"{C_DIM} on {C_BG}")
             line.append(f"{g['temp']:3.0f}°C ", style=f"{_temp_style(g['temp'])} on {C_BG}")
-            line.append(f"{g['power']:3.0f}W", style=f"{C_DIM} on {C_BG}")
+            line.append(f"{g['power']:3.0f}/{g['plimit']:.0f}W",
+                        style=f"{C_DIM} on {C_BG}")
+            if g["fan"]:
+                line.append(f" fan {g['fan']:.0f}%", style=f"{C_DIM} on {C_BG}")
             if g["throttled"]:
                 line.append("  ⚠ throttle", style=f"bold {C_BAD} on {C_BG}")
             body.add_row(line)
@@ -246,36 +276,41 @@ class TopView:
                     if name not in self._maxctx:
                         self._maxctx[name] = _max_ctx_of(port)
                     maxctx = self._maxctx.get(name) or 0
-                    detail.append("   kv-cache ", style=f"{C_DIM} on {C_BG}")
+                    detail.append("   kv ", style=f"{C_DIM} on {C_BG}")
                     detail.append_text(_bar(m["kv_perc"]))
                     detail.append(f" {m['kv_perc'] * 100:4.1f}%", style=f"{C_FG} on {C_BG}")
-                    detail.append(f"   reqs {m['running']:.0f} run · "
-                                  f"{m['waiting']:.0f} wait", style=f"{C_DIM} on {C_BG}")
+                    detail.append(f"   reqs {m['running']:.0f}▶ {m['waiting']:.0f}⏸",
+                                  style=f"{C_DIM} on {C_BG}")
+                    detail.append(f"   gen {_kfmt(m['gen_tokens'])}",
+                                  style=f"{C_DIM} on {C_BG}")
                     if maxctx:
-                        detail.append(f"   ctx max {maxctx}", style=f"{C_DIM} on {C_BG}")
+                        detail.append(f"   ctx≤{_kfmt(maxctx)}", style=f"{C_DIM} on {C_BG}")
                 else:
                     detail.append("   metrics unavailable", style=f"{C_DIM} on {C_BG}")
             else:  # llama.cpp
                 m = _llama_stats(port)
                 if m:
-                    if m["pred_tokens"] is not None:
-                        rate = self._model_rate(name, m["pred_tokens"])
+                    # llama.cpp gives the instantaneous rate directly
+                    if m["gen_tps"] is not None:
+                        active = m["busy"] > 0
                         head.append("   ")
-                        head.append_text(self._rate_text(name, rate, m["busy"] > 0))
+                        head.append_text(self._rate_text(name, m["gen_tps"], active))
                     if m["n_ctx"]:
                         frac = m["ctx_used"] / m["n_ctx"]
                         detail.append("   ctx ", style=f"{C_DIM} on {C_BG}")
                         detail.append_text(_bar(frac))
-                        detail.append(f" {m['ctx_used']}/{m['n_ctx']}",
+                        detail.append(f" {_kfmt(m['ctx_used'])}/{_kfmt(m['n_ctx'])}",
                                       style=f"{C_FG} on {C_BG}")
-                        detail.append(f"   slots busy {m['busy']}",
+                    if m["prompt_tps"]:
+                        detail.append(f"   prefill {m['prompt_tps']:.0f} t/s",
                                       style=f"{C_DIM} on {C_BG}")
-                    else:
-                        detail.append("   (/slots off — 'allma reload' this model "
-                                      "to enable)", style=f"{C_DIM} on {C_BG}")
+                    detail.append(f"   slots {m['busy']}▶", style=f"{C_DIM} on {C_BG}")
+                    if not m["n_ctx"] and m["gen_tps"] is None:
+                        detail.append("   ('allma reload' to enable /slots + /metrics)",
+                                      style=f"{C_DIM} on {C_BG}")
                 else:
-                    detail.append("   up (no /slots or /metrics — 'allma reload' "
-                                  "this model to enable)", style=f"{C_DIM} on {C_BG}")
+                    detail.append("   up ('allma reload' to enable metrics)",
+                                  style=f"{C_DIM} on {C_BG}")
             body.add_row(head)
             body.add_row(detail)
 
