@@ -1402,10 +1402,10 @@ class AllmaTUI(App):
                             yield Button("⇣ Fetch", id="btn-dl")
                 with Vertical(id="col-mid", classes="panel"):
                     yield DataTable(id="models-table", cursor_type="row", zebra_stripes=True)
-                    yield Static("", id="models-footer")
                     with Collapsible(title="▸ backend logs", collapsed=True,
                                      id="log-collapsible"):
                         yield Log(id="backend-log", highlight=False, max_lines=2000)
+                    yield Static("", id="models-footer")
                 with Vertical(id="col-right", classes="panel"):
                     with TabbedContent(id="setup-tabs"):
                         with TabPane("LOAD", id="tab-load"):
