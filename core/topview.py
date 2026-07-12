@@ -15,6 +15,7 @@ import urllib.request
 from typing import Optional
 
 from rich import box as _box
+from rich.columns import Columns
 from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
@@ -220,103 +221,117 @@ class TopView:
         self._rate[name] = (gen_tokens, now, rate)
         return rate
 
+    # ── card builders ─────────────────────────────────────────────────────
+    def _barrow(self, label: str, frac: float, value: str,
+                width: int = 14, color: Optional[str] = None) -> Text:
+        """'label  ██████░░░  value' — one aligned bar row inside a card."""
+        t = Text(style=_S)
+        t.append(f"{label:<5}", style=f"{C_DIM} on {C_BG}")
+        t.append_text(_bar(frac, width=width, color=color))
+        t.append(f" {value}", style=f"{C_FG} on {C_BG}")
+        return t
+
+    def _gpu_card(self, g: dict) -> Panel:
+        short = (g["name"].replace("NVIDIA GeForce ", "").replace("NVIDIA ", ""))[:10]
+        grid = Table.grid(padding=(0, 0))
+        grid.add_column()
+        grid.add_row(self._barrow("util", g["util"] / 100, f"{g['util']:3.0f}%"))
+        grid.add_row(self._barrow("vram", g["used"] / g["total"],
+                                  f"{g['used']:.1f}/{g['total']:.0f}G"))
+        # footer: temp (colored) · clock · power · fan
+        foot = Text(style=_S)
+        foot.append(f"{g['temp']:.0f}°C", style=f"bold {_temp_style(g['temp'])} on {C_BG}")
+        foot.append(f"  {g['clock']:.0f}MHz", style=f"{C_DIM} on {C_BG}")
+        foot.append(f"  {g['power']:.0f}W", style=f"{C_DIM} on {C_BG}")
+        if g["fan"]:
+            foot.append(f"  ~{g['fan']:.0f}%", style=f"{C_DIM} on {C_BG}")
+        if g["throttled"]:
+            foot.append("  ⚠ throttle", style=f"bold {C_BAD} on {C_BG}")
+        grid.add_row(foot)
+        title = Text.assemble((f" GPU {g['index']} ", f"bold {C_ACCENT}"),
+                              (short, C_DIM))
+        return Panel(grid, title=title, title_align="left", box=_box.ROUNDED,
+                     border_style=C_DIM, style=_S, padding=(0, 1), width=34)
+
+    def _model_card(self, s: dict) -> Panel:
+        name, port, backend = s["name"], s["port"], s.get("backend", "?")
+        grid = Table.grid(padding=(0, 0))
+        grid.add_column()
+
+        rate_line = Text("idle", style=f"{C_DIM} on {C_BG}")   # the big number
+        detail = Table.grid(padding=(0, 0))
+        detail.add_column()
+
+        if backend == "vllm":
+            m = _vllm_stats(port)
+            if m:
+                rate = self._model_rate(name, m["gen_tokens"])
+                rate_line = self._rate_text(name, rate, m["running"] > 0)
+                if name not in self._maxctx:
+                    self._maxctx[name] = _max_ctx_of(port)
+                maxctx = self._maxctx.get(name) or 0
+                detail.add_row(self._barrow("kv", m["kv_perc"],
+                               f"{m['kv_perc'] * 100:.0f}%", width=12))
+                foot = Text(style=_S)
+                foot.append(f"reqs {m['running']:.0f}▶ {m['waiting']:.0f}⏸",
+                            style=f"{C_DIM} on {C_BG}")
+                foot.append(f"   gen {_kfmt(m['gen_tokens'])}", style=f"{C_DIM} on {C_BG}")
+                if maxctx:
+                    foot.append(f"   ctx≤{_kfmt(maxctx)}", style=f"{C_DIM} on {C_BG}")
+                detail.add_row(foot)
+            else:
+                detail.add_row(Text("metrics unavailable", style=f"{C_DIM} on {C_BG}"))
+        else:  # llama.cpp
+            m = _llama_stats(port)
+            if m:
+                if m["gen_tps"] is not None:
+                    rate_line = self._rate_text(name, m["gen_tps"], m["busy"] > 0)
+                if m["n_ctx"]:
+                    detail.add_row(self._barrow(
+                        "ctx", m["ctx_used"] / m["n_ctx"],
+                        f"{_kfmt(m['ctx_used'])}/{_kfmt(m['n_ctx'])}", width=12))
+                foot = Text(style=_S)
+                if m["prompt_tps"]:
+                    foot.append(f"prefill {m['prompt_tps']:.0f} t/s",
+                                style=f"{C_DIM} on {C_BG}")
+                foot.append(f"   slots {m['busy']}▶", style=f"{C_DIM} on {C_BG}")
+                detail.add_row(foot)
+                if not m["n_ctx"] and m["gen_tps"] is None:
+                    detail.add_row(Text("'allma reload' to enable metrics",
+                                        style=f"{C_DIM} on {C_BG}"))
+            else:
+                detail.add_row(Text("up — 'allma reload' to enable metrics",
+                                    style=f"{C_DIM} on {C_BG}"))
+
+        grid.add_row(rate_line)
+        grid.add_row(detail)
+        short = name if len(name) <= 22 else name[:21] + "…"
+        title = Text.assemble(("● ", C_GOOD), (short, f"bold {C_FG}"),
+                              (f"  {backend}·gpu{s.get('gpu', '?')}", C_DIM))
+        return Panel(grid, title=title, title_align="left", box=_box.ROUNDED,
+                     border_style=C_DIM, style=_S, padding=(0, 1), width=44)
+
     def snapshot(self) -> Panel:
         gpus = _gpus()
         ps = _http_json(f"{ALLMA_URL}/v1/ps", timeout=1.5) or {}
         servers = [s for s in ps.get("servers", []) if s.get("alive")]
 
-        body = Table.grid(expand=True, padding=(0, 1))
-        body.add_column()
-
-        # ── GPU lines ────────────────────────────────────────────────────
-        for g in gpus:
-            line = Text(style=_S)
-            short = (g["name"].replace("NVIDIA GeForce ", "")
-                     .replace("NVIDIA ", ""))[:8]
-            line.append(f" GPU{g['index']} ", style=f"bold {C_ACCENT} on {C_BG}")
-            line.append(f"{short:<8} ", style=f"{C_DIM} on {C_BG}")
-            line.append("util ", style=f"{C_DIM} on {C_BG}")
-            line.append_text(_bar(g["util"] / 100, width=8))
-            line.append(f" {g['util']:3.0f}% ", style=f"{C_FG} on {C_BG}")
-            line.append("vram ", style=f"{C_DIM} on {C_BG}")
-            line.append_text(_bar(g["used"] / g["total"], width=8))
-            line.append(f" {g['used']:4.1f}/{g['total']:.0f}G ", style=f"{C_FG} on {C_BG}")
-            line.append(f"{g['clock']:4.0f}/{g['clock_max']:.0f}MHz ",
-                        style=f"{C_DIM} on {C_BG}")
-            line.append(f"{g['temp']:3.0f}°C ", style=f"{_temp_style(g['temp'])} on {C_BG}")
-            line.append(f"{g['power']:3.0f}/{g['plimit']:.0f}W",
-                        style=f"{C_DIM} on {C_BG}")
-            if g["fan"]:
-                line.append(f" fan {g['fan']:.0f}%", style=f"{C_DIM} on {C_BG}")
-            if g["throttled"]:
-                line.append("  ⚠ throttle", style=f"bold {C_BAD} on {C_BG}")
-            body.add_row(line)
-        if not gpus:
-            body.add_row(Text(" no NVIDIA GPU detected", style=f"{C_WARN} on {C_BG}"))
-
-        body.add_row(Text(""))
-
-        # ── model lines ──────────────────────────────────────────────────
-        if not servers:
-            body.add_row(Text(" no models loaded", style=f"{C_DIM} on {C_BG}"))
-        for s in servers:
-            name, port, backend = s["name"], s["port"], s.get("backend", "?")
-            head = Text(style=_S)
-            head.append(f" {name} ", style=f"bold {C_FG} on {C_BG}")
-            head.append(f"{backend} :{port}  gpu{s.get('gpu', '?')}",
-                        style=f"{C_DIM} on {C_BG}")
-
-            detail = Text(style=_S)
-            if backend == "vllm":
-                m = _vllm_stats(port)
-                if m:
-                    rate = self._model_rate(name, m["gen_tokens"])
-                    head.append("   ")
-                    head.append_text(self._rate_text(name, rate, m["running"] > 0))
-                    if name not in self._maxctx:
-                        self._maxctx[name] = _max_ctx_of(port)
-                    maxctx = self._maxctx.get(name) or 0
-                    detail.append("   kv ", style=f"{C_DIM} on {C_BG}")
-                    detail.append_text(_bar(m["kv_perc"]))
-                    detail.append(f" {m['kv_perc'] * 100:4.1f}%", style=f"{C_FG} on {C_BG}")
-                    detail.append(f"   reqs {m['running']:.0f}▶ {m['waiting']:.0f}⏸",
-                                  style=f"{C_DIM} on {C_BG}")
-                    detail.append(f"   gen {_kfmt(m['gen_tokens'])}",
-                                  style=f"{C_DIM} on {C_BG}")
-                    if maxctx:
-                        detail.append(f"   ctx≤{_kfmt(maxctx)}", style=f"{C_DIM} on {C_BG}")
-                else:
-                    detail.append("   metrics unavailable", style=f"{C_DIM} on {C_BG}")
-            else:  # llama.cpp
-                m = _llama_stats(port)
-                if m:
-                    # llama.cpp gives the instantaneous rate directly
-                    if m["gen_tps"] is not None:
-                        active = m["busy"] > 0
-                        head.append("   ")
-                        head.append_text(self._rate_text(name, m["gen_tps"], active))
-                    if m["n_ctx"]:
-                        frac = m["ctx_used"] / m["n_ctx"]
-                        detail.append("   ctx ", style=f"{C_DIM} on {C_BG}")
-                        detail.append_text(_bar(frac))
-                        detail.append(f" {_kfmt(m['ctx_used'])}/{_kfmt(m['n_ctx'])}",
-                                      style=f"{C_FG} on {C_BG}")
-                    if m["prompt_tps"]:
-                        detail.append(f"   prefill {m['prompt_tps']:.0f} t/s",
-                                      style=f"{C_DIM} on {C_BG}")
-                    detail.append(f"   slots {m['busy']}▶", style=f"{C_DIM} on {C_BG}")
-                    if not m["n_ctx"] and m["gen_tps"] is None:
-                        detail.append("   ('allma reload' to enable /slots + /metrics)",
-                                      style=f"{C_DIM} on {C_BG}")
-                else:
-                    detail.append("   up ('allma reload' to enable metrics)",
-                                  style=f"{C_DIM} on {C_BG}")
-            body.add_row(head)
-            body.add_row(detail)
+        sections = []
+        if gpus:
+            sections.append(Columns([self._gpu_card(g) for g in gpus],
+                                    padding=(0, 1), expand=False))
+        else:
+            sections.append(Text("  no NVIDIA GPU detected", style=f"{C_WARN} on {C_BG}"))
+        sections.append(Text(""))
+        if servers:
+            sections.append(Columns([self._model_card(s) for s in servers],
+                                    padding=(0, 1), expand=False))
+        else:
+            sections.append(Text("  no models loaded", style=f"{C_DIM} on {C_BG}"))
 
         stamp = time.strftime("%H:%M:%S")
         inner = Panel(
-            body,
+            Group(*sections),
             title=_section(f"allma top · {stamp}"),
             title_align="left",
             subtitle=Text(" q to quit ", style=f"{C_DIM} on {C_BG}"),
@@ -324,7 +339,7 @@ class TopView:
             box=_box.SQUARE,
             border_style=C_DIM,
             style=_S,
-            padding=(0, 1),
+            padding=(1, 1),
         )
         return Panel(inner, box=_box.DOUBLE, border_style=C_BORDER,
                      style=f"on {C_SCREEN}", padding=(0, 0), width=_W())
