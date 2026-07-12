@@ -334,7 +334,7 @@ class TopView:
                      padding=(0, 1), width=40)
 
     def snapshot(self) -> Panel:
-        gpus = _gpus()
+        gpus = sorted(_gpus(), key=lambda g: g["index"])
         ps = _http_json(f"{ALLMA_URL}/v1/ps", timeout=1.5) or {}
         servers = [s for s in ps.get("servers", []) if s.get("alive")]
 
