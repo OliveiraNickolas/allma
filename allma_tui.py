@@ -1402,8 +1402,8 @@ class AllmaTUI(App):
                             yield Button("⇣ Fetch", id="btn-dl")
                 with Vertical(id="col-mid", classes="panel"):
                     yield DataTable(id="models-table", cursor_type="row", zebra_stripes=True)
-                    with Collapsible(title="▸ backend logs", collapsed=True,
-                                     id="log-collapsible"):
+                    with Collapsible(title=f"[{ACC_ORANGE}]▮[/] backend logs",
+                                     collapsed=True, id="log-collapsible"):
                         yield Log(id="backend-log", highlight=False, max_lines=2000)
                     yield Static("", id="models-footer")
                 with Vertical(id="col-right", classes="panel"):
@@ -1551,16 +1551,16 @@ class AllmaTUI(App):
             self._maybe_retail()
 
     # ── backend log tail (allma backend logs -f, inside the middle column) ──
-    def on_collapsible_toggled(self, event: Collapsible.Toggled) -> None:
-        if (event.collapsible.id or "") != "log-collapsible":
-            return
-        title = self.query_one("#log-collapsible", Collapsible)
-        if event.collapsible.collapsed:
-            title.title = "▸ backend logs"
-            self._stop_tail()
-        else:
-            title.title = "▾ backend logs"
+    # Expanded/Collapsed are dispatched reliably on the real click; the older
+    # Toggled handler mis-read `.collapsed` on the first open (logs only showed
+    # up after a rescan re-triggered the tail).
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        if (event.collapsible.id or "") == "log-collapsible":
             self._start_tail()
+
+    def on_collapsible_collapsed(self, event: Collapsible.Collapsed) -> None:
+        if (event.collapsible.id or "") == "log-collapsible":
+            self._stop_tail()
 
     def _maybe_retail(self) -> None:
         """Selection changed — if the log panel is open, follow the new one."""
