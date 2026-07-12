@@ -201,14 +201,14 @@ class TopView:
         self._last_active: dict = {}   # name -> last rate seen while generating
 
     def _speed_text(self, name: str, rate: float, active: bool) -> Text:
-        """Live rate while generating; the last active rate (dimmed) when idle."""
+        """Show the most recent measured rate and keep it there until a new
+        one replaces it — no flipping to 'idle'/'last'."""
         if active and rate > 0.05:
             self._last_active[name] = rate
-            return Text(f"{rate:.1f} tok/s", style=f"bold {C_ACCENT} on {C_BG}")
         last = self._last_active.get(name)
         if last:
-            return Text(f"idle · last {last:.0f}", style=f"{C_DIM} on {C_BG}")
-        return Text("idle", style=f"{C_DIM} on {C_BG}")
+            return Text(f"{last:.1f} tok/s", style=f"bold {C_ACCENT} on {C_BG}")
+        return Text("—", style=f"{C_DIM} on {C_BG}")
 
     def _delta_rate(self, store: dict, name: str, counter: float) -> float:
         now = time.time()
@@ -270,7 +270,7 @@ class TopView:
         _val = f"{C_FG} on {C_BG}"
 
         # defaults — every row is always present, '—' means "not reporting"
-        speed = Text("idle", style=_dim)
+        speed = Text("—", style=_dim)
         prefill = Text("—", style=_dim)
         context = Text("—", style=_dim)
         load = Text("—", style=_dim)
