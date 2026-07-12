@@ -15,6 +15,7 @@ import urllib.request
 from typing import Optional
 
 from rich import box as _box
+from rich.align import Align
 from rich.columns import Columns
 from rich.console import Group
 from rich.live import Live
@@ -198,7 +199,8 @@ class TopView:
         self._rate: dict = {}
         self._prate: dict = {}         # same, for prompt/prefill tokens
         self._maxctx: dict = {}
-        self._last_active: dict = {}   # name -> last rate seen while generating
+        self._last_active: dict = {}   # name -> last gen rate seen
+        self._last_prefill: dict = {}  # name -> last prompt/prefill rate seen
 
     def _speed_text(self, name: str, rate: float, active: bool) -> Text:
         """Show the most recent measured rate and keep it there until a new
@@ -237,9 +239,9 @@ class TopView:
         short = (g["name"].replace("NVIDIA GeForce ", "").replace("NVIDIA ", ""))[:10]
         grid = Table.grid(padding=(0, 0))
         grid.add_column()
-        grid.add_row(self._barrow("util", g["util"] / 100, f"{g['util']:3.0f}%"))
+        grid.add_row(self._barrow("util", g["util"] / 100, f"{g['util']:3.0f}%", width=20))
         grid.add_row(self._barrow("vram", g["used"] / g["total"],
-                                  f"{g['used']:.1f}/{g['total']:.0f}G"))
+                                  f"{g['used']:.1f}/{g['total']:.0f}G", width=20))
         # footer: temp (colored) · clock · power · fan
         foot = Text(style=_S)
         foot.append(f"{g['temp']:.0f}°C", style=f"bold {_temp_style(g['temp'])} on {C_BG}")
@@ -253,7 +255,7 @@ class TopView:
         if g["throttled"]:
             title.append("  ⚠ throttle", style=f"bold {C_BAD}")
         return Panel(grid, title=title, title_align="left", box=_box.ROUNDED,
-                     border_style=C_DIM, style=_S, padding=(0, 1), width=34)
+                     border_style=C_DIM, style=_S, padding=(0, 1), width=40)
 
     def _ctx_bar(self, frac: float, value: str) -> Text:
         """A bar + label, for the fixed 'context' stat row."""
@@ -274,7 +276,9 @@ class TopView:
         _seen = self._last_active.get(name)
         speed = (Text(f"{_seen:.1f} tok/s", style=f"bold {C_ACCENT} on {C_BG}")
                  if _seen else Text("—", style=_dim))
-        prefill = Text("—", style=_dim)
+        _pre_seen = self._last_prefill.get(name)
+        prefill = (Text(f"{_pre_seen:.0f} tok/s", style=_val)
+                   if _pre_seen else Text("—", style=_dim))
         context = Text("—", style=_dim)
         load = Text("—", style=_dim)
         note = None
@@ -286,6 +290,7 @@ class TopView:
                 speed = self._speed_text(name, gen, m["running"] > 0)
                 pre = self._delta_rate(self._prate, name, m["prompt_tokens"])
                 if pre > 1:
+                    self._last_prefill[name] = pre
                     prefill = Text(f"{pre:.0f} tok/s", style=_val)
                 context = self._ctx_bar(m["kv_perc"], f"{m['kv_perc'] * 100:.0f}% kv")
                 load = Text(f"{m['running']:.0f} active · {m['waiting']:.0f} queued",
@@ -298,6 +303,7 @@ class TopView:
                 if m["gen_tps"] is not None:
                     speed = self._speed_text(name, m["gen_tps"], m["busy"] > 0)
                 if m["prompt_tps"]:
+                    self._last_prefill[name] = m["prompt_tps"]
                     prefill = Text(f"{m['prompt_tps']:.0f} tok/s", style=_val)
                 if m["n_ctx"]:
                     context = self._ctx_bar(
@@ -334,14 +340,14 @@ class TopView:
 
         sections = []
         if gpus:
-            sections.append(Columns([self._gpu_card(g) for g in gpus],
-                                    padding=(0, 1), expand=False))
+            sections.append(Align.center(Columns(
+                [self._gpu_card(g) for g in gpus], padding=(0, 1), expand=False)))
         else:
             sections.append(Text("  no NVIDIA GPU detected", style=f"{C_WARN} on {C_BG}"))
         sections.append(Text(""))
         if servers:
-            sections.append(Columns([self._model_card(s) for s in servers],
-                                    padding=(0, 1), expand=False))
+            sections.append(Align.center(Columns(
+                [self._model_card(s) for s in servers], padding=(0, 1), expand=False)))
         else:
             sections.append(Text("  no models loaded", style=f"{C_DIM} on {C_BG}"))
 
