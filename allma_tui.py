@@ -1879,7 +1879,17 @@ class AllmaTUI(App):
         extras_gb = (bd["mmproj_gb"] + bd["vision_gb"] + bd["cudagraph_gb"]
                      + bd["mtp_gb"] + bd["overhead_gb"])
         need = bd["total_gb"]
-        fits = need <= free_gb
+
+        # If THIS model is already running, its weights+KV are part of sys_gb —
+        # comparing need against the leftover free would double-count it and
+        # falsely read "doesn't fit". Show it as loaded, and split its own
+        # footprint out of sys so the bar reads: others │ weights │ kv │ …
+        is_loaded = m["key"] in self.loaded_status
+        if is_loaded:
+            sys_gb = max(0.0, sys_gb - need)   # VRAM used by OTHER processes
+            fits = True
+        else:
+            fits = need <= free_gb
 
         # Segmented bar over the target GPUs' TOTAL capacity:
         #   system-in-use │ weights │ kv cache │ extras │ free
@@ -1899,15 +1909,19 @@ class AllmaTUI(App):
                 n = 1  # never hide a non-zero component entirely
             used_cells += n
             cells.append((n, color))
-        over = used_cells > width or (sys_gb + need) > total_gb
+        over = (not is_loaded) and (used_cells > width or (sys_gb + need) > total_gb)
         bar = "".join(f"[{c}]{'▰' * n}[/]" for n, c in cells if n)
         bar += f"[#d8cfae]{'▱' * max(0, width - used_cells)}[/]"
 
-        status_color = ACC_GREEN if fits else ACC_RED
-        verdict = "fits" if fits else "DOESN'T FIT"
+        if is_loaded:
+            status_color, verdict = ACC_GREEN, "● loaded"
+        else:
+            status_color = ACC_GREEN if fits else ACC_RED
+            verdict = "fits" if fits else "DOESN'T FIT"
 
         # Legend: colored swatch + label + GB, laid out in two aligned columns.
-        items = [("#a89878", "sys", sys_gb),
+        sys_label = "others" if is_loaded else "sys"
+        items = [("#a89878", sys_label, sys_gb),
                  (ACC_BLUE, "weights", bd["weights_gb"]),
                  (ACC_ORANGE, "kv", bd["kv_cache_gb"])]
         if bd["mtp_gb"]:
@@ -1927,10 +1941,13 @@ class AllmaTUI(App):
         legend_rows = ["".join(cells[i:i + 2]).rstrip() for i in range(0, len(cells), 2)]
         legend = "\n".join(legend_rows)
 
+        if is_loaded:
+            tail = f"[bold]{need:.1f}[/] GB used of {total_gb:.0f}"
+        else:
+            tail = f"[bold]{need:.1f}[/]/{free_gb:.1f} GB free of {total_gb:.0f}"
         line.update(
-            f"{bar} [bold {status_color}]{verdict}[/] "
-            f"[bold]{need:.1f}[/]/{free_gb:.1f} GB free of {total_gb:.0f}\n{legend}"
-            + (f"\n[{ACC_RED}]⚠ over capacity — reduce context or offload[/]" if over and not fits else "")
+            f"{bar} [bold {status_color}]{verdict}[/] {tail}\n{legend}"
+            + (f"\n[{ACC_RED}]⚠ over capacity — reduce context or offload[/]" if over else "")
         )
 
     def on_param_slider_changed(self, event: ParamSlider.Changed) -> None:
