@@ -1,7 +1,11 @@
 """
 FastAPI application, route handlers, HTTP client, and banner display.
 """
+import asyncio
 import json as _json
+import re
+from typing import Optional
+
 import httpx
 from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -146,6 +150,108 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Allma - LLM API", lifespan=lifespan)
 
 
+# OpenAI-spec roles the Qwen template doesn't accept, mapped to supported ones.
+# The Qwen3.x template only handles system/user/assistant/tool and raises
+# "Unexpected message role." on anything else (e.g. "developer").
+_ROLE_ALIASES = {"developer": "system"}
+
+
+def _content_to_text(content) -> str:
+    """Flatten OpenAI message content to plain text, dropping non-text blocks.
+    Used for system content, which the Qwen template forbids from holding
+    images/videos."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and (item.get("type") == "text" or "text" in item)
+        ]
+        return "\n".join(p for p in parts if p)
+    return ""
+
+
+def _normalize_messages_for_qwen(messages: list) -> list:
+    """Make a messages list safe for the strict Qwen3.x chat template.
+
+    The template raises on: a non-leading system message, unknown roles, and
+    images/videos inside a system message (both vLLM and llama.cpp --jinja
+    enforce it). Agent clients such as hermes occasionally inject system/context
+    messages mid-conversation or use the "developer" role. We:
+      1. map known role aliases (developer -> system) to supported roles, and
+      2. hoist + merge every system message into a single text-only leading one.
+    No-op for already-valid input. Returns the original list unchanged when
+    nothing needed fixing.
+    """
+    if not messages:
+        return messages
+
+    # 1) Map roles the template would reject.
+    mapped = []
+    role_changed = False
+    for m in messages:
+        if m.get("role") in _ROLE_ALIASES:
+            m = dict(m, role=_ROLE_ALIASES[m["role"]])
+            role_changed = True
+        mapped.append(m)
+
+    # 2) Hoist/merge system messages to a single text-only leading message.
+    sys_idx = [i for i, m in enumerate(mapped) if m.get("role") == "system"]
+    needs_hoist = bool(sys_idx) and not (len(sys_idx) == 1 and sys_idx[0] == 0)
+
+    if not needs_hoist:
+        return mapped if role_changed else messages
+
+    sys_text = "\n\n".join(
+        t for t in (_content_to_text(mapped[i].get("content", "")) for i in sys_idx) if t
+    )
+    others = [m for m in mapped if m.get("role") != "system"]
+    logger.info(
+        f"Normalized messages for Qwen template: hoisted {len(sys_idx)} system "
+        f"message(s) to front{', mapped developer->system' if role_changed else ''}"
+    )
+    return [{"role": "system", "content": sys_text}] + others
+
+
+def _estimate_prompt_tokens(messages: list) -> int:
+    """Cheap token estimate for the prompt so we can pre-clamp max_tokens
+    without pulling in a tokenizer. Overestimates (chars/3 + per-image cost)
+    so we err on the safe side; the reactive refit below is the exact catch."""
+    chars = 0
+    images = 0
+    for m in messages or []:
+        c = m.get("content")
+        if isinstance(c, str):
+            chars += len(c)
+        elif isinstance(c, list):
+            for part in c:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    chars += len(part.get("text", ""))
+                else:                       # image / audio / other modality
+                    images += 1
+    return chars // 3 + images * 1200 + 512
+
+
+_CTX_RE = re.compile(r"maximum context length is (\d+)")
+_INPUT_RE = re.compile(r"contains at least (\d+) input tokens")
+
+
+def _ctx_overflow_fit(error_detail: str) -> Optional[int]:
+    """If a backend 400 is the 'prompt + max_tokens > context' overflow, return
+    a max_tokens value that fits exactly (ctx - input - margin); else None.
+    vLLM states both numbers in the error, so this refit is exact."""
+    if "maximum context length" not in error_detail:
+        return None
+    ctx = _CTX_RE.search(error_detail)
+    inp = _INPUT_RE.search(error_detail)
+    if not ctx or not inp:
+        return None
+    return max(64, int(ctx.group(1)) - int(inp.group(1)) - 16)
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request, body: dict = Body(...)):
     model_name = body.get("model", "")
@@ -161,6 +267,12 @@ async def chat_completions(request: Request, body: dict = Body(...)):
             status_code=404,
             content={"error": f"Model '{model_name}' not found"},
         )
+
+    # Qwen template is strict (system must be first, only known roles, no media
+    # in system) — normalize before truncation/injection so client quirks (e.g.
+    # hermes injecting a mid-conversation system message) don't 400 the template.
+    if "messages" in body and body["messages"]:
+        body["messages"] = _normalize_messages_for_qwen(body["messages"])
 
     if "messages" in body and MAX_MESSAGES > 0:
         msgs = body["messages"]
@@ -184,7 +296,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
 
     logical_cfg = PROFILE_MODELS[model_name]
     base_name = logical_cfg["base"]
-    cfg = BASE_MODELS[base_name]
+    cfg = state.effective_base_cfg(base_name)
     backend = cfg.get("backend", "vllm")
 
     port = await ensure_base_model(base_name, model_name)
@@ -196,7 +308,7 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         body["model"] = cfg["model"]
         url = f"http://127.0.0.1:{port}/chat/completions"
 
-    sampling = logical_cfg.get("sampling", {})
+    sampling = state.effective_sampling(model_name, logical_cfg)
     for key in ["temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"]:
         if key in sampling:
             if key not in body or body[key] is None:
@@ -255,6 +367,22 @@ async def chat_completions(request: Request, body: dict = Body(...)):
             content={"choices": [{"message": {"content": ""}}]},
         )
 
+    # Pre-clamp max_tokens so prompt + output can't blow past the context window.
+    # Clients often pin a huge max_tokens (e.g. 65536); once the prompt grows —
+    # tool results, images — the sum overflows and vLLM 400s, which streaming
+    # clients surface as "an error occurred during streaming" and retry to death.
+    max_model_len = int(cfg.get("max_model_len") or cfg.get("n_ctx") or 0)
+    if max_model_len > 0:
+        est = _estimate_prompt_tokens(body.get("messages") or [])
+        ceiling = max(256, max_model_len - est)
+        req_max = body.get("max_tokens")
+        if req_max is None or req_max > ceiling:
+            logger.info(
+                f" max_tokens {req_max} -> {ceiling} "
+                f"(ctx {max_model_len}, ~{est} prompt tokens)"
+            )
+            body["max_tokens"] = ceiling
+
     client = await get_http_client()
     try:
         req_body = body
@@ -262,34 +390,45 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         if req_body.get("stream", False):
             async def generate():
                 try:
-                    async with client.stream("POST", url, json=req_body) as response:
-                        if response.status_code != 200:
-                            error_body = await response.aread()
-                            error_detail = error_body.decode() if isinstance(error_body, bytes) else str(error_body)
-                            logger.error(f"Backend returned {response.status_code} for {model_name}: {error_detail}")
+                    for attempt in (1, 2):
+                        async with client.stream("POST", url, json=req_body) as response:
+                            if response.status_code != 200:
+                                error_body = await response.aread()
+                                error_detail = error_body.decode() if isinstance(error_body, bytes) else str(error_body)
+                                # Exact refit from the backend's own numbers, then
+                                # retry once before giving up (no content sent yet).
+                                fit = _ctx_overflow_fit(error_detail)
+                                if fit and attempt == 1:
+                                    logger.warning(
+                                        f"↻ context overflow — refit max_tokens -> {fit}, retrying"
+                                    )
+                                    req_body["max_tokens"] = fit
+                                    continue
+                                logger.error(f"Backend returned {response.status_code} for {model_name}: {error_detail}")
 
-                            # Analyze backend error
-                            error_analysis = ErrorDetector.analyze_log(error_detail)
-                            if error_analysis:
-                                error_response = {
-                                    "error": error_detail,
-                                    "error_type": error_analysis.error_type,
-                                    "explanation": error_analysis.explanation,
-                                    "suggestions": error_analysis.suggestions,
-                                }
-                                yield f'data: {_json.dumps(error_response)}\n\n'
-                            else:
-                                yield 'data: {"error": "Backend error"}\n\n'
+                                # Analyze backend error
+                                error_analysis = ErrorDetector.analyze_log(error_detail)
+                                if error_analysis:
+                                    error_response = {
+                                        "error": error_detail,
+                                        "error_type": error_analysis.error_type,
+                                        "explanation": error_analysis.explanation,
+                                        "suggestions": error_analysis.suggestions,
+                                    }
+                                    yield f'data: {_json.dumps(error_response)}\n\n'
+                                else:
+                                    yield 'data: {"error": "Backend error"}\n\n'
+                                return
+                            async for line in response.aiter_lines():
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                if line.startswith("data: "):
+                                    yield line + "\n\n"
+                                elif line == "[DONE]":
+                                    yield "data: [DONE]\n\n"
+                                    break
                             return
-                        async for line in response.aiter_lines():
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if line.startswith("data: "):
-                                yield line + "\n\n"
-                            elif line == "[DONE]":
-                                yield "data: [DONE]\n\n"
-                                break
                 except Exception as e:
                     logger.error(f"Stream error: {e}")
                     yield f'data: {_json.dumps({"error": {"message": str(e), "type": "stream_error"}})}\n\n'
@@ -307,6 +446,18 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                 error_detail = (
                     error_body.decode() if isinstance(error_body, bytes) else str(error_body)
                 )
+                # Exact refit + one retry before surfacing the 400 to the client.
+                fit = _ctx_overflow_fit(error_detail)
+                if fit:
+                    logger.warning(f"↻ context overflow — refit max_tokens -> {fit}, retrying")
+                    req_body["max_tokens"] = fit
+                    resp = await client.post(url, json=req_body)
+                    if resp.status_code == 200:
+                        return JSONResponse(content=resp.json(), status_code=200)
+                    error_body = await resp.aread()
+                    error_detail = (
+                        error_body.decode() if isinstance(error_body, bytes) else str(error_body)
+                    )
                 logger.error(f"vLLM 400 Error for {model_name}: {error_detail}")
 
                 # Analyze backend error
@@ -372,7 +523,7 @@ async def messages(request: Request, body: dict = Body(...)):
 
     logical_cfg = PROFILE_MODELS[model_name]
     base_name = logical_cfg["base"]
-    cfg = BASE_MODELS[base_name]
+    cfg = state.effective_base_cfg(base_name)
     backend = cfg.get("backend", "vllm")
 
     port = await ensure_base_model(base_name, model_name)
@@ -388,44 +539,9 @@ async def messages(request: Request, body: dict = Body(...)):
 
     client = await get_http_client()
 
-    # vLLM supports /v1/messages natively — pass through with profile sampling
-    if backend == "vllm":
-        body["model"] = cfg["path"]
-        url = f"http://127.0.0.1:{port}/v1/messages"
-        # Apply profile sampling overrides (temperature, top_p, etc.)
-        sampling = logical_cfg.get("sampling", {})
-        for key in ["temperature", "top_p", "top_k", "min_p"]:
-            if key in sampling and key not in body:
-                body[key] = sampling[key]
-        try:
-            if body.get("stream", False):
-                async def generate_vllm():
-                    try:
-                        async with client.stream("POST", url, json=body) as response:
-                            async for line in response.aiter_lines():
-                                line = line.strip()
-                                if not line:
-                                    continue
-                                yield line + "\n\n"
-                    except Exception as e:
-                        logger.error(f"Stream error: {e}")
-
-                return StreamingResponse(
-                    generate_vllm(),
-                    media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-                )
-            else:
-                resp = await client.post(url, json=body)
-                return JSONResponse(content=resp.json(), status_code=resp.status_code)
-        except httpx.ConnectError as e:
-            logger.warning(f"Connection failed: {e}")
-            return JSONResponse(status_code=503, content={"error": "Backend unavailable"})
-        except Exception as e:
-            logger.error(f"Claude Code error: {e}")
-            return JSONResponse(status_code=500, content={"error": str(e)})
-
-    # llama.cpp — translate Anthropic Messages ↔ OpenAI Chat format
+    # Translate Anthropic Messages -> OpenAI Chat for both backends. vLLM does
+    # NOT expose /v1/messages natively (only OpenAI's /v1/chat/completions), so
+    # we route every request through the translator below.
     import uuid as _uuid
 
     # ── Convert tool definitions (Anthropic → OpenAI) ──
@@ -470,11 +586,15 @@ async def messages(request: Request, body: dict = Body(...)):
             continue
 
         # Separate content block types
-        text_parts, image_parts, tool_uses, tool_results = [], [], [], []
+        text_parts, image_parts, tool_uses, tool_results, thinking_parts = [], [], [], [], []
         for block in content:
             btype = block.get("type", "")
             if btype == "text":
                 text_parts.append(block.get("text", ""))
+            elif btype == "thinking":
+                # Anthropic Extended Thinking block — preserve as <think>...</think>
+                # in the assistant content so Qwen3 keeps reasoning context across turns.
+                thinking_parts.append(block.get("thinking", ""))
             elif btype == "image":
                 source = block.get("source", {})
                 src_type = source.get("type", "")
@@ -497,7 +617,13 @@ async def messages(request: Request, body: dict = Body(...)):
 
         if role == "assistant":
             oai_msg = {"role": "assistant"}
-            oai_msg["content"] = "".join(text_parts) if text_parts else None
+            # Re-attach thinking as <think>...</think> prefix so the Qwen3 template
+            # sees the model's prior reasoning when the conversation history is replayed.
+            text_joined = "".join(text_parts)
+            if thinking_parts:
+                think_block = "<think>\n" + "\n\n".join(thinking_parts).strip() + "\n</think>\n\n"
+                text_joined = think_block + text_joined
+            oai_msg["content"] = text_joined if text_joined else None
             if tool_uses:
                 oai_msg["tool_calls"] = [
                     {
@@ -553,21 +679,38 @@ async def messages(request: Request, body: dict = Body(...)):
                 if tr_images:
                     oai_messages.append({"role": "user", "content": tr_images})
 
+    # Same Qwen3-template safety net used in /v1/chat/completions: ensure system
+    # is hoisted to the front and no unknown roles slip through (otherwise the
+    # template raises 'System message must be at the beginning.').
+    oai_messages = _normalize_messages_for_qwen(oai_messages)
+
+    # Backend-specific naming: vLLM is the OpenAI server with /v1 prefix and
+    # expects the full HF model path; llama-server uses /chat/completions and
+    # takes the GGUF path. Pick both based on backend.
+    backend_model = cfg["path"] if backend == "vllm" else cfg["model"]
     oai_body = {
-        "model": cfg["model"],
+        "model": backend_model,
         "messages": oai_messages,
         "max_tokens": body.get("max_tokens", max_output_cap),
         "stream": body.get("stream", False),
     }
     if "temperature" in body:
         oai_body["temperature"] = body["temperature"]
+    # Apply profile sampling overrides (temperature, top_p, top_k, min_p) for
+    # both backends — same behavior the /v1/chat/completions path provides.
+    sampling = state.effective_sampling(model_name, logical_cfg)
+    for key in ["temperature", "top_p", "top_k", "min_p"]:
+        if key in sampling and key not in oai_body:
+            oai_body[key] = sampling[key]
     if oai_tools:
         oai_body["tools"] = oai_tools
 
-    # Disable thinking for llama.cpp via chat_template_kwargs
+    # Thinking control:
+    #  - llama.cpp uses chat_template_kwargs.enable_thinking + reasoning_budget
+    #  - vLLM Qwen template uses chat_template_kwargs.enable_thinking only
     if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
         oai_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
-    else:
+    elif backend == "llama.cpp":
         # Same reasoning_budget guard as the /v1/chat/completions path
         budget = logical_cfg.get("thinking_budget")
         if budget is None:
@@ -578,7 +721,11 @@ async def messages(request: Request, body: dict = Body(...)):
             budget = 2048
         oai_body.setdefault("reasoning_budget", budget)
 
-    url = f"http://127.0.0.1:{port}/chat/completions"
+    url = (
+        f"http://127.0.0.1:{port}/v1/chat/completions"
+        if backend == "vllm"
+        else f"http://127.0.0.1:{port}/chat/completions"
+    )
     llama_req_body = oai_body
 
     try:
@@ -591,9 +738,19 @@ async def messages(request: Request, body: dict = Body(...)):
                     yield f"event: message_start\ndata: {_json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model_name, 'stop_reason': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
 
                     block_idx = 0
+                    thinking_started = False
                     text_started = False
                     tool_calls_acc = {}  # tc_index -> {id, name, arguments, block_idx}
                     stop_reason = "end_turn"
+
+                    def _close_thinking():
+                        nonlocal block_idx, thinking_started
+                        if thinking_started:
+                            ev = f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
+                            block_idx += 1
+                            thinking_started = False
+                            return ev
+                        return None
 
                     async with client.stream("POST", url, json=llama_req_body) as response:
                         if response.status_code != 200:
@@ -623,9 +780,34 @@ async def messages(request: Request, body: dict = Body(...)):
 
                                 delta = chunk["choices"][0].get("delta", {})
                                 delta_text = delta.get("content", "")
+                                # vLLM emits 'reasoning'; llama.cpp emits 'reasoning_content'.
+                                # Both map to the Anthropic 'thinking' content block.
+                                delta_thinking = delta.get("reasoning_content") or delta.get("reasoning") or ""
 
-                                # ── Text content ──
+                                # Track OpenAI finish_reason -> Anthropic stop_reason. Critical
+                                # so Claude Code doesn't read end_turn when budget actually ran
+                                # out mid-thinking ("length" -> "max_tokens", not "end_turn").
+                                fr = chunk["choices"][0].get("finish_reason")
+                                if fr == "length":
+                                    stop_reason = "max_tokens"
+                                elif fr == "tool_calls":
+                                    stop_reason = "tool_use"
+                                elif fr == "stop":
+                                    if stop_reason == "end_turn":  # don't downgrade tool_use
+                                        stop_reason = "end_turn"
+
+                                # ── Thinking content (Anthropic Extended Thinking block) ──
+                                if delta_thinking:
+                                    if not thinking_started:
+                                        yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': block_idx, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                                        thinking_started = True
+                                    yield f"event: content_block_delta\ndata: {_json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'thinking_delta', 'thinking': delta_thinking}})}\n\n"
+
+                                # ── Text content (closes thinking if open) ──
                                 if delta_text:
+                                    ev = _close_thinking()
+                                    if ev:
+                                        yield ev
                                     if not text_started:
                                         yield f"event: content_block_start\ndata: {_json.dumps({'type': 'content_block_start', 'index': block_idx, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
                                         text_started = True
@@ -635,7 +817,10 @@ async def messages(request: Request, body: dict = Body(...)):
                                 for tc_delta in delta.get("tool_calls", []):
                                         tc_idx = tc_delta.get("index", 0)
                                         if tc_idx not in tool_calls_acc:
-                                            # New tool call — close text block if open
+                                            # New tool call — close any open thinking/text block first
+                                            ev = _close_thinking()
+                                            if ev:
+                                                yield ev
                                             if text_started:
                                                 yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
                                                 block_idx += 1
@@ -659,6 +844,8 @@ async def messages(request: Request, body: dict = Body(...)):
                     logger.error(f"llama.cpp stream error: {e}")
                 finally:
                     # Close any open content blocks
+                    if thinking_started:
+                        yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
                     if text_started:
                         yield f"event: content_block_stop\ndata: {_json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
                     for tc_info in tool_calls_acc.values():
@@ -697,10 +884,22 @@ async def messages(request: Request, body: dict = Body(...)):
             msg_id = f"msg_{_uuid.uuid4().hex[:24]}"
 
             content_blocks = []
+            # Thinking block (vLLM emits 'reasoning'; llama.cpp emits 'reasoning_content')
+            thinking_text = message.get("reasoning_content") or message.get("reasoning") or ""
+            if thinking_text:
+                content_blocks.append({"type": "thinking", "thinking": thinking_text})
             if message.get("content"):
                 content_blocks.append({"type": "text", "text": message["content"]})
 
-            stop_reason = "end_turn"
+            # Map OpenAI finish_reason -> Anthropic stop_reason so Claude Code
+            # knows when the budget actually ran out instead of "modelo terminou".
+            fr = choice.get("finish_reason")
+            if fr == "length":
+                stop_reason = "max_tokens"
+            elif fr == "tool_calls":
+                stop_reason = "tool_use"
+            else:
+                stop_reason = "end_turn"
             if message.get("tool_calls"):
                 stop_reason = "tool_use"
                 for tc in message["tool_calls"]:
@@ -856,6 +1055,23 @@ async def health():
     }
 
 
+def _is_cpu_only(base_name: str) -> bool:
+    """True when a base is configured to run on CPU (no GPU offload), so the UI
+    can label it 'CPU' instead of a misleading GPU index."""
+    cfg = BASE_MODELS.get(base_name, {})
+    if str(cfg.get("n_gpu_layers", "")).strip() == "0":
+        return True
+    ea = cfg.get("extra_args", []) or []
+    for flag in ("--device", "-dev"):
+        if flag in ea:
+            try:
+                if str(ea[ea.index(flag) + 1]).strip().lower() == "none":
+                    return True
+            except (ValueError, IndexError):
+                pass
+    return False
+
+
 @app.get("/v1/ps")
 async def ps():
     """Return active backend servers with their log file paths."""
@@ -866,8 +1082,12 @@ async def ps():
                 "backend": srv.get("backend", "unknown"),
                 "port": srv.get("port"),
                 "pid": srv.get("pid"),
+                # CPU-only backends report gpu=None so the UI shows "CPU".
+                "gpu": None if _is_cpu_only(name) else state.gpu_allocation.get(name),
                 "logfile": str(srv.get("logfile", "")),
                 "alive": bool(srv.get("process")) and srv["process"].poll() is None,
+                # Running with ephemeral (one-time) overrides not saved to .allm
+                "custom_load": name in state.session_load_overrides,
             }
             for name, srv in state.active_servers.items()
         ]
@@ -927,7 +1147,13 @@ async def unload_model(body: dict = Body(...)):
 
 @app.post("/v1/load")
 async def load_model(body: dict = Body(...)):
-    """Pre-load a model without generating any tokens."""
+    """Pre-load a model without generating any tokens.
+
+    Optional ephemeral overrides (TUI "load one-time" — nothing touches disk):
+      load_overrides: dict merged over the base .allm config for this session
+      sampling:       dict merged over the profile sampling for this session
+    Passing either key with an empty dict clears the corresponding override.
+    """
     model_name = body.get("model", "")
     gpu_id = body.get("gpu_id")  # Optional: force specific GPU
     if model_name not in PROFILE_MODELS:
@@ -937,14 +1163,74 @@ async def load_model(body: dict = Body(...)):
         )
     logical_cfg = PROFILE_MODELS[model_name]
     base_name = logical_cfg["base"]
-    cfg = BASE_MODELS[base_name]
+
+    if "sampling" in body:
+        sampling_overrides = body.get("sampling") or {}
+        if sampling_overrides:
+            state.session_sampling[model_name] = sampling_overrides
+            logger.info(f"Session sampling for '{model_name}': {sampling_overrides}")
+        else:
+            state.session_sampling.pop(model_name, None)
+
+    if "load_overrides" in body:
+        load_overrides = body.get("load_overrides") or {}
+        previous = state.session_load_overrides.get(base_name, {})
+        if load_overrides != previous:
+            if load_overrides:
+                state.session_load_overrides[base_name] = load_overrides
+                logger.info(f"Session load overrides for '{base_name}': {load_overrides}")
+            else:
+                state.session_load_overrides.pop(base_name, None)
+            # Effective config changed — restart the backend so it applies
+            with state.global_lock:
+                already_running = base_name in state.active_servers
+            if already_running:
+                logger.info(f"Reloading {base_name} to apply session overrides")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None, lambda: shutdown_server(base_name, "reload", fast=True)
+                )
+
+    cfg = state.effective_base_cfg(base_name)
     backend = cfg.get("backend", "vllm")
     await ensure_base_model(base_name, model_name, gpu_id=gpu_id)
     # Pin this profile as the default for unknown model names (e.g. "claude-sonnet-4-5")
     # so that `allma launch claude <model>` always routes to the intended model.
     state.default_profile = model_name
     logger.info(f"Default profile set to '{model_name}'")
-    return JSONResponse({"status": "loaded", "model": model_name, "backend": backend})
+    return JSONResponse({
+        "status": "loaded",
+        "model": model_name,
+        "backend": backend,
+        "custom_load": base_name in state.session_load_overrides,
+    })
+
+
+@app.post("/v1/reload-configs")
+async def reload_configs():
+    """Re-read configs/*.allm so saved edits take effect without a restart.
+
+    BASE_MODELS/PROFILE_MODELS are imported by reference across modules, so they
+    must be mutated in place. Running backends keep their current config until
+    the next (re)load.
+    """
+    from core.config import load_models_from_configs
+    new_base, new_profiles = load_models_from_configs()
+    if not new_base and not new_profiles:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Config reload returned nothing — keeping current configs"},
+        )
+    BASE_MODELS.clear()
+    BASE_MODELS.update(new_base)
+    PROFILE_MODELS.clear()
+    PROFILE_MODELS.update(new_profiles)
+    logger.info(f"Configs reloaded: {len(new_base)} bases, {len(new_profiles)} profiles")
+    return JSONResponse({
+        "status": "reloaded",
+        "bases": len(new_base),
+        "profiles": len(new_profiles),
+    })
 
 
 # ==============================================================================
@@ -1089,8 +1375,9 @@ def show_banner():
     import re as _re_hier
     _hier: dict[str, dict[str, list]] = {}  # {base: {variant: [(name, cfg), ...]}}
     for _lname, _lcfg in sorted_log:
-        # parse name like "Qwen3.6:27b" or "Qwen3.6:35b-Instruct"
-        _match = _re_hier.match(r'^([^:]+):(\d+[a-z])(?:-(.+))?$', _lname)
+        # parse name like "Qwen3.6:27B-Code-FP8" or "Qwen3.6:35B-A3B-Reasoning-FP8".
+        # The param group captures dense ("27B") and MoE ("35B-A3B") sizes.
+        _match = _re_hier.match(r'^([^:]+):(\d+[A-Za-z](?:-A\d+[A-Za-z])?)(?:-(.+))?$', _lname)
         if _match:
             _base, _variant, _suffix = _match.groups()
             if _base not in _hier:
