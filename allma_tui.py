@@ -1760,10 +1760,13 @@ class AllmaTUI(App):
             value = cfg.get(key, absorbed.get(key, default))
             widgets.append(cls(key, label, vmin, vmax, step, is_int,
                                value, id=f"ld-{key}"))
-        # GPU pin — radio: ● auto  ○ GPU 0  ○ GPU 1
+        # GPU pin — radio: ● auto  ○ GPU 0  ○ GPU 1  [○ All  (llama.cpp, 2+ GPUs)]
         gpu_opts = [("auto", "")] + [(f"GPU {g['index']}", str(g["index"])) for g in self.gpus]
+        if m["backend"] == "llama.cpp" and len(self.gpus) >= 2:
+            gpu_opts.append(("All (split)", "all"))
+        gpu_val = "all" if cfg.get("gpus") else str(cfg.get("gpu_id", ""))
         widgets.append(Static(f"[{ACC_GREEN}]▮[/] GPU Pin", classes="section-hdr"))
-        widgets.append(RadioRow(gpu_opts, value=str(cfg.get("gpu_id", "")), id="ld-gpu_id"))
+        widgets.append(RadioRow(gpu_opts, value=gpu_val, id="ld-gpu_id"))
         # mmproj (llama.cpp)
         if m["backend"] == "llama.cpp":
             widgets.append(Static(f"[{ACC_RED}]▮[/] mmproj (vision)", classes="section-hdr"))
@@ -1848,10 +1851,17 @@ class AllmaTUI(App):
                     "total_gb": (m["size_gb"] * 1.15 if m["size_gb"] else 4.0) + 1.0}
 
     def _target_gpus(self, m: dict) -> list[dict]:
-        """GPUs the current form targets: the pinned one, or the top-TP by free."""
+        """GPUs the current form targets: the pinned one, all of them (split),
+        or the top-TP by free."""
         try:
-            pin = int(self.query_one("#ld-gpu_id", RadioRow).value)
-        except (Exception, ValueError):
+            raw = self.query_one("#ld-gpu_id", RadioRow).value
+        except Exception:
+            raw = None
+        if raw == "all":
+            return list(self.gpus)   # @gpus split spans every GPU
+        try:
+            pin = int(raw)
+        except (TypeError, ValueError):
             pin = None
         if pin is not None:
             return [g for g in self.gpus if g["index"] == pin]
@@ -2200,7 +2210,11 @@ class AllmaTUI(App):
         else:
             lines.append(f"@path {m['path']}")
         gid = values.get("gpu_id", m["cfg"].get("gpu_id"))
-        if gid not in (None, "", "-1"):
+        if gid == "all":
+            # spread across every GPU (llama.cpp multi-GPU for big contexts)
+            ids = ",".join(str(g["index"]) for g in self.gpus) or "0,1"
+            lines.append(f"@gpus {ids}")
+        elif gid not in (None, "", "-1"):
             lines.append(f"@gpu {gid}")
         if m["cfg"].get("pin_loaded"):
             lines.append("@pin")
