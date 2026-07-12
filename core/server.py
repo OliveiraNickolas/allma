@@ -241,15 +241,16 @@ _INPUT_RE = re.compile(r"contains at least (\d+) input tokens")
 
 def _ctx_overflow_fit(error_detail: str) -> Optional[int]:
     """If a backend 400 is the 'prompt + max_tokens > context' overflow, return
-    a max_tokens value that fits exactly (ctx - input - margin); else None.
-    vLLM states both numbers in the error, so this refit is exact."""
+    a max_tokens value that fits; else None. vLLM states both numbers in the
+    error. The margin is generous (256) because vLLM reports the input as a
+    lower bound ('at least N') that can drift by a few tokens between calls."""
     if "maximum context length" not in error_detail:
         return None
     ctx = _CTX_RE.search(error_detail)
     inp = _INPUT_RE.search(error_detail)
     if not ctx or not inp:
         return None
-    return max(64, int(ctx.group(1)) - int(inp.group(1)) - 16)
+    return max(256, int(ctx.group(1)) - int(inp.group(1)) - 256)
 
 
 @app.post("/v1/chat/completions")
@@ -367,21 +368,30 @@ async def chat_completions(request: Request, body: dict = Body(...)):
             content={"choices": [{"message": {"content": ""}}]},
         )
 
-    # Pre-clamp max_tokens so prompt + output can't blow past the context window.
-    # Clients often pin a huge max_tokens (e.g. 65536); once the prompt grows —
-    # tool results, images — the sum overflows and vLLM 400s, which streaming
-    # clients surface as "an error occurred during streaming" and retry to death.
+    # Clamp max_tokens to a sane OUTPUT budget. Clients often pin a huge
+    # max_tokens (e.g. 65536); once the prompt grows — tool results, images —
+    # prompt + max_tokens overflows the context window and vLLM 400s, which
+    # streaming clients surface as "an error occurred during streaming" and
+    # retry to death. Filling the whole remaining context is also what drives
+    # the OOM (exit -9) crashes, since a near-full sequence explodes the KV
+    # cache. So cap output at ctx//4 AND ensure it still fits behind the prompt.
     max_model_len = int(cfg.get("max_model_len") or cfg.get("n_ctx") or 0)
     if max_model_len > 0:
         est = _estimate_prompt_tokens(body.get("messages") or [])
-        ceiling = max(256, max_model_len - est)
+        output_cap = max(512, max_model_len // 4)
+        fit_cap = max(512, max_model_len - est - 256)
+        ceiling = min(output_cap, fit_cap)
         req_max = body.get("max_tokens")
         if req_max is None or req_max > ceiling:
             logger.info(
                 f" max_tokens {req_max} -> {ceiling} "
-                f"(ctx {max_model_len}, ~{est} prompt tokens)"
+                f"(ctx {max_model_len}, ~{est} prompt, out cap {output_cap})"
             )
             body["max_tokens"] = ceiling
+
+    # Ceiling the reactive backstop uses too, so a refit can never re-authorize
+    # a context-filling (OOM-prone) generation.
+    _out_cap = max(512, max_model_len // 4) if max_model_len > 0 else 0
 
     client = await get_http_client()
     try:
@@ -398,6 +408,8 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                                 # Exact refit from the backend's own numbers, then
                                 # retry once before giving up (no content sent yet).
                                 fit = _ctx_overflow_fit(error_detail)
+                                if fit and _out_cap:
+                                    fit = min(fit, _out_cap)
                                 if fit and attempt == 1:
                                     logger.warning(
                                         f"↻ context overflow — refit max_tokens -> {fit}, retrying"
@@ -448,6 +460,8 @@ async def chat_completions(request: Request, body: dict = Body(...)):
                 )
                 # Exact refit + one retry before surfacing the 400 to the client.
                 fit = _ctx_overflow_fit(error_detail)
+                if fit and _out_cap:
+                    fit = min(fit, _out_cap)
                 if fit:
                     logger.warning(f"↻ context overflow — refit max_tokens -> {fit}, retrying")
                     req_body["max_tokens"] = fit
