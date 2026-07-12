@@ -338,6 +338,14 @@ class TopView:
         ps = _http_json(f"{ALLMA_URL}/v1/ps", timeout=1.5) or {}
         servers = [s for s in ps.get("servers", []) if s.get("alive")]
 
+        def _gpu_key(s):
+            g = s.get("gpu")
+            try:
+                return int(g)
+            except (TypeError, ValueError):
+                return 99  # unknown gpu → last
+        servers.sort(key=_gpu_key)
+
         sections = []
         if gpus:
             sections.append(Align.center(Columns(
