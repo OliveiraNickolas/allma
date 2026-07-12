@@ -140,8 +140,6 @@ LLAMA_EXTRA_CATALOG = [
      "Number of simultaneous request slots (LM Studio's 'Max Concurrent Predictions')."),
     ("--kv-unified",     [],
      "Unified KV cache across parallel slots (LM Studio's 'Unified KV Cache')."),
-    ("--seed",           ["-1"],
-     "Random generator seed. -1 = random on every start (LM Studio's 'Seed')."),
     ("--rope-freq-base", ["0"],
      "RoPE frequency base. 0 = use the model's value (LM Studio's 'RoPE Frequency Base')."),
     ("--rope-freq-scale", ["1.0"],
@@ -172,10 +170,6 @@ LLAMA_EXTRA_CATALOG = [
      "Tokens from the start of the prompt to always keep when the context fills. -1 = keep all."),
     ("--ctx-shift",      [],
      "Slide the context window when it fills instead of stopping (infinite-generation mode)."),
-    ("--repeat-penalty", ["1.0"],
-     "Server-side default repetition penalty (per-request values override it)."),
-    ("--temp",           ["0.7"],
-     "Server-side default sampling temperature (per-request values override it)."),
     ("--spec-type",      ["draft-mtp"],
      "Speculative decoding type (e.g. draft-mtp for models with MTP heads)."),
     ("--spec-draft-n-max", ["3"],
@@ -226,8 +220,6 @@ VLLM_EXTRA_CATALOG = [
      "Reserve N GB of RAM as KV-cache 'swap' for preempted sequences."),
     ("--cpu-offload-gb",           ["4"],
      "Offload N GB of weights to RAM — run a model bigger than VRAM, at a speed cost."),
-    ("--seed",                     ["0"],
-     "Random generator seed for the server."),
     ("--disable-custom-all-reduce", [],
      "Use NCCL's standard all-reduce for tensor parallel (more compatible, sometimes slower)."),
     ("--disable-sliding-window",   [],
@@ -274,7 +266,7 @@ FLAG_PRESETS = {
 # header before each non-empty group, in CATEGORY_ORDER. Anything unmapped
 # falls into "Advanced".
 CATEGORY_ORDER = [
-    "Output & tools", "Sampling", "Performance", "Memory / VRAM",
+    "Output & tools", "Performance", "Memory / VRAM",
     "Context", "Multimodal", "Speculative", "Advanced",
 ]
 FLAG_CATEGORY = {
@@ -282,8 +274,6 @@ FLAG_CATEGORY = {
     "--reasoning-parser": "Output & tools", "--enable-auto-tool-choice": "Output & tools",
     "--tool-call-parser": "Output & tools", "--generation-config": "Output & tools",
     "--jinja": "Output & tools",
-    # sampling
-    "--seed": "Sampling", "--temp": "Sampling", "--repeat-penalty": "Sampling",
     # performance
     "--enable-prefix-caching": "Performance", "--enable-chunked-prefill": "Performance",
     "--async-scheduling": "Performance", "--enforce-eager": "Performance",
