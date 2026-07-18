@@ -62,10 +62,13 @@ from core.detect import (  # noqa: E402
     params_of as _params_of,
     quant_of as _quant_of,
 )
-from core.ghost_art import MINI_GHOST  # noqa: E402
+from core.ghost_art import BIG_GHOST  # noqa: E402
 
-# Topbar mascot: Nick's hand-drawn 3-row ghost, in white.
-_MINI_GHOST = "\n".join(f"[#ffffff]{line}[/]" for line in MINI_GHOST)
+# Watermark ghost for the middle column — the shape sits centered under the
+# models table, painted just a touch darker than the panel background so it
+# reads as a faded silhouette (Textual has no true opacity, so we simulate
+# with a near-bg tone).
+_MID_WATERMARK = "\n".join(f"[#d8cfae]{line}[/]" for line in BIG_GHOST)
 
 # Accent palette — the ALLMA logo rainbow (C64/Apple II retro style)
 ACC_RED    = "#e52529"
@@ -1103,7 +1106,20 @@ Screen { background: #0a0a08; }
     padding: 0 1;
 }
 #col-left  { width: 1fr; min-width: 24; max-width: 40; }
-#col-mid   { width: 2fr; min-width: 30; }
+#col-mid   { width: 2fr; min-width: 30; layers: below above; }
+/* Watermark ghost — lives on a lower layer so it floats behind the table.
+   The `#d8cfae` foreground sits one shade darker than the cream panel bg
+   (#e8dfc8), giving the "low opacity silhouette" look Nick wanted without
+   Textual actually supporting alpha. */
+#mid-watermark {
+    layer: below;
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    color: #d8cfae;
+    background: transparent;
+}
+#models-table, #log-collapsible, #models-footer { layer: above; }
 #col-right { width: 1fr; min-width: 32; max-width: 66; }
 
 /* ── EXPLORE / toggles ── */
@@ -1344,7 +1360,6 @@ class AllmaTUI(App):
     def compose(self) -> ComposeResult:
         with Vertical(id="root"):
             with Horizontal(id="topbar"):
-                yield Static(_MINI_GHOST, id="topbar-ghost")
                 yield Static("", id="topbar-status")
                 yield Button("▶ Load", id="btn-top-load", classes="top-btn")
                 yield Button("⟳ Server", id="btn-top-reload", classes="top-btn")
@@ -1362,6 +1377,7 @@ class AllmaTUI(App):
                         with Horizontal(classes="btn-row dl-row"):
                             yield Button("⇣ Fetch", id="btn-dl")
                 with Vertical(id="col-mid", classes="panel"):
+                    yield Static(_MID_WATERMARK, id="mid-watermark")
                     yield DataTable(id="models-table", cursor_type="row", zebra_stripes=True)
                     with Collapsible(title=f"[{ACC_ORANGE}]▮[/] backend logs",
                                      collapsed=True, id="log-collapsible"):
