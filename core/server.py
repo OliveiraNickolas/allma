@@ -1479,12 +1479,15 @@ def show_banner():
 
     _S = f"on {C_BG}"  # window background style
 
+    # Wordmark and mascot ride side-by-side — mirrors the loading spinner
+    # (rainbow trail with the ghost tucked in at its right end).
+    _logo_row = Table.grid(expand=False, padding=(0, 2))
+    _logo_row.add_column(justify="right", vertical="middle")
+    _logo_row.add_column(justify="left", vertical="middle")
+    _logo_row.add_row(logo_text, ghost_text)
+
     logo_panel = Panel(
-        Group(
-            Align(ghost_text, align="center"),
-            Text(""),
-            Align(logo_text, align="center"),
-        ),
+        Align(_logo_row, align="center"),
         box=_box.SQUARE, border_style=C_BORDER,
         style=_S, padding=(1, 0),
     )
