@@ -1134,9 +1134,9 @@ Screen { background: #0a0a08; }
     content-align: center middle;
     background: #e8dfc8;
 }
-/* Let the models table only claim what its rows need, so the watermark
-   below it actually gets breathing room. */
-#models-table { height: auto; max-height: 1fr; }
+/* height rules for #models-table live in the main block below (search for
+   the second `#models-table` selector) — a duplicate here loses the CSS
+   cascade fight and the table would eat the watermark's space. */
 #col-right { width: 1fr; min-width: 32; max-width: 66; }
 
 /* ── EXPLORE / toggles ── */
@@ -1201,7 +1201,10 @@ Toggle.line.-on {
 
 /* ── MY MODELS ── */
 #models-table {
-    background: #e8dfc8; color: #1a1408; border: none; height: 1fr;
+    background: #e8dfc8; color: #1a1408; border: none;
+    /* Claim only what the rows need, up to the column's height, so the
+       watermark below can breathe. Was `height: 1fr`, which ate everything. */
+    height: auto; max-height: 1fr;
     scrollbar-color: #007878; scrollbar-background: #c8b898;
     scrollbar-size: 1 1;
 }
