@@ -14,9 +14,9 @@ wave at its own column, bobbing between rows 0-2 and 1-3.
 import random
 import sys
 
-WIN = 36          # visible columns of the animation window
-ROWS = 4          # canvas height
-_GHOST_X = 24     # ghost anchor (trail fills everything to its left)
+WIN = 40          # visible columns of the animation window
+ROWS = 8          # canvas height — fits the full 7-row mascot + bob
+_GHOST_X = 20     # ghost anchor (trail fills everything to its left)
 
 # ── allma palette rainbow (6 stripes, nyan-style continuous ribbon) ──────────
 _STRIPES = [
@@ -41,11 +41,38 @@ def _bg(rgb):
     return f"\033[48;2;{rgb[0]};{rgb[1]};{rgb[2]}m"
 
 
-# ── ghost sprite: 4 wide × 3 rows (cell aspect makes it slightly tall) ───────
-_GHOST_DOME = "▄███▄"
-_GHOST_FACE = "███▙▙"            # tiny notch-eyes, pupils to the RIGHT
-_GHOST_HEMS = ["█▀ ▀█","█▀█▀█"]  # scalloped hem, fluttering
-_HEM_SPEED = 5
+# ── the mascot: solid ghost with hollow square eyes ──────────────────────────
+# Canonical big version (README, `allma status`, TUI idle panel). The tiny
+# spinner sprite below is the same identity scaled to 3 rows.
+BIG_GHOST = [
+    "  ▄██████▄",
+    " ██████████",
+    " █████ ██ █",
+    " ██████████",
+    " ▀█ ▀██▀ █▀",
+    "▄   ▄  ▄   "
+]
+
+
+# Hand-drawn 3-row version for tight spots (TUI topbar).
+MINI_GHOST = [
+    "▄████▄",
+    "██▄█▄█",
+    "█▀██▀█",
+]
+
+
+def big_ghost_lines(colored=None) -> list[str]:
+    """The big mascot as printable lines (cream on dark TTYs, plain otherwise)."""
+    if colored is None:
+        colored = sys.stdout.isatty()
+    if not colored:
+        return list(BIG_GHOST)
+    return [f"{_fg(_GHOST_RGB)}{line}{_RESET}" for line in BIG_GHOST]
+
+
+# ── ghost sprite: the full BIG_GHOST rides the trail (11 wide × 7 rows) ──────
+_GHOST_SPRITE = [line.ljust(11) for line in BIG_GHOST]
 
 
 def _wave_pos(tick: int, x: int) -> int:
@@ -82,50 +109,47 @@ _stars = _Stars()
 
 
 def render_rows(tick: int, colored=None):
-    """FOUR WIN-column rows: undulating rainbow trail + bobbing ghost."""
+    """ROWS WIN-column rows: undulating rainbow trail + bobbing ghost."""
     if colored is None:
         colored = sys.stdout.isatty()
 
     gx = _GHOST_X
     rows = [[" "] * WIN for _ in range(ROWS)]
 
-    # ── trail: continuous 6-stripe ribbon, undulating by HALF a cell ────
-    # up state:   rows 0-2 hold the six stripes as ▀(top,bottom) pairs.
-    # down state: everything slides half a cell — ▄ paints the first
-    # half-stripe at the top edge, ▀ without bg paints the last at row 3.
+    # ── trail: continuous 6-stripe ribbon (one row per stripe), undulating
+    # by HALF a cell. up state: rows 1-6 are full stripe cells. down state:
+    # everything slides half a cell — ▄ opens the ribbon at row 1, fg/bg ▀
+    # pairs carry the seams, a bare ▀ closes it at row 7.
     s = _STRIPES
     for x in range(gx - 1):
         if _wave_pos(tick, x) == 0:   # up
-            if colored:
-                rows[0][x] = f"{_fg(s[0])}{_bg(s[1])}▀{_RESET}"
-                rows[1][x] = f"{_fg(s[2])}{_bg(s[3])}▀{_RESET}"
-                rows[2][x] = f"{_fg(s[4])}{_bg(s[5])}▀{_RESET}"
-            else:
-                rows[0][x] = rows[1][x] = rows[2][x] = "█"
+            for i in range(6):
+                rows[1 + i][x] = f"{_fg(s[i])}█{_RESET}" if colored else "█"
         else:                          # down (half-cell shift)
             if colored:
-                rows[0][x] = f"{_fg(s[0])}▄{_RESET}"
-                rows[1][x] = f"{_fg(s[1])}{_bg(s[2])}▀{_RESET}"
-                rows[2][x] = f"{_fg(s[3])}{_bg(s[4])}▀{_RESET}"
-                rows[3][x] = f"{_fg(s[5])}▀{_RESET}"
+                rows[1][x] = f"{_fg(s[0])}▄{_RESET}"
+                for i in range(5):
+                    rows[2 + i][x] = f"{_fg(s[i])}{_bg(s[i + 1])}▀{_RESET}"
+                rows[7][x] = f"{_fg(s[5])}▀{_RESET}"
             else:
-                rows[0][x] = "▄"
-                rows[1][x] = rows[2][x] = "█"
-                rows[3][x] = "▀"
+                rows[1][x] = "▄"
+                for i in range(5):
+                    rows[2 + i][x] = "█"
+                rows[7][x] = "▀"
 
     # ── ghost rides the wave at its own column ──────────────────────────
     bob = _wave_pos(tick, gx)                     # rides the ribbon's shift
-    hem = _GHOST_HEMS[(tick // _HEM_SPEED) % 2]
     paint = _fg(_GHOST_RGB) if colored else ""
     reset = _RESET if colored else ""
-    for r, sprite in ((bob, _GHOST_DOME), (bob + 1, _GHOST_FACE), (bob + 2, hem)):
-        for k, ch in enumerate(sprite):
+    # sprite is 6 rows on an 8-row canvas — +1 keeps it centered on the ribbon
+    for r, line in enumerate(_GHOST_SPRITE):
+        for k, ch in enumerate(line):
             p = gx + k
-            if p < WIN:
-                rows[r][p] = f"{paint}{ch}{reset}" if ch != " " else " "
+            if p < WIN and ch != " ":
+                rows[bob + 1 + r][p] = f"{paint}{ch}{reset}"
 
     # ── stars in the leftover empty space ────────────────────────────────
-    _stars.tick(gx + 6, WIN)
+    _stars.tick(gx + 12, WIN)
     _stars.blit(rows, colored)
 
     return ["".join(r) for r in rows]

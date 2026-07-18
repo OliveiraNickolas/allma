@@ -1,5 +1,14 @@
 # Allma
 
+```
+  ▄██████▄
+ ██████████
+ █████ ██ █
+ ██████████
+ ▀█ ▀██▀ █▀
+▄   ▄  ▄
+```
+
 A personal LLM manager that sits in front of **vLLM** and **llama.cpp**, giving them a unified OpenAI + Anthropic-compatible API with automatic model loading, VRAM management, and multi-GPU support.
 
 ```
