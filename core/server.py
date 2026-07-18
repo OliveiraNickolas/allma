@@ -1345,13 +1345,9 @@ def show_banner():
         if row_ix == 0:
             stripe_text.append("\n")
 
-    # ── mascot: sits above the wordmark, centered, in accent teal ────────────
-    from core.ghost_art import BIG_GHOST as _GHOST_ROWS
-    ghost_text = Text(justify="center")
-    for i, row in enumerate(_GHOST_ROWS):
-        ghost_text.append(row, style=f"bold {C_ACCENT}")
-        if i < len(_GHOST_ROWS) - 1:
-            ghost_text.append("\n")
+    # ── mascot: brown body + white eyes, decorative variant beside the logo ──
+    from core.ghost_art import big_ghost_rich
+    ghost_text = big_ghost_rich(variant="brown")
 
     # ── logo panel ────────────────────────────────────────────────────────────
     # cols 8-23 = the two L's; box-drawing chars there are rendered dim (the

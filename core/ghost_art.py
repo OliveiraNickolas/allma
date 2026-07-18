@@ -62,13 +62,81 @@ MINI_GHOST = [
 ]
 
 
-def big_ghost_lines(colored=None) -> list[str]:
-    """The big mascot as printable lines (cream on dark TTYs, plain otherwise)."""
+# ── palette + geometry shared by both variants ───────────────────────────────
+# `cream` is the classic ghost: body in warm cream, eyes are hollow (they
+# show the terminal background). `brown` swaps the body for a warm C64
+# keycap tone and lights up the eyes as bright white squares — feels more
+# like a physical mascot in decorative slots.
+BODY_CREAM_RGB = (240, 232, 208)   # #f0e8d0
+BODY_BROWN_RGB = (83, 71, 66)      # #534742
+EYE_WHITE_RGB  = (255, 255, 255)
+
+BODY_CREAM_HEX = "#f0e8d0"
+BODY_BROWN_HEX = "#534742"
+EYE_WHITE_HEX  = "#ffffff"
+
+# Eye pixels in BIG_GHOST — the two spaces on row 2 that read as eyes.
+_EYE_POSITIONS = {(2, 6), (2, 9)}
+
+
+def _variant_palette(variant: str) -> tuple[tuple, bool]:
+    """Return (body_rgb, fill_eyes) for a variant name."""
+    if variant == "brown":
+        return BODY_BROWN_RGB, True
+    return BODY_CREAM_RGB, False
+
+
+def big_ghost_lines(variant: str = "cream", colored=None) -> list[str]:
+    """The big mascot as printable ANSI lines.
+
+    variant='cream'  — solid cream body, eyes are ' ' (show terminal bg).
+    variant='brown'  — warm-brown body, eyes are white-filled squares.
+    """
     if colored is None:
         colored = sys.stdout.isatty()
     if not colored:
         return list(BIG_GHOST)
-    return [f"{_fg(_GHOST_RGB)}{line}{_RESET}" for line in BIG_GHOST]
+
+    body_rgb, fill_eyes = _variant_palette(variant)
+    body_fg = _fg(body_rgb)
+    eye_bg = _bg(EYE_WHITE_RGB)
+    out = []
+    for r_ix, row in enumerate(BIG_GHOST):
+        line = []
+        for c_ix, ch in enumerate(row):
+            is_eye = (r_ix, c_ix) in _EYE_POSITIONS
+            if ch == " ":
+                if fill_eyes and is_eye:
+                    line.append(f"{eye_bg} {_RESET}")
+                else:
+                    line.append(" ")
+            else:
+                line.append(f"{body_fg}{ch}{_RESET}")
+        out.append("".join(line))
+    return out
+
+
+def big_ghost_rich(variant: str = "cream"):
+    """Same mascot as a `rich.text.Text` for the Rich-rendered surfaces
+    (show_banner, allma top). Import Rich lazily so the module stays
+    stdlib-only for the many call sites that don't need it."""
+    from rich.text import Text
+    body_hex = BODY_BROWN_HEX if variant == "brown" else BODY_CREAM_HEX
+    fill_eyes = variant == "brown"
+    t = Text(justify="center")
+    for r_ix, row in enumerate(BIG_GHOST):
+        for c_ix, ch in enumerate(row):
+            is_eye = (r_ix, c_ix) in _EYE_POSITIONS
+            if ch == " ":
+                if fill_eyes and is_eye:
+                    t.append(" ", style=f"on {EYE_WHITE_HEX}")
+                else:
+                    t.append(" ")
+            else:
+                t.append(ch, style=f"bold {body_hex}")
+        if r_ix < len(BIG_GHOST) - 1:
+            t.append("\n")
+    return t
 
 
 # ── ghost sprite: the full BIG_GHOST rides the trail (11 wide × 7 rows) ──────

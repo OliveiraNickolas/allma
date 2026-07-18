@@ -656,10 +656,10 @@ def cmd_status(args):
     health = _get("/health")
     online = bool(health)
 
-    from core.ghost_art import BIG_GHOST
+    from core.ghost_art import big_ghost_lines
     print()
-    for line in BIG_GHOST:
-        print(f"    {C_GHOST}{line}{C_END}")
+    for line in big_ghost_lines(variant="brown"):
+        print(f"    {line}")
     print()
     print(f"    {C_FG}**** {C_HL}ALLMA{C_FG} 64K RAM SYSTEM  "
           f"{'READY' if online else 'OFFLINE'} ****{C_END}")

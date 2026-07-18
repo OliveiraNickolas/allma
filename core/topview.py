@@ -346,19 +346,14 @@ class TopView:
                 return 99  # unknown gpu → last
         servers.sort(key=_gpu_key)
 
-        # Idle mascot — the ghost floats in when there's nothing else to show
-        # (no GPU, no models). Keeps the panel from looking empty and gives
-        # the identity a moment of visibility.
-        from core.ghost_art import BIG_GHOST as _GHOST
+        # Idle mascot — floats in when there's nothing else to show. Uses the
+        # decorative brown+white-eyes variant so the empty state feels like a
+        # figurine, not a status color.
+        from core.ghost_art import big_ghost_rich
         def _ghost_block(caption: str) -> Group:
-            gt = Text(justify="center")
-            for i, row in enumerate(_GHOST):
-                gt.append(row, style=f"bold {C_ACCENT}")
-                if i < len(_GHOST) - 1:
-                    gt.append("\n")
             return Group(
                 Text(""),
-                Align.center(gt),
+                Align.center(big_ghost_rich(variant="brown")),
                 Align.center(Text(caption, style=f"{C_DIM} on {C_BG}")),
                 Text(""),
             )
