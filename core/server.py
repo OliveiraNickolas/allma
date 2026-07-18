@@ -1327,6 +1327,14 @@ def show_banner():
         "        ╚══════╝╚══════╝__________________",
     ]
 
+    # ── mascot: sits above the wordmark, centered, in accent teal ────────────
+    from core.ghost_art import BIG_GHOST as _GHOST_ROWS
+    ghost_text = Text(justify="center")
+    for i, row in enumerate(_GHOST_ROWS):
+        ghost_text.append(row, style=f"bold {C_ACCENT}")
+        if i < len(_GHOST_ROWS) - 1:
+            ghost_text.append("\n")
+
     # ── logo panel ────────────────────────────────────────────────────────────
     # cols 8-23 = the two L's; box-drawing chars there are rendered dim (shadow)
     # box-drawing chars on A and M are rendered bold to keep letters solid
@@ -1472,7 +1480,11 @@ def show_banner():
     _S = f"on {C_BG}"  # window background style
 
     logo_panel = Panel(
-        Align(logo_text, align="center"),
+        Group(
+            Align(ghost_text, align="center"),
+            Text(""),
+            Align(logo_text, align="center"),
+        ),
         box=_box.SQUARE, border_style=C_BORDER,
         style=_S, padding=(1, 0),
     )
