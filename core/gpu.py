@@ -5,75 +5,49 @@ import json
 import math
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict
 
 from core.config import logger, BASE_MODELS
 import core.state as state
+from core.detect import (
+    calc_model_size_gb as _calc_model_size_gb,
+    estimate_kv_cache_gb as _estimate_kv_cache_gb,
+)
 
 
-def _calc_model_size_gb(model_path: str) -> float:
-    """Sum .safetensors files in a model directory to estimate model size in GB.
-
-    Excludes .cache/ and hidden directories to avoid double-counting HuggingFace
-    download cache files which are symlinks or duplicates of the real weights.
-    """
-    total_bytes = 0
-    for root, dirs, files in os.walk(model_path):
-        # Skip hidden dirs (.cache, .git, etc.) in-place so os.walk won't descend
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for f in files:
-            if f.endswith(".safetensors"):
-                try:
-                    fpath = os.path.join(root, f)
-                    # Skip symlinks — they point to the real file already counted
-                    if not os.path.islink(fpath):
-                        total_bytes += os.path.getsize(fpath)
-                except OSError:
-                    pass
-    return total_bytes / (1024 ** 3)
+# ==============================================================================
+# nvidia-smi query cache
+# ==============================================================================
+# Each `nvidia-smi` shell-out costs ~19ms. Cold-start of a model calls
+# get_all_gpus() four times inside find_optimal_tp_and_gpus alone (76ms of pure
+# overhead), plus more from surgical-swap probes. VRAM doesn't change on a
+# sub-second timescale during load orchestration, so caching for a very short
+# window collapses these bursts into one real query while staying accurate.
+_SMI_TTL = 0.5
+_smi_cache: dict[str, tuple[float, list[dict]]] = {}
+_smi_lock = threading.Lock()
 
 
-def _estimate_kv_cache_gb(model_path: str, max_model_len: int, kv_dtype: str = "auto") -> float:
-    """Estimate KV cache memory in GB by reading model config.json.
+def _cached_smi(key: str, fetch) -> list[dict]:
+    now = time.monotonic()
+    with _smi_lock:
+        hit = _smi_cache.get(key)
+        if hit and now - hit[0] < _SMI_TTL:
+            return list(hit[1])
+    data = fetch()
+    with _smi_lock:
+        _smi_cache[key] = (now, list(data))
+    return data
 
-    Handles hybrid models (e.g. Qwen3.5) that only allocate KV cache on full
-    attention layers, not on linear/recurrent layers.
-    """
-    config_path = Path(model_path) / "config.json"
-    if not config_path.exists():
-        return max_model_len * 65536 / (1024 ** 3)  # rough fallback
-    try:
-        config = json.loads(config_path.read_text())
-        # Multimodal models nest text config under "text_config"
-        tc = config.get("text_config", config)
-        num_layers = tc.get("num_hidden_layers", 32)
-        num_kv_heads = tc.get("num_key_value_heads") or tc.get("num_attention_heads", 8)
-        hidden_size = tc.get("hidden_size", 4096)
-        num_attn_heads = tc.get("num_attention_heads", 16)
-        head_dim = tc.get("head_dim") or (hidden_size // num_attn_heads)
-        # Hybrid models (linear attention + full attention): only full attention layers
-        # consume KV cache that scales with sequence length.
-        full_attn_interval = tc.get("full_attention_interval")
-        if full_attn_interval:
-            num_kv_layers = max(1, num_layers // full_attn_interval)
-        else:
-            num_kv_layers = num_layers
-        # q8_0 and fp8 = 1 byte/element; fp16/bf16/auto = 2 bytes/element
-        dtype_bytes = 1 if kv_dtype in ("fp8", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1") else 2
-        # Sliding window attention (e.g. Gemma4): local attention layers only cache
-        # `sliding_window` tokens, while global attention layers cache the full context.
-        # Typical pattern: ~1/6 of layers are global, rest are local sliding window.
-        sliding_window = tc.get("sliding_window")
-        if sliding_window and sliding_window < max_model_len:
-            n_global = max(1, round(num_kv_layers / 6))
-            n_local = num_kv_layers - n_global
-            kv_bytes = (n_global * max_model_len + n_local * sliding_window) * 2 * num_kv_heads * head_dim * dtype_bytes
-            return kv_bytes / (1024 ** 3)
-        kv_bytes_per_token = 2 * num_kv_heads * head_dim * num_kv_layers * dtype_bytes
-        return max_model_len * kv_bytes_per_token / (1024 ** 3)
-    except Exception:
-        return max_model_len * 65536 / (1024 ** 3)
+
+def invalidate_gpu_cache() -> None:
+    """Force the next nvidia-smi call to re-query. Call after loading/unloading
+    a model so the following allocator decisions see fresh VRAM."""
+    with _smi_lock:
+        _smi_cache.clear()
 
 
 def _get_kv_dtype(cfg: dict) -> str:
@@ -86,7 +60,7 @@ def _get_kv_dtype(cfg: dict) -> str:
     return "auto"
 
 
-def get_free_gpu_memory() -> list[dict]:
+def _query_free_gpu_memory() -> list[dict]:
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.free,index", "--format=csv,nounits,noheader"],
@@ -109,25 +83,32 @@ def get_free_gpu_memory() -> list[dict]:
         return []
 
 
+def get_free_gpu_memory() -> list[dict]:
+    return _cached_smi("free", _query_free_gpu_memory)
+
+
 def get_best_gpu() -> int:
-    """Get GPU with most free memory."""
+    """Get GPU with most free memory. Returns -1 in CPU-only mode.
+
+    Callers must handle -1 (no GPU pin) rather than assume 0; before this
+    change a CPU-only host would still return "GPU 0" and every downstream
+    command would try to bind a device that doesn't exist.
+    """
     gpus = get_free_gpu_memory()
     if not gpus:
-        logger.warning("No GPU info available, using GPU 0")
-        return 0
+        logger.debug("No GPU info available — CPU-only mode")
+        return -1
     best = max(gpus, key=lambda g: g["free_gb"])
     logger.debug(f"Selected GPU {best['index']} with {best['free_gb']:.1f}GB free")
     return best["index"]
 
 
-def get_all_gpus() -> list[dict]:
-    """Get all GPUs with their VRAM info, respecting ALLMA_VISIBLE_DEVICES env var."""
+def _query_all_gpus() -> list[dict]:
     visible_devices = os.environ.get("ALLMA_VISIBLE_DEVICES", None)
     visible_gpus = None
     if visible_devices:
         try:
             visible_gpus = set(int(x.strip()) for x in visible_devices.split(","))
-            logger.debug(f"ALLMA_VISIBLE_DEVICES={visible_devices}, restricting to GPUs: {visible_gpus}")
         except ValueError as e:
             logger.error(f"Invalid ALLMA_VISIBLE_DEVICES: {visible_devices}. Must be comma-separated integers. {e}")
             visible_gpus = None
@@ -156,12 +137,18 @@ def get_all_gpus() -> list[dict]:
                         "total_mb": total_mb,
                         "total_gb": total_mb / 1024,
                     })
-        if visible_gpus is not None:
-            logger.info(f"Found {len(gpus)} GPU(s) visible to ALLMA: {[g['index'] for g in gpus]}")
         return gpus
     except Exception as e:
         logger.error(f"Error getting GPU info: {e}")
         return []
+
+
+def get_all_gpus() -> list[dict]:
+    """Get all GPUs with their VRAM info, respecting ALLMA_VISIBLE_DEVICES env var.
+
+    Wraps a ~19ms nvidia-smi call in a 0.5s cache — see the module preamble.
+    """
+    return _cached_smi("all", _query_all_gpus)
 
 
 

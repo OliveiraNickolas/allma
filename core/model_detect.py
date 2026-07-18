@@ -5,13 +5,10 @@ When a base config has no extra_args, we read the model's config.json (or GGUF
 metadata) to identify the family, then apply the matching preset from FAMILY_PRESETS.
 """
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 
-# Import presets from create_config — single source of truth
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from create_config import FAMILY_PRESETS, detect_model
+from core.detect import FAMILY_PRESETS, detect_model
 
 
 def get_family(model_path: str) -> str:

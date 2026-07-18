@@ -27,6 +27,42 @@ from core.error_detector import ErrorDetector, tail_file
 
 
 # ==============================================================================
+# BACKEND LOG ROTATION
+# ==============================================================================
+# Backends (vLLM, llama-server) write directly to a file — no Python logging
+# framework in the middle — so we rotate here, right before handing the FD to
+# Popen. Every reload of a model checks the previous log's size and moves it
+# aside if it grew past the cap; the next open starts fresh. Long-running
+# backends (weeks without an unload) will still grow, but that's a rare case
+# in practice — a reload trims them.
+
+_BACKEND_LOG_MAX_BYTES = 20 * 1024 * 1024   # 20 MB per active log
+_BACKEND_LOG_KEEP = 3                        # number of rotated copies to keep
+
+
+def _rotate_backend_log(path: Path) -> None:
+    """Move oversized backend logs aside so the new run gets a clean file.
+
+    Errors are swallowed on purpose — a rotate failure must never block a
+    model load. If the FS is full or perms are broken the open below will
+    surface a real error anyway.
+    """
+    try:
+        if not path.exists() or path.stat().st_size < _BACKEND_LOG_MAX_BYTES:
+            return
+        for i in range(_BACKEND_LOG_KEEP, 0, -1):
+            older = path.with_suffix(path.suffix + f".{i}")
+            if i == _BACKEND_LOG_KEEP and older.exists():
+                older.unlink()
+            newer = path.with_suffix(path.suffix + f".{i - 1}") if i > 1 else path
+            if newer.exists():
+                newer.rename(older)
+        logger.debug(f"Rotated backend log {path.name} (was ≥{_BACKEND_LOG_MAX_BYTES // 1024 // 1024} MB)")
+    except Exception as e:
+        logger.debug(f"Backend log rotate skipped for {path.name}: {e}")
+
+
+# ==============================================================================
 # LOADING UI
 # ==============================================================================
 
@@ -39,29 +75,29 @@ class LoadingSpinner:
 
     def _spin(self):
         import shutil
-        from core.ghost_art import render_rows, WIN
+        from core.ghost_art import render_rows, WIN, ROWS
         tick = 0
-        sys.stdout.write("\n\n\n")
+        sys.stdout.write("\n" * (ROWS - 1))
         while self.running:
             elapsed = time.time() - self._start_time
             try:
                 term_w = shutil.get_terminal_size().columns
             except Exception:
                 term_w = 80
-            r1, r2, r3, r4 = render_rows(tick)
+            canvas = render_rows(tick)
             time_part = f"  [{elapsed:.0f}s]"
-            # visible width of the r4 prefix is fixed: 2 + WIN + 2
+            # visible width of the last-row prefix is fixed: 2 + WIN + 2
             max_msg = term_w - (WIN + 4) - len(time_part) - 1
             msg = self.message if len(self.message) <= max_msg else self.message[:max_msg - 1] + "…"
-            sys.stdout.write(f"\033[3A\r\033[K  {r1}\n")
-            sys.stdout.write(f"\r\033[K  {r2}\n")
-            sys.stdout.write(f"\r\033[K  {r3}\n")
-            sys.stdout.write(f"\r\033[K  {r4}  {msg}{time_part}")
+            sys.stdout.write(f"\033[{ROWS - 1}A")
+            for r in canvas[:-1]:
+                sys.stdout.write(f"\r\033[K  {r}\n")
+            sys.stdout.write(f"\r\033[K  {canvas[-1]}  {msg}{time_part}")
             sys.stdout.flush()
             time.sleep(0.06)
             tick += 1
         sys.stdout.write("\r\033[K")
-        for _ in range(3):
+        for _ in range(ROWS - 1):
             sys.stdout.write("\033[1A\r\033[K")
         sys.stdout.flush()
 
@@ -410,6 +446,7 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
     import subprocess as _sp
 
     logfilepath = ALLMA_LOG_DIR / f"{basename}.log"
+    _rotate_backend_log(logfilepath)
     logfile = None
     try:
         logfile = open(logfilepath, "a+")
@@ -499,6 +536,13 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
             state.server_idle_time[basename] = time.time()
 
         save_backend_pid(basename, proc.pid, port, backend)
+        # New process = fresh VRAM state; drop the cached snapshot so the next
+        # allocator decision sees ground truth instead of the pre-load view.
+        try:
+            from core.gpu import invalidate_gpu_cache
+            invalidate_gpu_cache()
+        except Exception:
+            pass
         logger.info(f"PID {proc.pid} on port {port} (GPU {current_gpu_id}, TP={tp_from_cmd})")
 
         ready = await wait_for_model_ready(

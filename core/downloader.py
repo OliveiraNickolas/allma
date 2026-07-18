@@ -536,12 +536,13 @@ def download_safetensors_repo(repo_id: str, dest_dir: Path):
 
 
 # ── Config generation ─────────────────────────────────────────────────────────
-def create_configs(model_dir: Path, model_name: str) -> tuple[Path, list[Path]]:
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from create_config import (
-        detect_model, FAMILY_PRESETS, suggest_tp, suggest_max_len,
-        generate_base_allm, generate_profile_allm, get_gpus,
+def create_configs(model_dir: Path, model_name: str,
+                   gguf_override: Path | None = None) -> tuple[Path, list[Path]]:
+    from core.detect import (
+        detect_model, FAMILY_PRESETS, suggest_tp, suggest_max_len, get_gpus,
     )
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from create_config import generate_base_allm, generate_profile_allm
 
     allma_root = Path(__file__).parent.parent
     base_dir    = allma_root / "configs" / "base"
@@ -550,12 +551,22 @@ def create_configs(model_dir: Path, model_name: str) -> tuple[Path, list[Path]]:
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     info   = detect_model(model_dir)
+    # CPU-only hosts can't run vLLM; steer the auto-config to llama.cpp so the
+    # generated .allm actually works when the user runs it.
+    from core.detect import detect_platform, suggest_backend
+    _platform = detect_platform()
+    info["backend"] = suggest_backend(info, _platform)
     preset = FAMILY_PRESETS.get(info["family"], FAMILY_PRESETS["generic"])
     gpus   = get_gpus()
     tp     = suggest_tp(info["size_gb"], gpus)
-    max_len = suggest_max_len(info["max_ctx"], info["size_gb"], tp, gpus)
+    _kv = "fp8" if "--kv-cache-dtype" in preset.get("vllm_extra_args", []) else "auto"
+    max_len = suggest_max_len(info["max_ctx"], info["size_gb"], tp, gpus,
+                              model_path=info["path"], kv_dtype=_kv)
 
-    gguf_path   = info["gguf_files"][0]   if info["gguf_files"]   else None
+    if gguf_override:
+        gguf_path = str(gguf_override)
+    else:
+        gguf_path = info["gguf_files"][0] if info["gguf_files"] else None
     mmproj_path = info["mmproj_files"][0] if info["mmproj_files"] else None
 
     base_content = generate_base_allm(
@@ -581,6 +592,74 @@ def create_configs(model_dir: Path, model_name: str) -> tuple[Path, list[Path]]:
         profile_paths.append(p)
 
     return base_path, profile_paths
+
+
+def ensure_local_configs(target: Path) -> Optional[str]:
+    """Resolve a local model path (dir or .gguf file) to a runnable profile,
+    generating base + profile configs when none exist yet.
+
+    Returns the profile name to load, or None when the path holds no model.
+    """
+    target = target.expanduser().resolve()
+    model_dir = target.parent if target.is_file() else target
+
+    allma_root  = Path(__file__).parent.parent
+    base_dir    = allma_root / "configs" / "base"
+    profile_dir = allma_root / "configs" / "profile"
+
+    sys.path.insert(0, str(allma_root))
+    from configs.allm_parser import parse_allm
+
+    def _profiles_of(base_name: str) -> list[str]:
+        """Profile names for a base — the default variant (file named after
+        the base) first, the rest in file order."""
+        names = []
+        for f in sorted(profile_dir.glob("*.allm")):
+            try:
+                pc = parse_allm(f.read_text(), f.name)
+            except Exception:
+                continue
+            if pc.get("base") == base_name:
+                entry = pc.get("name") or f.stem
+                if f.stem == base_name:
+                    names.insert(0, entry)
+                else:
+                    names.append(entry)
+        return names
+
+    # 1. Reuse: a base that already points at this model keeps user tuning.
+    for f in sorted(base_dir.glob("*.allm")):
+        try:
+            cfg = parse_allm(f.read_text(), f.name)
+        except Exception:
+            continue
+        raw = cfg.get("path") or cfg.get("model") or ""
+        if not raw:
+            continue
+        p = Path(raw).expanduser()
+        if p in (target, model_dir) or p.parent == model_dir:
+            profiles = _profiles_of(f.stem)
+            if profiles:
+                return profiles[0]
+            break  # base exists but has no profile — regenerate below under a new name
+
+    # 2. Generate: needs actual model files in place.
+    has_gguf = target.suffix == ".gguf" or bool(list(model_dir.glob("*.gguf")))
+    has_sf   = bool(list(model_dir.rglob("*.safetensors")))
+    if not (has_gguf or has_sf):
+        return None
+
+    model_name = re.sub(r"[^A-Za-z0-9._-]", "-", model_dir.name)
+    # Never clobber an unrelated config that happens to share the dir name.
+    candidate, n = model_name, 2
+    while (base_dir / f"{candidate}.allm").exists():
+        candidate = f"{model_name}-{n}"
+        n += 1
+    gguf_override = target if target.suffix == ".gguf" else None
+    base_path, profile_paths = create_configs(model_dir, candidate,
+                                              gguf_override=gguf_override)
+    _print_result(base_path, profile_paths)
+    return profile_paths[0].stem if profile_paths else None
 
 
 def _print_result(base_path: Path, profile_paths: list[Path]):

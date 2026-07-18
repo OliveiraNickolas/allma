@@ -53,7 +53,19 @@ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from create_config import FAMILY_PRESETS, detect_model  # noqa: E402
+from core.detect import (  # noqa: E402
+    FAMILY_PRESETS,
+    detect_model,
+    detect_vision as _detect_vision,
+    get_gpus,
+    is_moe as _is_moe,
+    params_of as _params_of,
+    quant_of as _quant_of,
+)
+from core.ghost_art import MINI_GHOST  # noqa: E402
+
+# Topbar mascot: Nick's hand-drawn 3-row ghost, in white.
+_MINI_GHOST = "\n".join(f"[#ffffff]{line}[/]" for line in MINI_GHOST)
 
 # Accent palette — the ALLMA logo rainbow (C64/Apple II retro style)
 ACC_RED    = "#e52529"
@@ -364,67 +376,9 @@ def _http(method: str, path: str, body: dict | None = None, timeout: float = 8.0
         return False, {"error": str(e)}
 
 
-def get_gpus() -> list[dict]:
-    try:
-        r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name,memory.total,memory.free",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=8,
-        )
-        gpus = []
-        for line in r.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) == 4:
-                gpus.append({"index": int(parts[0]), "name": parts[1],
-                             "total_gb": int(parts[2]) / 1024,
-                             "free_gb": int(parts[3]) / 1024})
-        return gpus
-    except Exception:
-        return []
-
-
 def _parse_allm(f: Path) -> dict:
     from configs.allm_parser import parse_allm
     return parse_allm(f.read_text(), f.name)
-
-
-def _quant_of(text: str) -> str:
-    m = re.search(r"(Q\d_K_[SML]|Q\d_\d|IQ\d\w*|Q\d|FP8|FP16|BF16|AWQ|GPTQ)", text, re.I)
-    return m.group(1).upper() if m else "—"
-
-
-def _params_of(text: str) -> str:
-    m = re.search(r"(\d+(?:\.\d+)?)\s*[Bb](?![a-z0-9])", text)
-    return f"{m.group(1)}B" if m else "—"
-
-
-def _is_moe(text: str) -> bool:
-    """MoE sparse models carry the active-params marker in the name (e.g. 35B-A3B)."""
-    return bool(re.search(r"a\d+(\.\d+)?b", text.lower()))
-
-
-def _detect_vision(model_dir: Path, cfg: dict | None = None) -> bool:
-    """Vision by actual capability: config.json beats filename heuristics.
-
-    Multimodal safetensors models (e.g. Qwen3.6) embed vision without any
-    mmproj file — the presence of mmproj is only a llama.cpp packaging detail.
-    """
-    if cfg and cfg.get("mmproj"):
-        return True
-    try:
-        c = json.loads((model_dir / "config.json").read_text())
-        if "vision_config" in c:
-            return True
-        blob = (str(c.get("model_type", "")) + " "
-                + " ".join(c.get("architectures", []))).lower()
-        if "vl" in blob or "vision" in blob:
-            return True
-    except Exception:
-        pass
-    if list(model_dir.glob("*mmproj*")):
-        return True
-    name = model_dir.name.lower()
-    return "vl" in name.replace("vllm", "") or "vision" in name
 
 
 def scan_models(models_dir: Path) -> list[dict]:
@@ -1132,6 +1086,7 @@ Screen { background: #0a0a08; }
 #topbar {
     height: 3; background: #c8b898; padding: 0 1 0 2;
 }
+#topbar-ghost { width: 8; height: 3; }
 #topbar-status {
     width: 1fr; height: 3;
     color: #007878; text-style: bold;
@@ -1165,15 +1120,17 @@ Toggle.line.-on {
 .radio-row { height: 1; margin: 0 2 0 0; }
 .radio-row Toggle { width: auto; padding: 0 2 0 1; }
 .xrow { height: 1; margin: 0 2 0 0; }
-.xrow Toggle { width: 1fr; }
+/* the label owns the row: it keeps a floor width and ellipsizes instead of
+   collapsing to zero behind the fixed-width value/(i) on a narrow window */
+.xrow Toggle { width: 1fr; min-width: 16; text-overflow: ellipsis; }
 .flag-val {
-    width: 14; height: 1; border: none;
+    width: 12; height: 1; border: none;
     background: #f0e8d0; color: #007878; padding: 0 1;
 }
 /* border: none on focus too — the global Input:focus rule adds a border and
    inflates the 1-row field to 3 rows, covering the line below */
 .flag-val:focus { background: #fff8e0; border: none; }
-.flag-sel { width: 14; height: 1; margin: 0; }
+.flag-sel { width: 12; height: 1; margin: 0; }
 .flag-sel SelectCurrent {
     border: none; height: 1; padding: 0 1;
     background: #f0e8d0; color: #007878;
@@ -1186,7 +1143,7 @@ Toggle.line.-on {
 /* overlay is wider than the collapsed field so long preset labels fit on
    one line; it floats above the row so the extra width doesn't reflow it */
 .flag-sel SelectOverlay { width: 24; height: auto; max-height: 12; }
-.info-mark { width: 4; height: 1; color: #6a5a48; }
+.info-mark { width: 3; height: 1; color: #6a5a48; }
 .info-mark:hover { color: #007878; text-style: bold; }
 .param-counter { height: 1; margin: 0 2 1 0; }
 .ctr-label { width: 1fr; color: #1a1408; }
@@ -1247,6 +1204,9 @@ Tab.-active { color: #007878; text-style: bold; }
 TabPane { background: #e8dfc8; padding: 0 0 0 1; }
 .form-scroll {
     height: 1fr;
+    /* clip a too-wide row on the right (the short value) rather than growing a
+       horizontal scrollbar or squeezing the label out of view */
+    overflow-x: hidden;
     scrollbar-color: #007878; scrollbar-background: #c8b898;
     scrollbar-size: 1 1;
 }
@@ -1384,6 +1344,7 @@ class AllmaTUI(App):
     def compose(self) -> ComposeResult:
         with Vertical(id="root"):
             with Horizontal(id="topbar"):
+                yield Static(_MINI_GHOST, id="topbar-ghost")
                 yield Static("", id="topbar-status")
                 yield Button("▶ Load", id="btn-top-load", classes="top-btn")
                 yield Button("⟳ Server", id="btn-top-reload", classes="top-btn")

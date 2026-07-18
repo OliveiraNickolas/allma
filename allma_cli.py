@@ -132,11 +132,11 @@ def _spinner_loop(stop_event: threading.Event, text_fn):
     `text_fn(elapsed) -> (message, time_part)` supplies the trailing text.
     ANSI-safe clearing via \\033[K (the rows carry color escapes)."""
     import shutil
-    from core.ghost_art import render_rows, WIN
+    from core.ghost_art import render_rows, WIN, ROWS
 
     start = time.time()
     tick = 0
-    sys.stdout.write("\n\n\n")  # reserve 4 lines
+    sys.stdout.write("\n" * (ROWS - 1))  # reserve the canvas lines
 
     while not stop_event.is_set():
         try:
@@ -144,22 +144,22 @@ def _spinner_loop(stop_event: threading.Event, text_fn):
         except Exception:
             term_width = 80
         elapsed = time.time() - start
-        r1, r2, r3, r4 = render_rows(tick)
+        canvas = render_rows(tick)
         message, time_part = text_fn(elapsed)
-        # visible width of the r4 prefix is fixed: 2 + WIN + 2
+        # visible width of the last-row prefix is fixed: 2 + WIN + 2
         budget = term_width - (WIN + 4) - len(time_part) - 2
         if len(message) > budget:
             message = message[:max(0, budget - 1)] + "…"
-        sys.stdout.write(f"\033[3A\r\033[K  {r1}\n")
-        sys.stdout.write(f"\r\033[K  {r2}\n")
-        sys.stdout.write(f"\r\033[K  {r3}\n")
-        sys.stdout.write(f"\r\033[K  {r4}  {message}  {time_part}")
+        sys.stdout.write(f"\033[{ROWS - 1}A")
+        for r in canvas[:-1]:
+            sys.stdout.write(f"\r\033[K  {r}\n")
+        sys.stdout.write(f"\r\033[K  {canvas[-1]}  {message}  {time_part}")
         sys.stdout.flush()
         time.sleep(0.06)
         tick += 1
 
     sys.stdout.write("\r\033[K")
-    for _ in range(3):
+    for _ in range(ROWS - 1):
         sys.stdout.write("\033[1A\r\033[K")
     sys.stdout.flush()
 
@@ -504,6 +504,98 @@ def _kill_leftover_backends() -> int:
     return killed
 
 
+def cmd_doctor(args):
+    """One-shot health check of the whole allma install.
+
+    Reports platform, accelerator, backend binaries, model directory, server
+    state, and gives a concrete verdict at the end (OK / warning / broken).
+    Designed for the first debug question of any new user: "why isn't it
+    working?" — every check either says PASS with a value or FAIL with the
+    next action.
+    """
+    from core.detect import detect_platform, detect_backends
+    from pathlib import Path
+
+    C_OK = C_GREEN if 'C_GREEN' in globals() else "\033[92m"
+    C_WARN = C_YELLOW if 'C_YELLOW' in globals() else "\033[93m"
+    C_BAD = C_RED if 'C_RED' in globals() else "\033[91m"
+    C_END = C_RESET if 'C_RESET' in globals() else "\033[0m"
+
+    def line(status: str, label: str, detail: str = "") -> None:
+        color = {"PASS": C_OK, "WARN": C_WARN, "FAIL": C_BAD}[status]
+        print(f"  [{color}{status}{C_END}] {label}" + (f"  — {detail}" if detail else ""))
+
+    print("\n  Allma Doctor\n  " + "─" * 40)
+
+    plat = detect_platform()
+    label = f"{plat['os']}/{plat['arch']}"
+    if plat["accelerator"] == "cpu":
+        line("WARN", f"Platform: {label} (CPU-only)",
+             "no GPU accelerator detected — models will be very slow")
+    else:
+        acc = f"{plat['accelerator']} ({plat['gpu_vendor']})"
+        drv = f"driver {plat['driver_version']}" if plat["driver_version"] else ""
+        rt = f"runtime {plat['runtime_version']}" if plat["runtime_version"] else ""
+        line("PASS", f"Platform: {label} — {acc}", ", ".join(x for x in (drv, rt) if x))
+
+    try:
+        from core.detect import get_gpus
+        gpus = get_gpus()
+        if gpus:
+            for g in gpus:
+                line("PASS", f"GPU {g['index']}: {g.get('name', '?')}",
+                     f"{g.get('free_gb', 0):.1f}/{g.get('total_gb', 0):.1f} GB free")
+        elif plat["accelerator"] != "cpu":
+            line("WARN", "GPUs", "accelerator detected but no GPUs enumerated")
+    except Exception as e:
+        line("WARN", "GPU query", str(e))
+
+    print()
+    backends = detect_backends()
+    v = backends["vllm"]
+    if v["available"]:
+        line("PASS", "vLLM backend", f"{v['path']}" + (f" (v{v['version']})" if v['version'] else ""))
+    else:
+        line("WARN", "vLLM backend",
+             "not installed — .safetensors models won't work (llama.cpp still fine for GGUF)")
+    l = backends["llama_cpp"]
+    if l["available"]:
+        line("PASS", "llama.cpp backend",
+             f"{l['path']}" + (f" (build {l['version']})" if l['version'] else ""))
+    else:
+        line("FAIL", "llama.cpp backend",
+             "no llama-server binary found — install it or set LLAMA_CPP_PATH")
+
+    print()
+    from core.config import CONFIG_DIR, ALLMA_LOG_DIR
+    for name, path in (("Config dir", CONFIG_DIR), ("Log dir", ALLMA_LOG_DIR)):
+        if Path(path).is_dir():
+            line("PASS", name, str(path))
+        else:
+            line("WARN", name, f"{path} — will be created on first use")
+
+    try:
+        sys.path.insert(0, str(ALLMA_DIR))
+        from configs.allm_parser import load_models_from_configs as _load
+        bases, profiles = _load(str(ALLMA_DIR / "configs"))
+        line("PASS" if bases else "WARN", "Base configs",
+             f"{len(bases)} found" if bases else "none — try `allma run <path>` to auto-generate")
+        line("PASS" if profiles else "WARN", "Profiles",
+             f"{len(profiles)} found" if profiles else "none — try `allma run <profile>` after adding one")
+    except Exception as e:
+        line("FAIL", "Config parsing", str(e))
+
+    if _is_running():
+        line("PASS", "Server", f"running on port {ALLMA_PORT}")
+    else:
+        line("WARN", "Server", "not running — start with `allma serve`")
+
+    print()
+    verdict = "READY" if plat["accelerator"] != "cpu" and (backends["vllm"]["available"] or backends["llama_cpp"]["available"]) else "DEGRADED"
+    color = C_OK if verdict == "READY" else C_WARN
+    print(f"  Verdict: {color}{verdict}{C_END}\n")
+
+
 def cmd_stop(args):
     """Stop the Allma daemon and all backend processes."""
     if not _is_running() and not _read_pid():
@@ -548,6 +640,9 @@ def cmd_status(args):
         return
 
     active = health.get("active_servers", 0)
+    from core.ghost_art import big_ghost_lines
+    for line in big_ghost_lines():
+        print(line)
     print(f"● Allma is running  (port {ALLMA_PORT})")
     print(f"  Loaded models: {active}")
 
@@ -818,14 +913,29 @@ def cmd_quickstart(args):
 def cmd_run(args):
     """Load a model and open an interactive chat session.
 
-    Also accepts a HuggingFace repo id or URL: downloads the model
-    (interactive quant picker with fit/recommendation preview), generates
-    configs, and runs the resulting profile in one flow."""
+    Besides profile names, accepts:
+    - a local model dir or .gguf file: configs are generated on the fly
+      (reusing existing ones when the model is already configured);
+    - a HuggingFace repo id or URL: downloads the model (interactive quant
+      picker with fit preview), generates configs, and runs the profile."""
     model = args.model
 
+    # A path on disk (model dir or bare .gguf) is resolved to a profile,
+    # generating configs on the fly when the model was never configured.
+    maybe_path = Path(model).expanduser()
+    if maybe_path.exists() and (maybe_path.is_dir() or maybe_path.suffix == ".gguf"):
+        from core.downloader import ensure_local_configs
+        profile = ensure_local_configs(maybe_path)
+        if not profile:
+            print(f"No model files found at {maybe_path} — expected *.gguf or *.safetensors.")
+            return
+        if _is_running():
+            _post("/v1/reload-configs", {})
+        model = profile
+        print(f"Starting chat with {model}...")
     # Profile names never contain "/" — a slash (or an HF URL) means the user
     # pasted a repo straight from HuggingFace.
-    if "/" in model or "huggingface.co" in model:
+    elif "/" in model or "huggingface.co" in model:
         from core.downloader import run_download
         profile = run_download(model)
         if not profile:
@@ -2211,7 +2321,8 @@ commands:
 
     # run
     p_run = sub.add_parser("run", help="Chat with a model interactively")
-    p_run.add_argument("model", help="Model name (e.g. 'Qwen3.5:27b') or a HuggingFace repo/URL")
+    p_run.add_argument("model", help="Model name (e.g. 'Qwen3.5:27b'), a local model dir / .gguf path, "
+                                     "or a HuggingFace repo/URL — configs are generated automatically")
     p_run.add_argument("--gpu", type=int, default=None, metavar="N",
                       help="Pin model to GPU N (0-based). If not specified, auto-select by available VRAM")
     p_run.set_defaults(func=cmd_run)
@@ -2260,6 +2371,9 @@ commands:
     # hardware-detect
     p_hw = sub.add_parser("hardware-detect", help="Detect hardware and show info")
     p_hw.set_defaults(func=cmd_hardware_detect)
+
+    p_doctor = sub.add_parser("doctor", help="Diagnose the environment (platform, backends, models)")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     # calibrate
     p_calib = sub.add_parser("calibrate", help="Pre-calibrate a model")

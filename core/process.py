@@ -210,6 +210,13 @@ def build_llama_cmd(base_name: str, gpu_id: int | None = None) -> tuple[list, in
     n_ctx = cfg.get("n_ctx", "40960")
     extra_args = get_auto_extra_args(cfg, "llama.cpp")
 
+    # CPU-only host: -1 from get_best_gpu() is our "no accelerator" signal.
+    # Force the layer count to 0 so llama-server doesn't try to offload to a
+    # device that doesn't exist (which would either error or hang on init).
+    if gpu_id == -1:
+        cfg = dict(cfg, n_gpu_layers="0")
+        logger.info(f"{base_name}: CPU-only host, forcing n_gpu_layers=0")
+
     if "extra_args" not in cfg:
         family = get_family_label(cfg.get("model", ""))
         logger.info(f"{base_name}: auto-detected family '{family}', applying preset args")
@@ -350,6 +357,13 @@ def shutdown_server(basename: str, reason: str = "user", fast: bool = False):
         state.server_idle_time.pop(basename, None)
         state.gpu_allocation.pop(basename, None)
 
+    # Backend just died and freed VRAM; drop the cached snapshot so the
+    # unload log line (and any allocator call right after) reads fresh.
+    try:
+        from core.gpu import invalidate_gpu_cache
+        invalidate_gpu_cache()
+    except Exception:
+        pass
     gpus = get_free_gpu_memory()
     freegb = sum(g["free_gb"] for g in gpus)
     logger.info(f" {basename} unloaded. VRAM free: {freegb:.1f}GB")
@@ -362,7 +376,9 @@ def list_gpu_processes(gpu_ids: Optional[list[int]] = None) -> list[Dict[str, An
     if gpu_ids:
         cmd = ["nvidia-smi", "-i", ",".join(map(str, gpu_ids))] + cmd[1:]
     try:
-        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+        # A stuck Nvidia driver has been known to hang nvidia-smi indefinitely;
+        # a bounded timeout keeps the health path from wedging with it.
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=10)
         for line in out.strip().split("\n"):
             if not line.strip():
                 continue

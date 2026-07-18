@@ -82,12 +82,12 @@ class BootstrapDetector:
         start_time = time.time()
 
         try:
-            # Get GPU info
+            # Get GPU info. No accelerator is a valid state: allma still runs
+            # llama.cpp CPU-only, so we return an empty profile instead of
+            # raising — the callers already treat "no gpus" as CPU mode.
             gpu_list = get_all_gpus()
-            if not gpu_list:
-                raise RuntimeError("No GPUs detected. Continuing with CPU-only mode.")
 
-            # Parse driver and CUDA versions
+            # Parse driver and CUDA versions (best-effort, ok if missing)
             driver_version, cuda_version = BootstrapDetector._get_driver_cuda_versions()
 
             # Enhance each GPU with compute capability
