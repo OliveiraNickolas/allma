@@ -59,3 +59,6 @@ configs/base/*.allm
 debug.log
 *.Zone.Identifier
 .claude/
+
+# vLLM compile cache
+cache/

@@ -1,7 +1,8 @@
+# Profile: Qwen3.6:27B-Code-FP8
 @name Qwen3.6:27B-Code-FP8
 @base Qwen3.6-27B-FP8
 
-temperature 1.0
+temperature 0.6
 top-p 0.95
 top-k 20
 min-p 0.0

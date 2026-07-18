@@ -1,9 +1,0 @@
-@name Qwable3.6_ABT:27b-Q4-MTP
-@base Huihui-Qwable-3.6-27b-abliterated-Q4_K_M_Q8-MTP
-
-temperature 1.0
-top-p 0.6
-top-k 20
-min-p 0.0
-presence-penalty 0.0
-repetition-penalty 1.0

@@ -1,0 +1,9 @@
+@name Qwen3.6_ABT:27B-Q4-MTP
+@base Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4-MTP
+
+temperature 1.0
+top-p 0.95
+top-k 20
+min-p 0.0
+presence-penalty 0.0
+repetition-penalty 1.0

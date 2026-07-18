@@ -1,9 +1,11 @@
-@name Qwen3.6_ABT:27B-Q4-MTP
+# Profile: Qwen3.6_ABT:27B-Instruct-Q4-MTP
+@name Qwen3.6_ABT:27B-Instruct-Q4-MTP
 @base Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4-MTP
+@thinking-off
 
-temperature 1.0
-top-p 0.95
+temperature 0.7
+top-p 0.8
 top-k 20
 min-p 0.0
-presence-penalty 0.0
+presence-penalty 1.5
 repetition-penalty 1.0

@@ -22,8 +22,8 @@
 allma/
 ├── allma.py                  # Entry point (uvicorn + signal handlers)
 ├── allma_cli.py              # CLI completo (serve, stop, run, etc)
-├── allma_tui.py              # TUI Textual (interface interativa)
-├── create_config.py           # Helper para criar configs .allm
+├── allma_tui.py              # Painel de configuração 3 colunas (estilo LM Studio)
+├── create_config.py           # Wizard CLI + helpers (detect_model, presets) usados pelo TUI
 │
 ├── core/                      # Núcleo da aplicação
 │   ├── config.py              # Constantes, logging, load_models_from_configs()
@@ -119,6 +119,7 @@ repetition_penalty = 1.0
 | `LLAMA_CPP_PATH` | auto-detected | Path para binary `llama-server` |
 | `KEEP_ALIVE_SECONDS` | `600` | Tempo antes descarregar models ociosos |
 | `HEALTH_CHECK_INTERVAL` | `60` | Intervalo de health check (seg) |
+| `MODEL_LOAD_TIMEOUT` | `300` | Tempo máx (seg) esperando backend ficar pronto |
 | `GPU_MEMORY_THRESHOLD_GB` | `1.0` | VRAM mínima livre para carregar models |
 | `AUTO_SWAP_ENABLED` | `true` | Auto-unload models ociosos quando VRAM needed |
 
@@ -143,6 +144,7 @@ allma backend logs       # Tail backend logs
 
 # Interativo
 allma run <model>        # Carregar model e abrir chat interativo
+allma tui                # Painel de configuração (modelos, base config, profiles)
 ```
 
 ### Workflow Típico
@@ -211,8 +213,10 @@ Compatível com Anthropic API — tool calling é traduzido automaticamente para
 
 ### Admin
 - `GET /v1/models` — Lista profiles
-- `POST /v1/load?model=<name>` — Pré-carregar model
-- `GET /v1/ps` — Processos ativos
+- `POST /v1/load` — body `{model, gpu_id?, load_overrides?, sampling?}`; `load_overrides`/`sampling` são efêmeros (carga "one-time" do TUI, nada toca os .allm; `{}` limpa)
+- `POST /v1/unload` — body `{model: <base_name>}`
+- `POST /v1/reload-configs` — relê configs/*.allm a quente (usado pelo TUI ao salvar)
+- `GET /v1/ps` — Processos ativos (`custom_load: true` = rodando com config efêmera)
 - `GET /health` — Health check
 
 ---
