@@ -1320,16 +1320,16 @@ def show_banner():
         t.append(" ▉▌", style=f"bold {C_ACCENT}")
         return t
 
-    # Wordmark rebuilt with block glyphs only — the old version mixed █ with
-    # box-drawing chars (╗╔╚╝═║), which have subtly different metrics in most
-    # terminal fonts and made the L's read "cracked with a shadow". Same
-    # shape, one glyph family, clean silhouette.
+    # Wordmark: block chars for the letter bodies + box-drawing (╗╔╚╝═║)
+    # rendered DIM on the two L's to cast a shadow — "L L" pops visually,
+    # spelling out LLM inside ALLMA. Easter egg on purpose, not a mistake.
     LOGO_ROWS = [
-        "█████   ██      ██      ███   ███   █████ ",
-        "██  ██  ██      ██      ████ ████  ██   ██",
-        "███████ ██      ██      ██ ███ ██  ███████",
-        "██   ██ ██      ██      ██  █  ██  ██   ██",
-        "██   ██ ███████ ███████ ██     ██  ██   ██",
+        "█████  ██╗     ██╗     ███    ███  █████ ",
+        "██   ██ ██║     ██║     ████  ████ ██   ██",
+        "███████ ██║     ██║     ██ ████ ██ ███████",
+        "██   ██ ██║     ██║     ██  ██  ██ ██   ██",
+        "██   ██ ███████╗███████╗██      ██ ██   ██",
+        "        ╚══════╝╚══════╝__________________",
     ]
 
     # Rainbow signature stripe — the Commodore 64 badge motif. Six teal-tinted
@@ -1354,13 +1354,25 @@ def show_banner():
             ghost_text.append("\n")
 
     # ── logo panel ────────────────────────────────────────────────────────────
-    LOGO_COLORS = [C_RED, C_ORG, C_YELL, C_GRN, C_BLUE]
+    # cols 8-23 = the two L's; box-drawing chars there are rendered dim (the
+    # shadow that spells "LLM" out of ALLMA). Box chars on A and M are bold
+    # so the letters read solid.
+    _BOX  = set("╗╔╚╝═║")
+    _L_COLS = range(8, 24)
+    LOGO_COLORS = [C_RED, C_ORG, C_YELL, C_GRN, C_BLUE, C_BLUE]
     logo_text   = Text(justify="center")
     for i, row in enumerate(LOGO_ROWS):
         color = LOGO_COLORS[i]
-        for ch in row:
+        for j, ch in enumerate(row):
             if ch == "█":
                 logo_text.append(ch, style=f"bold {color}")
+            elif ch in _BOX:
+                if j in _L_COLS:
+                    logo_text.append(ch, style=f"dim {color}")
+                else:
+                    logo_text.append(" ")
+            elif ch == "_":
+                logo_text.append(ch, style=C_BG)
             else:
                 logo_text.append(ch)
         if i < len(LOGO_ROWS) - 1:
