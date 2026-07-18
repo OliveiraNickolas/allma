@@ -196,11 +196,22 @@ class ErrorDetector:
         return f"Exit code {exit_code} (unknown error)"
 
 
-def tail_file(file_path: str, lines: int = 50) -> str:
-    """Read the last N lines of a file."""
+def tail_file(file_path: str, lines: int = 50, max_bytes: int = 256 * 1024) -> str:
+    """Read the last N lines of a file without loading the whole thing.
+
+    Backend logs can grow to hundreds of MB (vLLM tracebacks + tensor dumps);
+    the previous `f.readlines()` implementation loaded everything into RAM
+    and blocked the caller (the health monitor) for seconds. Here we seek
+    from the end and read at most `max_bytes` — enough for hundreds of log
+    lines in practice, bounded regardless of file size.
+    """
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
-            return "".join(all_lines[-lines:])
+        with open(file_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            chunk = f.read().decode("utf-8", errors="replace")
+        tail = chunk.splitlines(keepends=True)[-lines:]
+        return "".join(tail)
     except Exception as e:
         return f"Error reading file: {e}"

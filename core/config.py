@@ -94,33 +94,66 @@ class ColoredFormatter(logging.Formatter):
 # ==============================================================================
 # CONSTANTS (environment variables override defaults)
 # ==============================================================================
-def _parse_int(key: str, default: int) -> int:
-    """Parse env var as int with validation."""
-    try:
-        return int(os.environ.get(key, str(default)))
-    except ValueError:
-        print(f"ERROR: {key}={os.environ.get(key)} is not a valid integer. Using default: {default}")
-        return default
+def _parse_int(key: str, default: int, *, min: int | None = None, max: int | None = None) -> int:
+    """Parse env var as int, clamping into [min, max] with a warning.
 
-ALLMA_PORT = _parse_int("ALLMA_PORT", 9000)
-VLLM_BASE_PORT = _parse_int("VLLM_BASE_PORT", 8000)
-LLAMA_BASE_PORT = _parse_int("LLAMA_BASE_PORT", 9001)
-KEEP_ALIVE_SECONDS = _parse_int("KEEP_ALIVE_SECONDS", 600)
-HEALTH_CHECK_INTERVAL = _parse_int("HEALTH_CHECK_INTERVAL", 60)
-# Max seconds to wait for a backend to become ready before giving up on a load.
-MODEL_LOAD_TIMEOUT = _parse_int("MODEL_LOAD_TIMEOUT", 300)
+    Anti-footgun: unbounded env vars used to accept 0 for HEALTH_CHECK_INTERVAL
+    (busy-loop!), negative MODEL_LOAD_TIMEOUT, out-of-range ports, etc. Bad
+    input now falls back to the default and is called out on stderr, so a typo
+    in .env doesn't silently wedge the daemon.
+    """
+    raw = os.environ.get(key)
+    try:
+        v = int(raw) if raw is not None else default
+    except ValueError:
+        print(f"ERROR: {key}={raw!r} is not a valid integer. Using default: {default}")
+        return default
+    if (min is not None and v < min) or (max is not None and v > max):
+        print(f"WARNING: {key}={v} outside allowed range "
+              f"[{min if min is not None else '−∞'}, {max if max is not None else '∞'}]. "
+              f"Clamping to default: {default}")
+        return default
+    return v
+
+
+# Ports: valid TCP range; also refuses 0 (uvicorn would bind a random port and
+# nothing else could find it) and privileged 1-1023 (need root).
+_PORT_MIN, _PORT_MAX = 1024, 65535
+ALLMA_PORT = _parse_int("ALLMA_PORT", 9000, min=_PORT_MIN, max=_PORT_MAX)
+VLLM_BASE_PORT = _parse_int("VLLM_BASE_PORT", 8000, min=_PORT_MIN, max=_PORT_MAX)
+LLAMA_BASE_PORT = _parse_int("LLAMA_BASE_PORT", 9001, min=_PORT_MIN, max=_PORT_MAX)
+
+# 0 would mean "unload immediately after every request" — always a mistake.
+KEEP_ALIVE_SECONDS = _parse_int("KEEP_ALIVE_SECONDS", 600, min=1)
+
+# 0 was the busy-loop bug we just fixed; refuse it here as well so a bad .env
+# can't re-enable the pattern.
+HEALTH_CHECK_INTERVAL = _parse_int("HEALTH_CHECK_INTERVAL", 60, min=1)
+
+# A negative timeout would loop forever waiting for a backend to be ready.
+MODEL_LOAD_TIMEOUT = _parse_int("MODEL_LOAD_TIMEOUT", 300, min=10)
+
 AUTO_SWAP_ENABLED = os.environ.get("AUTO_SWAP_ENABLED", "true").lower() == "true"
-MAX_MESSAGES = _parse_int("MAX_MESSAGES", 50)
+MAX_MESSAGES = _parse_int("MAX_MESSAGES", 50, min=0)
 
-def _parse_float(key: str, default: float) -> float:
-    """Parse env var as float with validation."""
+
+def _parse_float(key: str, default: float, *, min: float | None = None, max: float | None = None) -> float:
+    """Parse env var as float, clamping into [min, max] with a warning."""
+    raw = os.environ.get(key)
     try:
-        return float(os.environ.get(key, str(default)))
+        v = float(raw) if raw is not None else default
     except ValueError:
-        print(f"ERROR: {key}={os.environ.get(key)} is not a valid float. Using default: {default}")
+        print(f"ERROR: {key}={raw!r} is not a valid float. Using default: {default}")
         return default
+    if (min is not None and v < min) or (max is not None and v > max):
+        print(f"WARNING: {key}={v} outside allowed range "
+              f"[{min if min is not None else '−∞'}, {max if max is not None else '∞'}]. "
+              f"Clamping to default: {default}")
+        return default
+    return v
 
-GPU_MEMORY_THRESHOLD_GB = _parse_float("GPU_MEMORY_THRESHOLD_GB", 1.0)
+
+GPU_MEMORY_THRESHOLD_GB = _parse_float("GPU_MEMORY_THRESHOLD_GB", 1.0, min=0.0)
 
 # Validate that ALLMA_PORT doesn't collide with backend port ranges
 if ALLMA_PORT == LLAMA_BASE_PORT:
