@@ -64,11 +64,29 @@ from core.detect import (  # noqa: E402
 )
 from core.ghost_art import BIG_GHOST  # noqa: E402
 
-# Watermark ghost for the middle column — the shape sits centered under the
-# models table, painted just a touch darker than the panel background so it
-# reads as a faded silhouette (Textual has no true opacity, so we simulate
-# with a near-bg tone).
-_MID_WATERMARK = "\n".join(f"[#d8cfae]{line}[/]" for line in BIG_GHOST)
+# Watermark ghost for the middle column — sits in the empty space between the
+# models table and the log collapsible. Textual has no true opacity, so we
+# fake it with a desaturated sepia palette: mid-tone brown for the body,
+# pale cream for the eyes. Distinct enough to read but visually recessed
+# so it never fights the table for attention.
+_WM_BODY = "#a89e9a"   # muted sepia brown (soft-focus version of #534742)
+_WM_EYES = "#f0e8d0"   # warm cream (still lighter than the panel bg)
+
+def _watermark_lines():
+    out = []
+    for r_ix, row in enumerate(BIG_GHOST):
+        line = []
+        for c_ix, ch in enumerate(row):
+            if ch == " " and r_ix == 2 and c_ix in (6, 9):
+                line.append(f"[on {_WM_EYES}] [/]")
+            elif ch == " ":
+                line.append(" ")
+            else:
+                line.append(f"[{_WM_BODY}]{ch}[/]")
+        out.append("".join(line))
+    return "\n".join(out)
+
+_MID_WATERMARK = _watermark_lines()
 
 # Accent palette — the ALLMA logo rainbow (C64/Apple II retro style)
 ACC_RED    = "#e52529"
@@ -1106,20 +1124,19 @@ Screen { background: #0a0a08; }
     padding: 0 1;
 }
 #col-left  { width: 1fr; min-width: 24; max-width: 40; }
-#col-mid   { width: 2fr; min-width: 30; layers: below above; }
-/* Watermark ghost — lives on a lower layer so it floats behind the table.
-   The `#d8cfae` foreground sits one shade darker than the cream panel bg
-   (#e8dfc8), giving the "low opacity silhouette" look Nick wanted without
-   Textual actually supporting alpha. */
+#col-mid   { width: 2fr; min-width: 30; }
+/* Watermark ghost: siphons the leftover vertical space between the models
+   table and the log collapsible, centering the sprite on both axes. When
+   the table has few rows this stretches large; when the table is packed
+   the ghost shrinks/scrolls out gracefully. */
 #mid-watermark {
-    layer: below;
-    width: 100%;
-    height: 100%;
+    height: 1fr;
     content-align: center middle;
-    color: #d8cfae;
-    background: transparent;
+    background: #e8dfc8;
 }
-#models-table, #log-collapsible, #models-footer { layer: above; }
+/* Let the models table only claim what its rows need, so the watermark
+   below it actually gets breathing room. */
+#models-table { height: auto; max-height: 1fr; }
 #col-right { width: 1fr; min-width: 32; max-width: 66; }
 
 /* ── EXPLORE / toggles ── */
@@ -1377,8 +1394,10 @@ class AllmaTUI(App):
                         with Horizontal(classes="btn-row dl-row"):
                             yield Button("⇣ Fetch", id="btn-dl")
                 with Vertical(id="col-mid", classes="panel"):
-                    yield Static(_MID_WATERMARK, id="mid-watermark")
                     yield DataTable(id="models-table", cursor_type="row", zebra_stripes=True)
+                    # Watermark rides the empty space between the table and the
+                    # collapsible: sepia body, cream eyes, centered on both axes.
+                    yield Static(_MID_WATERMARK, id="mid-watermark")
                     with Collapsible(title=f"[{ACC_ORANGE}]▮[/] backend logs",
                                      collapsed=True, id="log-collapsible"):
                         yield Log(id="backend-log", highlight=False, max_lines=2000)
