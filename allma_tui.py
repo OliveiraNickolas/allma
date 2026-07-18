@@ -1123,7 +1123,9 @@ Screen { background: #0a0a08; }
     background: #e8dfc8;
     padding: 0 1;
 }
-#col-left  { width: 1fr; min-width: 24; max-width: 40; }
+/* max-width lifted so the drag splitter can grow the sidebar past the old
+   40-cell ceiling. min-width still holds. */
+#col-left  { width: 1fr; min-width: 24; }
 #col-mid   { width: 2fr; min-width: 30; }
 /* Watermark ghost: siphons the leftover vertical space between the models
    table and the log collapsible, centering the sprite on both axes. When
@@ -1137,7 +1139,7 @@ Screen { background: #0a0a08; }
 /* height rules for #models-table live in the main block below (search for
    the second `#models-table` selector) — a duplicate here loses the CSS
    cascade fight and the table would eat the watermark's space. */
-#col-right { width: 1fr; min-width: 32; max-width: 66; }
+#col-right { width: 1fr; min-width: 32; }
 
 /* ── EXPLORE / toggles ── */
 #explore { height: auto; }
@@ -1327,6 +1329,74 @@ PickerScreen { align: center middle; }
 """
 
 
+class _ColumnSplitter(Widget):
+    """Vertical 1-cell divider between two columns. Click-and-drag to resize.
+
+    Setting `styles.width` on the left neighbour flips both columns from
+    fr-based layout to fixed cells; the far-right column keeps its `1fr`
+    definition and picks up the slack, so the trio always fills the row.
+    """
+    can_focus = False
+    DEFAULT_CSS = """
+    _ColumnSplitter {
+        width: 1;
+        height: 100%;
+        background: #c8b898;
+        color: #8a7a60;
+        content-align: center middle;
+    }
+    _ColumnSplitter:hover {
+        background: #007878;
+        color: #f0e8d0;
+    }
+    """
+
+    def __init__(self, left_id: str, right_id: str, *, min_left: int = 20,
+                 min_right: int = 24, **kwargs):
+        super().__init__(**kwargs)
+        self._left_id = left_id
+        self._right_id = right_id
+        self._min_left = min_left
+        self._min_right = min_right
+        self._dragging = False
+        self._start_x = 0
+        self._start_left_w = 0
+        self._start_right_w = 0
+
+    def render(self) -> str:
+        return "┊"
+
+    def _neighbours(self):
+        return self.app.query_one(f"#{self._left_id}"), self.app.query_one(f"#{self._right_id}")
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        event.stop()
+        left, right = self._neighbours()
+        self._dragging = True
+        self._start_x = event.screen_x
+        self._start_left_w = left.size.width
+        self._start_right_w = right.size.width
+        self.capture_mouse()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._dragging:
+            return
+        delta = event.screen_x - self._start_x
+        new_left = self._start_left_w + delta
+        new_right = self._start_right_w - delta
+        # Refuse a drag that would starve either neighbour past its floor.
+        if new_left < self._min_left or new_right < self._min_right:
+            return
+        left, right = self._neighbours()
+        left.styles.width = new_left
+        right.styles.width = new_right
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._dragging:
+            self._dragging = False
+            self.release_mouse()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # App
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1396,6 +1466,8 @@ class AllmaTUI(App):
                                     id="dl-url")
                         with Horizontal(classes="btn-row dl-row"):
                             yield Button("⇣ Fetch", id="btn-dl")
+                yield _ColumnSplitter("col-left", "col-mid",
+                                       min_left=20, min_right=30, id="split-lm")
                 with Vertical(id="col-mid", classes="panel"):
                     yield DataTable(id="models-table", cursor_type="row", zebra_stripes=True)
                     # Watermark rides the empty space between the table and the
@@ -1405,6 +1477,8 @@ class AllmaTUI(App):
                                      collapsed=True, id="log-collapsible"):
                         yield Log(id="backend-log", highlight=False, max_lines=2000)
                     yield Static("", id="models-footer")
+                yield _ColumnSplitter("col-mid", "col-right",
+                                       min_left=30, min_right=28, id="split-mr")
                 with Vertical(id="col-right", classes="panel"):
                     with TabbedContent(id="setup-tabs"):
                         with TabPane("LOAD", id="tab-load"):
