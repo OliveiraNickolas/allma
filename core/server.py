@@ -1540,7 +1540,7 @@ def show_banner():
     # Reads like the keyboard's black plastic — cream text on deep black,
     # matching a Commodore 64 keycap, not its screen border. Grounds the
     # banner instead of covering it in blue.
-    KEY_BG = "#1a1408"          # near-black, warm — same as C_FG for contrast
+    KEY_BG = "#534742"          # warm brown — the C64 keycap plastic tone
     KEY_FG = "#f0e8d0"          # cream (keycap label)
     _bar_style = f"{KEY_FG} on {KEY_BG}"
     status_line = Text(justify="center", style=_bar_style)
