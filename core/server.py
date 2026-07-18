@@ -1310,22 +1310,40 @@ def show_banner():
     console = Console(width=W)
 
     # ── helpers ──────────────────────────────────────────────────────────────
+    # Section titles ride a C64-keycap bevel — the accent teal name framed by
+    # two block "buttons" that read like a physical key. Cheaper than the old
+    # [ Name ] wizard style and instantly reads as "vintage hardware".
     def section(name: str) -> Text:
-        """Render a [ Section Name ] label in wizard style."""
         t = Text()
-        t.append("[ ", style=C_DIM)
+        t.append("▐▉ ", style=f"bold {C_ACCENT}")
         t.append(name, style=f"bold {C_ACCENT}")
-        t.append(" ]", style=C_DIM)
+        t.append(" ▉▌", style=f"bold {C_ACCENT}")
         return t
 
+    # Wordmark rebuilt with block glyphs only — the old version mixed █ with
+    # box-drawing chars (╗╔╚╝═║), which have subtly different metrics in most
+    # terminal fonts and made the L's read "cracked with a shadow". Same
+    # shape, one glyph family, clean silhouette.
     LOGO_ROWS = [
-        "█████  ██╗     ██╗     ███    ███  █████ ",
-        "██   ██ ██║     ██║     ████  ████ ██   ██",
-        "███████ ██║     ██║     ██ ████ ██ ███████",
-        "██   ██ ██║     ██║     ██  ██  ██ ██   ██",
-        "██   ██ ███████╗███████╗██      ██ ██   ██",
-        "        ╚══════╝╚══════╝__________________",
+        "█████   ██      ██      ███   ███   █████ ",
+        "██  ██  ██      ██      ████ ████  ██   ██",
+        "███████ ██      ██      ██ ███ ██  ███████",
+        "██   ██ ██      ██      ██  █  ██  ██   ██",
+        "██   ██ ███████ ███████ ██     ██  ██   ██",
     ]
+
+    # Rainbow signature stripe — the Commodore 64 badge motif. Six teal-tinted
+    # bands ride under the wordmark; segment widths repeat so it reads like a
+    # flag, not a gradient.
+    _STRIPE_COLORS = [C_RED, C_ORG, C_YELL, C_GRN, C_BLUE, C_ACCENT]
+    _STRIPE_WIDTH = 42          # matches the wordmark's visible width
+    _SEG = _STRIPE_WIDTH // len(_STRIPE_COLORS)
+    stripe_text = Text(justify="center")
+    for row_ix in range(2):     # two rows of full blocks give it presence
+        for color in _STRIPE_COLORS:
+            stripe_text.append("█" * _SEG, style=f"bold {color}")
+        if row_ix == 0:
+            stripe_text.append("\n")
 
     # ── mascot: sits above the wordmark, centered, in accent teal ────────────
     from core.ghost_art import BIG_GHOST as _GHOST_ROWS
@@ -1336,27 +1354,16 @@ def show_banner():
             ghost_text.append("\n")
 
     # ── logo panel ────────────────────────────────────────────────────────────
-    # cols 8-23 = the two L's; box-drawing chars there are rendered dim (shadow)
-    # box-drawing chars on A and M are rendered bold to keep letters solid
-    _BOX  = set("╗╔╚╝═║")
-    _L_COLS = range(8, 24)
-    LOGO_COLORS = [C_RED, C_ORG, C_YELL, C_GRN, C_BLUE, C_BLUE]
+    LOGO_COLORS = [C_RED, C_ORG, C_YELL, C_GRN, C_BLUE]
     logo_text   = Text(justify="center")
     for i, row in enumerate(LOGO_ROWS):
         color = LOGO_COLORS[i]
-        for j, ch in enumerate(row):
+        for ch in row:
             if ch == "█":
                 logo_text.append(ch, style=f"bold {color}")
-            elif ch in _BOX:
-                if j in _L_COLS:
-                    logo_text.append(ch, style=f"dim {color}")
-                else:
-                    logo_text.append(" ")
-            elif ch == "_":
-                logo_text.append(ch, style=C_BG)
             else:
                 logo_text.append(ch)
-        if i < 5:
+        if i < len(LOGO_ROWS) - 1:
             logo_text.append("\n")
     # ── configuration summary ─────────────────────────────────────────────────
     cfg_line = Text()
@@ -1475,7 +1482,7 @@ def show_banner():
 
     # ── sub-panels (DOS wizard style — bordered boxes inside the main window) ──
     _inner_pad = (0, 1) if _narrow else (0, 2)
-    _sec_title = lambda name: f"[bold {C_ACCENT}][ {name} ][/]"
+    _sec_title = lambda name: f"[bold {C_ACCENT}]▐▉ {name} ▉▌[/]"
 
     _S = f"on {C_BG}"  # window background style
 
@@ -1487,7 +1494,11 @@ def show_banner():
     _logo_row.add_row(logo_text, ghost_text)
 
     logo_panel = Panel(
-        Align(_logo_row, align="center"),
+        Group(
+            Align(_logo_row, align="center"),
+            Text(""),
+            Align(stripe_text, align="center"),
+        ),
         box=_box.SQUARE, border_style=C_BORDER,
         style=_S, padding=(1, 0),
     )
@@ -1513,21 +1524,28 @@ def show_banner():
         style=_S, padding=_inner_pad,
     )
 
-    # ── status bar ────────────────────────────────────────────────────────────
-    status_line = Text(justify="center")
-    status_line.append("● ", style=f"bold {C_OK}")
-    status_line.append("READY", style=f"bold {C_OK}")
-    status_line.append("  ·  ", style=C_DIM)
+    # ── status bar: the C64 screen-border strip ──────────────────────────────
+    # The Commodore 64 booted into a signature azure border. Our footer wears
+    # the same royal blue with cream text — reads like the very last row of
+    # a real machine, not a website chrome.
+    C64_BORDER_BG = "#4040a0"
+    C64_BORDER_FG = "#f0e8d0"
+    _bar_style = f"{C64_BORDER_FG} on {C64_BORDER_BG}"
+    status_line = Text(justify="center", style=_bar_style)
+    status_line.append("● ", style=f"bold #7fff7f on {C64_BORDER_BG}")
+    status_line.append("READY", style=f"bold {C64_BORDER_FG} on {C64_BORDER_BG}")
+    status_line.append("  ·  ", style=_bar_style)
     if _narrow:
-        status_line.append(f":{ALLMA_PORT}", style=C_ACCENT)
+        status_line.append(f":{ALLMA_PORT}", style=f"bold {C64_BORDER_FG} on {C64_BORDER_BG}")
     else:
-        status_line.append(f"http://127.0.0.1:{ALLMA_PORT}", style=C_ACCENT)
-        status_line.append("  ·  Ctrl+C to stop", style=C_DIM)
+        status_line.append(f"http://127.0.0.1:{ALLMA_PORT}",
+                           style=f"bold {C64_BORDER_FG} on {C64_BORDER_BG}")
+        status_line.append("  ·  Ctrl+C to stop", style=_bar_style)
 
     status_panel = Panel(
-        Align(status_line, align="center"),
-        box=_box.SQUARE, border_style=C_DIM,
-        style=_S, padding=(0, 1),
+        Align(status_line, align="center", style=_bar_style),
+        box=_box.SQUARE, border_style=C64_BORDER_BG,
+        style=_bar_style, padding=(0, 1),
     )
 
     # ── main floating window — light bg, floats on dark terminal desktop ──────

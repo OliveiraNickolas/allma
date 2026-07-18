@@ -633,26 +633,65 @@ def cmd_stop(args):
 
 
 def cmd_status(args):
-    """Show server status and loaded models."""
+    """Show server status in a Commodore 64 boot-screen aesthetic.
+
+    Reads like the machine just powered on: ghost mascot up top, ALLMA
+    marquee line, key/value stats aligned like a BASIC printout, a blinking
+    cursor at "READY.". Same information, better vibe.
+    """
+    # C64 boot-screen palette on ANSI 256 (cream on dark blue). Adapts to
+    # non-tty (piped output) by dropping colors.
+    C_END = "\033[0m"
+    if sys.stdout.isatty():
+        C_BG    = "\033[48;5;18m"   # deep C64 blue
+        C_FG    = "\033[38;5;229m"  # cream
+        C_HL    = "\033[38;5;226m"  # yellow (values)
+        C_DIM   = "\033[38;5;250m"
+        C_GHOST = "\033[38;5;51m"   # teal-ish for the ghost
+        C_OK    = "\033[38;5;46m"
+        C_OFF   = "\033[38;5;196m"
+    else:
+        C_BG = C_FG = C_HL = C_DIM = C_GHOST = C_OK = C_OFF = ""
+
     health = _get("/health")
-    if not health:
-        print("● Allma is not running")
+    online = bool(health)
+
+    from core.ghost_art import BIG_GHOST
+    print()
+    for line in BIG_GHOST:
+        print(f"    {C_GHOST}{line}{C_END}")
+    print()
+    print(f"    {C_FG}**** {C_HL}ALLMA{C_FG} 64K RAM SYSTEM  "
+          f"{'READY' if online else 'OFFLINE'} ****{C_END}")
+    print()
+
+    if not online:
+        print(f"    {C_OFF}?SERVER NOT RUNNING  ERROR{C_END}")
+        print(f"    {C_DIM}TYPE `allma serve` TO START{C_END}")
+        print()
+        print(f"    {C_FG}READY.{C_END}")
+        print(f"    {C_FG}█{C_END}\n")
         return
 
     active = health.get("active_servers", 0)
-    from core.ghost_art import big_ghost_lines
-    for line in big_ghost_lines():
-        print(line)
-    print(f"● Allma is running  (port {ALLMA_PORT})")
-    print(f"  Loaded models: {active}")
+    ps_data = _get("/v1/models") or {}
+    profiles = [m["id"] for m in ps_data.get("data", [])]
 
-    ps_data = _get("/v1/models")
-    if ps_data:
-        models = [m["id"] for m in ps_data.get("data", [])]
-        if models:
-            print(f"  Available ({len(models)}):")
-            for m in models:
-                print(f"    · {m}")
+    def _kv(label: str, value: str) -> None:
+        print(f"    {C_DIM}{label:<14}{C_END} {C_HL}{value}{C_END}")
+
+    _kv("PORT",     str(ALLMA_PORT))
+    _kv("LOADED",   f"{active} MODEL(S)")
+    _kv("PROFILES", str(len(profiles)))
+    if profiles:
+        print()
+        print(f"    {C_DIM}AVAILABLE:{C_END}")
+        for p in sorted(profiles):
+            print(f"      {C_FG}· {C_HL}{p}{C_END}")
+    print()
+    print(f"    {C_FG}READY.{C_END}")
+    print(f"    {C_FG}█{C_END}")
+    print()
 
 
 def cmd_list(args):

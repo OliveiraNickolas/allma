@@ -51,10 +51,11 @@ QUANT_ORDER = [
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _section(name: str) -> Text:
+    """C64-keycap bevel around a section title (same style as show_banner)."""
     t = Text()
-    t.append("[ ", style=C_DIM)
+    t.append("▐▉ ", style=f"bold {C_ACCENT}")
     t.append(name, style=f"bold {C_ACCENT}")
-    t.append(" ]", style=C_DIM)
+    t.append(" ▉▌", style=f"bold {C_ACCENT}")
     return t
 
 
