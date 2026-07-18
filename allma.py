@@ -35,17 +35,23 @@ def main():
         profile = asyncio.run(BootstrapDetector.detect_hardware())
         duration_ms = (time.time() - start_time) * 1000
 
-        logger.info(
-            f"Hardware detected ({duration_ms:.0f}ms):\n"
-            f"   Driver: {profile.driver_version} | CUDA: {profile.cuda_version}\n"
-            f"   GPUs: {len(profile.gpus)} | Total VRAM: {profile.total_vram_gb:.1f}GB "
-            f"({profile.available_vram_gb:.1f}GB free)"
-        )
-
-        for gpu in profile.gpus:
+        if profile.gpus:
             logger.info(
-                f"   GPU {gpu.index}: {gpu.name} (compute {gpu.compute_capability}) "
-                f"— {gpu.total_memory_gb:.1f}GB total, {gpu.free_memory_gb:.1f}GB free"
+                f"Hardware detected ({duration_ms:.0f}ms):\n"
+                f"   Driver: {profile.driver_version} | CUDA: {profile.cuda_version}\n"
+                f"   GPUs: {len(profile.gpus)} | Total VRAM: {profile.total_vram_gb:.1f}GB "
+                f"({profile.available_vram_gb:.1f}GB free)"
+            )
+            for gpu in profile.gpus:
+                logger.info(
+                    f"   GPU {gpu.index}: {gpu.name} (compute {gpu.compute_capability}) "
+                    f"— {gpu.total_memory_gb:.1f}GB total, {gpu.free_memory_gb:.1f}GB free"
+                )
+        else:
+            logger.warning(
+                f"Hardware detected ({duration_ms:.0f}ms): no GPU accelerator found. "
+                "Continuing in CPU-only mode — GGUF models via llama.cpp will still work, "
+                "just much slower. `allma doctor` shows details."
             )
 
         state.hardware_profile = profile
@@ -64,14 +70,28 @@ def main():
     _health_monitor_thread = threading.Thread(target=health_monitor, daemon=True)
     _health_monitor_thread.start()
 
+    def _hard_exit_watchdog(delay: float) -> None:
+        """Guaranteed death: if the graceful shutdown below hangs for any
+        reason (thread stuck in a C extension, join deadlock, SIGTERM masked
+        by a native lib), this daemon thread SIGKILLs the whole process tree
+        after `delay` seconds. Runs in a fresh thread so it survives even if
+        the signal-handling thread is the one that's blocked."""
+        def _kill():
+            time.sleep(delay)
+            logger.critical(f"Hard exit watchdog: shutdown took >{delay}s — killing self")
+            os.kill(os.getpid(), signal.SIGKILL)
+        threading.Thread(target=_kill, daemon=True).start()
+
     def signal_handler(sig: int, frame: Any) -> None:
         if not state.running:
             logger.critical("Second signal received, force kill")
+            _hard_exit_watchdog(1.0)  # last-resort backup for SIGKILL below
             state._health_monitor_running.clear()
             time.sleep(0.5)
             os.kill(os.getpid(), signal.SIGKILL)
             return
         logger.info("Shutdown requested")
+        _hard_exit_watchdog(8.0)  # graceful cleanup has 8s or we go nuclear
         state.running = False
         state._health_monitor_running.clear()
         with state.global_lock:

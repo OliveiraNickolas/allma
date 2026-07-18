@@ -1118,10 +1118,26 @@ async def ps():
 
 @app.post("/v1/shutdown")
 async def shutdown_endpoint():
-    """Gracefully shut down the server and all backends."""
+    """Gracefully shut down the server and all backends.
+
+    SIGTERM triggers the graceful path in allma.py's signal handler (which
+    already carries its own hard-exit watchdog). A second daemon thread here
+    is belt-and-suspenders: it fires SIGKILL after 10s in case signals are
+    being blocked by a native extension and the handler never runs.
+    """
     import asyncio
     import os
     import signal as _signal
+    import threading
+    import time as _time
+
+    def _nuclear_backup():
+        _time.sleep(10)
+        # Only fires if we're still alive — the signal handler's os._exit(0)
+        # or its own hard-exit watchdog should have killed us long before this.
+        os.kill(os.getpid(), _signal.SIGKILL)
+
+    threading.Thread(target=_nuclear_backup, daemon=True).start()
 
     async def _do_shutdown():
         await asyncio.sleep(0.1)

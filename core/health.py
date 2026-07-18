@@ -46,6 +46,8 @@ def health_monitor():
                             state.server_idle_time.pop(base_name, None)
                             continue
 
+                        if state.active_servers.get(base_name, {}).get("pin_loaded"):
+                            continue
                         idle = now - state.server_idle_time.get(base_name, 0)
                         if AUTO_SWAP_ENABLED and idle > KEEP_ALIVE_SECONDS:
                             logger.info(f"⏰ {base_name} idle {idle:.0f}s, unloading")
@@ -55,9 +57,21 @@ def health_monitor():
                     if base_name in state.active_servers:
                         shutdown_server(base_name, reason="idle", fast=True)
 
-                state._health_monitor_running.wait(HEALTH_CHECK_INTERVAL)
+                # BUG that hid here for a long time: threading.Event.wait()
+                # returns *immediately* when the event is SET — and the running
+                # flag is set for the entire lifetime of the monitor, so this
+                # used to spin at 100% CPU forever. time.sleep() in 1s slices
+                # gives us proper idle sleeping AND a quick reaction to
+                # _health_monitor_running.clear() at shutdown.
+                for _ in range(int(HEALTH_CHECK_INTERVAL)):
+                    if not state._health_monitor_running.is_set():
+                        return
+                    time.sleep(1)
             except Exception as e:
                 logger.error(f"Error in health monitor cycle: {type(e).__name__}: {e}", exc_info=True)
-                state._health_monitor_running.wait(10)
+                for _ in range(10):
+                    if not state._health_monitor_running.is_set():
+                        return
+                    time.sleep(1)
     finally:
         state._health_monitor_running.clear()
