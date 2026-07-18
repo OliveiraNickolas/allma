@@ -1536,27 +1536,27 @@ def show_banner():
         style=_S, padding=_inner_pad,
     )
 
-    # ── status bar: the C64 screen-border strip ──────────────────────────────
-    # The Commodore 64 booted into a signature azure border. Our footer wears
-    # the same royal blue with cream text — reads like the very last row of
-    # a real machine, not a website chrome.
-    C64_BORDER_BG = "#4040a0"
-    C64_BORDER_FG = "#f0e8d0"
-    _bar_style = f"{C64_BORDER_FG} on {C64_BORDER_BG}"
+    # ── status bar: the C64 keycap strip ─────────────────────────────────────
+    # Reads like the keyboard's black plastic — cream text on deep black,
+    # matching a Commodore 64 keycap, not its screen border. Grounds the
+    # banner instead of covering it in blue.
+    KEY_BG = "#1a1408"          # near-black, warm — same as C_FG for contrast
+    KEY_FG = "#f0e8d0"          # cream (keycap label)
+    _bar_style = f"{KEY_FG} on {KEY_BG}"
     status_line = Text(justify="center", style=_bar_style)
-    status_line.append("● ", style=f"bold #7fff7f on {C64_BORDER_BG}")
-    status_line.append("READY", style=f"bold {C64_BORDER_FG} on {C64_BORDER_BG}")
+    status_line.append("● ", style=f"bold #7fff7f on {KEY_BG}")
+    status_line.append("READY", style=f"bold {KEY_FG} on {KEY_BG}")
     status_line.append("  ·  ", style=_bar_style)
     if _narrow:
-        status_line.append(f":{ALLMA_PORT}", style=f"bold {C64_BORDER_FG} on {C64_BORDER_BG}")
+        status_line.append(f":{ALLMA_PORT}", style=f"bold {KEY_FG} on {KEY_BG}")
     else:
         status_line.append(f"http://127.0.0.1:{ALLMA_PORT}",
-                           style=f"bold {C64_BORDER_FG} on {C64_BORDER_BG}")
+                           style=f"bold {KEY_FG} on {KEY_BG}")
         status_line.append("  ·  Ctrl+C to stop", style=_bar_style)
 
     status_panel = Panel(
         Align(status_line, align="center", style=_bar_style),
-        box=_box.SQUARE, border_style=C64_BORDER_BG,
+        box=_box.SQUARE, border_style=KEY_BG,
         style=_bar_style, padding=(0, 1),
     )
 
