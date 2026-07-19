@@ -1039,9 +1039,19 @@ class _GgufTree(DirectoryTree):
                 if (p.is_dir() and not p.name.startswith(".")) or p.suffix == ".gguf"]
 
 
+class _JinjaTree(DirectoryTree):
+    def filter_paths(self, paths):
+        return [p for p in paths
+                if (p.is_dir() and not p.name.startswith(".")) or p.suffix == ".jinja"]
+
+
 class PickerScreen(ModalScreen):
-    """Modal browser: pick a directory (mode='dir') or a .gguf file (mode='gguf')."""
+    """Modal browser: pick a directory ('dir'), a .gguf ('gguf'), or a .jinja
+    template ('jinja')."""
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    _TREE_BY_MODE = {"dir": _DirsOnlyTree, "gguf": _GgufTree, "jinja": _JinjaTree}
+    _FILE_MODES = {"gguf", "jinja"}
 
     def __init__(self, root: Path, mode: str = "dir", title: str = "Select"):
         super().__init__()
@@ -1051,7 +1061,7 @@ class PickerScreen(ModalScreen):
         self.current: Path | None = None
 
     def compose(self) -> ComposeResult:
-        tree_cls = _DirsOnlyTree if self.mode == "dir" else _GgufTree
+        tree_cls = self._TREE_BY_MODE.get(self.mode, _DirsOnlyTree)
         with Vertical(id="picker-box") as box:
             box.border_title = f"\\[ {self.picker_title} ]"
             with Horizontal(id="picker-nav"):
@@ -1083,7 +1093,7 @@ class PickerScreen(ModalScreen):
             self._set_current(Path(ev.path))
 
     def on_directory_tree_file_selected(self, ev: DirectoryTree.FileSelected) -> None:
-        if self.mode == "gguf":
+        if self.mode in self._FILE_MODES:
             self._set_current(Path(ev.path))
 
     def on_button_pressed(self, ev: Button.Pressed) -> None:
@@ -1330,11 +1340,17 @@ PickerScreen { align: center middle; }
 
 
 class _ColumnSplitter(Widget):
-    """Vertical 1-cell divider between two columns. Click-and-drag to resize.
+    """Vertical 1-cell divider. Click-and-drag to resize ONE column, and
+    let the middle column absorb the change via its `1fr` sizing.
 
-    Setting `styles.width` on the left neighbour flips both columns from
-    fr-based layout to fixed cells; the far-right column keeps its `1fr`
-    definition and picks up the slack, so the trio always fills the row.
+    The naive "both sides get fixed widths" approach drifts over multiple
+    drags — a mid-column that isn't `1fr` anywhere in the layout leaves
+    gaps between panels. Anchoring on col-mid=1fr guarantees the three
+    columns always fill the row exactly, no matter how many times the
+    user drags either divider.
+
+    * split-lm targets col-left  (drag right → col-left grows, col-mid shrinks)
+    * split-mr targets col-right (drag right → col-right shrinks, col-mid grows)
     """
     can_focus = False
     DEFAULT_CSS = """
@@ -1351,45 +1367,61 @@ class _ColumnSplitter(Widget):
     }
     """
 
-    def __init__(self, left_id: str, right_id: str, *, min_left: int = 20,
-                 min_right: int = 24, **kwargs):
+    def __init__(self, target_id: str, *, side: str, min_target: int = 20,
+                 min_absorb: int = 24, **kwargs):
         super().__init__(**kwargs)
-        self._left_id = left_id
-        self._right_id = right_id
-        self._min_left = min_left
-        self._min_right = min_right
+        self._target_id = target_id
+        assert side in ("left", "right"), "side must be 'left' or 'right'"
+        # Which side of the splitter the target column sits on. If the target
+        # is to the LEFT of the divider, dragging the divider right grows the
+        # target; if to the RIGHT, dragging right shrinks the target.
+        self._side = side
+        self._min_target = min_target
+        self._min_absorb = min_absorb   # floor for col-mid so it can't vanish
         self._dragging = False
         self._start_x = 0
-        self._start_left_w = 0
-        self._start_right_w = 0
+        self._start_target_w = 0
+        self._start_absorb_w = 0
 
     def render(self) -> str:
         return "┊"
 
-    def _neighbours(self):
-        return self.app.query_one(f"#{self._left_id}"), self.app.query_one(f"#{self._right_id}")
-
     def on_mouse_down(self, event: events.MouseDown) -> None:
         event.stop()
-        left, right = self._neighbours()
+        target = self.app.query_one(f"#{self._target_id}")
+        absorb = self.app.query_one("#col-mid")
+        # Pin the OTHER side column too, in cells, before the drag starts.
+        # Otherwise col-left↔col-right both remain `1fr` and Textual redivides
+        # the leftover between them on every resize — dragging split-lm would
+        # tug col-right sideways as a side effect. After pinning, only
+        # col-mid (`1fr`) absorbs the delta; the other side stays put.
+        other_id = "col-right" if self._target_id == "col-left" else "col-left"
+        other = self.app.query_one(f"#{other_id}")
+        # Freeze the far side at its current rendered width every drag.
+        # Cheap and idempotent: if it's already pinned to N cells, we set N
+        # again; if it's still `1fr`, the pin locks it in place so col-mid
+        # (also 1fr) is the only column that absorbs the delta.
+        other.styles.width = other.size.width
         self._dragging = True
         self._start_x = event.screen_x
-        self._start_left_w = left.size.width
-        self._start_right_w = right.size.width
+        self._start_target_w = target.size.width
+        self._start_absorb_w = absorb.size.width
         self.capture_mouse()
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         if not self._dragging:
             return
-        delta = event.screen_x - self._start_x
-        new_left = self._start_left_w + delta
-        new_right = self._start_right_w - delta
-        # Refuse a drag that would starve either neighbour past its floor.
-        if new_left < self._min_left or new_right < self._min_right:
+        # Sign: dragging right grows the LEFT target and shrinks the RIGHT one.
+        raw_delta = event.screen_x - self._start_x
+        delta = raw_delta if self._side == "left" else -raw_delta
+        new_target = self._start_target_w + delta
+        # Predicted col-mid width if we accept this drag (mid absorbs -delta).
+        new_absorb = self._start_absorb_w - delta
+        if new_target < self._min_target or new_absorb < self._min_absorb:
             return
-        left, right = self._neighbours()
-        left.styles.width = new_left
-        right.styles.width = new_right
+        # Only the target gets a fixed width; col-mid stays 1fr and picks
+        # up the slack automatically. No two fixed widths, no drift.
+        self.app.query_one(f"#{self._target_id}").styles.width = new_target
 
     def on_mouse_up(self, event: events.MouseUp) -> None:
         if self._dragging:
@@ -1466,8 +1498,8 @@ class AllmaTUI(App):
                                     id="dl-url")
                         with Horizontal(classes="btn-row dl-row"):
                             yield Button("⇣ Fetch", id="btn-dl")
-                yield _ColumnSplitter("col-left", "col-mid",
-                                       min_left=20, min_right=30, id="split-lm")
+                yield _ColumnSplitter("col-left", side="left",
+                                       min_target=20, min_absorb=30, id="split-lm")
                 with Vertical(id="col-mid", classes="panel"):
                     yield DataTable(id="models-table", cursor_type="row", zebra_stripes=True)
                     # Watermark rides the empty space between the table and the
@@ -1477,8 +1509,8 @@ class AllmaTUI(App):
                                      collapsed=True, id="log-collapsible"):
                         yield Log(id="backend-log", highlight=False, max_lines=2000)
                     yield Static("", id="models-footer")
-                yield _ColumnSplitter("col-mid", "col-right",
-                                       min_left=30, min_right=28, id="split-mr")
+                yield _ColumnSplitter("col-right", side="right",
+                                       min_target=28, min_absorb=30, id="split-mr")
                 with Vertical(id="col-right", classes="panel"):
                     with TabbedContent(id="setup-tabs"):
                         with TabPane("LOAD", id="tab-load"):
@@ -1848,6 +1880,15 @@ class AllmaTUI(App):
                 Button("📂", id="btn-browse-mmproj", classes="mini"),
                 classes="mmproj-row",
             ))
+        # chat template file — offered for BOTH backends: vLLM takes
+        # --chat-template <path>, llama.cpp takes --chat-template-file. Same
+        # UX, same field name in the .allm (chat_template_file).
+        widgets.append(Static(f"[{ACC_ORANGE}]▮[/] Chat template", classes="section-hdr"))
+        widgets.append(Horizontal(
+            Input(value=str(cfg.get("chat_template_file", "")), id="ld-chat-template"),
+            Button("📂", id="btn-browse-chat-template", classes="mini"),
+            classes="mmproj-row",
+        ))
         # extra args — checklist grouped by category, each with a dim header
         widgets.append(Static(f"[{ACC_ORANGE}]▮[/] Features & tuning", classes="section-hdr"))
         by_cat: dict[str, list] = {}
@@ -2122,6 +2163,12 @@ class AllmaTUI(App):
                     out["mmproj"] = mm
             except Exception:
                 pass
+        try:
+            ctf = self.query_one("#ld-chat-template", Input).value.strip()
+            if ctf:
+                out["chat_template_file"] = ctf
+        except Exception:
+            pass
         # extra args — read each FlagRow's state/value + advanced leftovers
         enabled = {}
         try:
@@ -2228,6 +2275,8 @@ class AllmaTUI(App):
             self._do_unload(m)
         elif bid == "btn-browse-mmproj":
             self._pick_mmproj(m)
+        elif bid == "btn-browse-chat-template":
+            self._pick_chat_template(m)
         elif bid.startswith("pf") and bid.endswith("-load"):
             idx = int(bid[2:].split("-")[0])
             c = self.query_one(f"#pf{idx}", Collapsible)
@@ -2246,6 +2295,26 @@ class AllmaTUI(App):
                 except Exception:
                     pass
         self.push_screen(PickerScreen(root, "gguf", "Select mmproj (.gguf)"), _done)
+
+    def _pick_chat_template(self, m: dict) -> None:
+        """Open the picker at configs/templates/ — where the froggeric Qwen
+        fix and any future templates live — so the common case is one click."""
+        from core.config import CONFIG_DIR
+        default_root = Path(CONFIG_DIR) / "templates"
+        # If the model's dir has a chat_template.jinja checked in, prefer that
+        # location so the user can point at the vendor's own template too.
+        model_dir = Path(self._detect_path(m))
+        if model_dir.exists() and any(model_dir.glob("*.jinja")):
+            default_root = model_dir
+        root = default_root if default_root.exists() else Path.home()
+
+        def _done(path: str | None) -> None:
+            if path:
+                try:
+                    self.query_one("#ld-chat-template", Input).value = path
+                except Exception:
+                    pass
+        self.push_screen(PickerScreen(root, "jinja", "Select chat template (.jinja)"), _done)
 
     def _selected_profile_name(self, m: dict) -> str | None:
         try:

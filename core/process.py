@@ -169,6 +169,10 @@ def build_vllm_cmd(base_name: str, skip_gpu: int | None = None, gpu_id: int | No
         cmd.append("--enforce-eager")
     if "max_num_batched_tokens" in cfg:
         cmd += ["--max-num-batched-tokens", str(cfg["max_num_batched_tokens"])]
+    # vLLM accepts --chat-template with a file path (not just an inline string),
+    # so we can wire the same TUI field the llama.cpp branch already reads.
+    if cfg.get("chat_template_file") and os.path.exists(cfg["chat_template_file"]):
+        cmd += ["--chat-template", cfg["chat_template_file"]]
     cmd.extend(extra_args)
     state.gpu_allocation[base_name] = selected_gpu
     return cmd, port, selected_gpu
