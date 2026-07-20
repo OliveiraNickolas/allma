@@ -6,7 +6,7 @@ from pathlib import Path
 from core.config import logger, AUTO_SWAP_ENABLED, KEEP_ALIVE_SECONDS, HEALTH_CHECK_INTERVAL, ALLMA_LOG_DIR
 import core.state as state
 from core.process import shutdown_server
-from core.error_detector import ErrorDetector, tail_file
+from core.error_detector import ErrorDetector, record_failure, tail_file
 
 
 def health_monitor():
@@ -24,11 +24,14 @@ def health_monitor():
                         port = server["port"]
 
                         if proc.poll() is not None:
+                            exit_code = proc.poll()
                             # Try to extract crash reason from log
                             log_path = Path(ALLMA_LOG_DIR) / f"{base_name}.log"
+                            log_tail = ""
+                            error_analysis = None
                             if log_path.exists():
-                                last_lines = tail_file(str(log_path), lines=100)
-                                error_analysis = ErrorDetector.analyze_log(last_lines)
+                                log_tail = tail_file(str(log_path), lines=100)
+                                error_analysis = ErrorDetector.analyze_log(log_tail)
                                 if error_analysis:
                                     logger.error(
                                         f"{base_name}:{port} crashed — {error_analysis.error_type}\n"
@@ -38,9 +41,16 @@ def health_monitor():
                                         logger.error(f"   → {suggestion}")
                                     state.last_error_analysis[base_name] = error_analysis
                                 else:
-                                    logger.error(f"{base_name}:{port} crashed (exit code {proc.poll()})")
+                                    logger.error(f"{base_name}:{port} crashed (exit code {exit_code})")
                             else:
                                 logger.error(f"{base_name}:{port} crashed")
+                            # Structured failure log — feeds `allma errors` and
+                            # the auto-degrade retry policy.
+                            record_failure(
+                                base_name, error_analysis,
+                                exit_code=exit_code, log_tail=log_tail,
+                                context={"port": port, "phase": "runtime"},
+                            )
 
                             state.active_servers.pop(base_name, None)
                             state.server_idle_time.pop(base_name, None)

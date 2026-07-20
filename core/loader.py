@@ -562,6 +562,13 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                     for suggestion in error_analysis.suggestions:
                         logger.error(f"   • {suggestion}")
                     state.last_error_analysis[basename] = error_analysis
+                # Structured failure log — startup path
+                from core.error_detector import record_failure
+                record_failure(
+                    basename, error_analysis, exit_code=returncode,
+                    log_tail=log_content[-1200:],
+                    context={"phase": "startup", "backend": backend, "port": port},
+                )
                 raise RuntimeError(f"{displayname} startup failed (code {returncode})")
             raise RuntimeError(f"{displayname} not ready after {MODEL_LOAD_TIMEOUT}s")
 

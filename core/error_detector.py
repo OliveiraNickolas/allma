@@ -1,6 +1,10 @@
+import json
 import re
+import threading
+import time
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 
 @dataclass
@@ -194,6 +198,91 @@ class ErrorDetector:
             return f"Terminated by signal {signal_num} (abnormal exit)"
 
         return f"Exit code {exit_code} (unknown error)"
+
+
+# ==============================================================================
+# Failure log — one JSONL row per backend crash, for `allma errors` and for
+# the auto-degrade retry policy to consult crash history.
+# ==============================================================================
+_FAILURE_LOG_LOCK = threading.Lock()
+_FAILURE_LOG_MAX_BYTES = 5 * 1024 * 1024   # rotate at 5 MB; keeps `allma errors` snappy
+
+
+def _failure_log_path() -> Path:
+    # Late import — core.config pulls in logging setup that may not want to
+    # boot for a lightweight read (e.g. `allma errors` invoked cold).
+    from core.config import ALLMA_LOG_DIR
+    return Path(ALLMA_LOG_DIR) / "errors.jsonl"
+
+
+def _rotate_failure_log(path: Path) -> None:
+    """Same 20MB→.1→.2 pattern as backend logs, smaller ceiling."""
+    try:
+        if not path.exists() or path.stat().st_size < _FAILURE_LOG_MAX_BYTES:
+            return
+        older = path.with_suffix(path.suffix + ".1")
+        if older.exists():
+            older.unlink()
+        path.rename(older)
+    except Exception:
+        pass
+
+
+def record_failure(
+    base_name: str,
+    analysis: Optional[ErrorAnalysis],
+    *,
+    exit_code: Optional[int] = None,
+    log_tail: str = "",
+    context: Optional[dict[str, Any]] = None,
+) -> None:
+    """Append one JSONL row describing a backend crash.
+
+    Called from health_monitor (backend died mid-life) and loader (backend
+    failed to start). Thread-safe via _FAILURE_LOG_LOCK. The row is stable
+    schema so `allma errors` and the auto-degrade policy can rely on it.
+    """
+    path = _failure_log_path()
+    row: dict[str, Any] = {
+        "ts": time.time(),
+        "iso": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "model": base_name,
+        "error_type": analysis.error_type if analysis else "unknown",
+        "severity": analysis.severity if analysis else "error",
+        "explanation": analysis.explanation if analysis else "",
+        "suggestions": list(analysis.suggestions) if analysis else [],
+        "raw_message": (analysis.raw_message if analysis else "").strip()[:400],
+        "exit_code": exit_code,
+        "log_tail": (log_tail or "")[-1200:],   # last ~1200 chars, no full dump
+        "context": context or {},
+    }
+    try:
+        with _FAILURE_LOG_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _rotate_failure_log(path)
+            with path.open("a") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        # Never let logging failure crash the caller. Silent by design —
+        # the health monitor already logs the crash via `logger.error`.
+        pass
+
+
+def read_failures(limit: int = 50, model: Optional[str] = None) -> list[dict]:
+    """Read the last `limit` failure rows, newest first. Optionally filter
+    by model name (substring match, case-insensitive)."""
+    path = _failure_log_path()
+    if not path.exists():
+        return []
+    try:
+        with path.open() as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except Exception:
+        return []
+    if model:
+        needle = model.lower()
+        rows = [r for r in rows if needle in str(r.get("model", "")).lower()]
+    return rows[-limit:][::-1]
 
 
 def tail_file(file_path: str, lines: int = 50, max_bytes: int = 256 * 1024) -> str:

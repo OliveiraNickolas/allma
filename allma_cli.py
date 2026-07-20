@@ -596,6 +596,60 @@ def cmd_doctor(args):
     print(f"  Verdict: {color}{verdict}{C_END}\n")
 
 
+def cmd_errors(args):
+    """Show recent backend failures from the structured JSONL log.
+
+    Each backend crash — whether during startup or after running — appends
+    a row to `logs/errors.jsonl`. This command formats the latest N rows
+    for humans: timestamp, model, error type, one-line explanation, and
+    the first suggestion. Great for `allma errors --last 5` after a
+    failed load, and for filing bug reports (`--model X` narrows it).
+    """
+    from core.error_detector import read_failures
+
+    C_OK = "\033[92m" if sys.stdout.isatty() else ""
+    C_WARN = "\033[93m" if sys.stdout.isatty() else ""
+    C_BAD = "\033[91m" if sys.stdout.isatty() else ""
+    C_DIM = "\033[2m" if sys.stdout.isatty() else ""
+    C_END = "\033[0m" if sys.stdout.isatty() else ""
+
+    rows = read_failures(limit=args.last, model=args.model)
+    if not rows:
+        target = f" for model matching '{args.model}'" if args.model else ""
+        print(f"No failures recorded{target}.")
+        return
+
+    if getattr(args, "raw", False):
+        # JSONL passthrough — pipe-friendly for jq/scripts.
+        for r in rows:
+            print(json.dumps(r, ensure_ascii=False))
+        return
+
+    print()
+    for r in rows:
+        etype = r.get("error_type", "unknown")
+        sev = r.get("severity", "error")
+        color = C_BAD if sev == "critical" else (C_WARN if sev == "warning" else C_BAD)
+        print(f"  {C_DIM}{r.get('iso', '')}{C_END}  "
+              f"{color}{etype}{C_END}  {C_DIM}·{C_END}  {r.get('model', '?')}")
+        exp = (r.get("explanation") or "").strip()
+        if exp:
+            print(f"    {exp}")
+        sugs = r.get("suggestions") or []
+        if sugs:
+            print(f"    {C_DIM}→ {sugs[0]}{C_END}")
+        ec = r.get("exit_code")
+        ctx = r.get("context") or {}
+        meta = []
+        if ec is not None:
+            meta.append(f"exit={ec}")
+        if ctx.get("phase"):
+            meta.append(f"phase={ctx['phase']}")
+        if meta:
+            print(f"    {C_DIM}{'  ·  '.join(meta)}{C_END}")
+        print()
+
+
 def cmd_stop(args):
     """Stop the Allma daemon and all backend processes."""
     if not _is_running() and not _read_pid():
@@ -2413,6 +2467,15 @@ commands:
 
     p_doctor = sub.add_parser("doctor", help="Diagnose the environment (platform, backends, models)")
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_errors = sub.add_parser("errors", help="Show recent backend failures (structured JSONL log)")
+    p_errors.add_argument("--last", type=int, default=20, metavar="N",
+                          help="Show the last N failures (default: 20)")
+    p_errors.add_argument("--model", type=str, default=None, metavar="NAME",
+                          help="Filter by model name (substring, case-insensitive)")
+    p_errors.add_argument("--raw", action="store_true",
+                          help="Emit JSONL lines instead of the formatted view")
+    p_errors.set_defaults(func=cmd_errors)
 
     # calibrate
     p_calib = sub.add_parser("calibrate", help="Pre-calibrate a model")
