@@ -90,6 +90,29 @@ def _save_tui_layout(state: dict) -> None:
     except Exception:
         pass
 
+
+# LOAD form presets. Same file-per-config pattern as the layout above; kept
+# separate so wiping presets doesn't lose column widths (and vice versa).
+_PRESETS_PATH = Path(os.environ.get(
+    "ALLMA_TUI_PRESETS",
+    str(Path.home() / ".config" / "allma" / "presets.json"),
+))
+
+
+def _load_tui_presets() -> dict:
+    try:
+        return json.loads(_PRESETS_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _save_tui_presets(data: dict) -> None:
+    try:
+        _PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PRESETS_PATH.write_text(json.dumps(data, indent=2, sort_keys=True))
+    except Exception:
+        pass
+
 # Watermark ghost for the middle column — sits in the empty space between the
 # models table and the log collapsible. Textual has no true opacity, so we
 # fake it with a desaturated sepia palette: mid-tone brown for the body,
@@ -1349,6 +1372,10 @@ Button.mini  { min-width: 4; }
 .mmproj-row { height: 3; margin: 0 2 0 0; }
 .mmproj-row Input { width: 1fr; }
 .mmproj-row Button { margin: 1 0 0 0; }
+.preset-row { height: 3; margin: 0 2 0 0; }
+.preset-row Select { width: 1fr; }
+.preset-row Input.preset-name { width: 1fr; }
+.preset-row Button { margin: 1 0 0 0; }
 #statusline { height: 1; background: #c8b898; color: #007878; padding: 0 2; }
 
 /* picker modal */
@@ -1793,6 +1820,14 @@ class AllmaTUI(App):
         if (event.tabbed_content.id or "") == "setup-tabs":
             self._persist_layout()
 
+    def on_select_changed(self, event: Select.Changed) -> None:
+        # Preset dropdown → apply that saved config over the form. Other
+        # Selects in the form don't need special handling here.
+        if (event.select.id or "") == "ld-preset-select":
+            val = str(event.value or "")
+            if val and self.selected:
+                self._apply_preset(self.selected, val)
+
     def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
         if (event.collapsible.id or "") == "log-collapsible":
             self._start_tail()
@@ -1990,8 +2025,22 @@ class AllmaTUI(App):
         absorbed: dict[str, str] = {}
         if m["backend"] == "llama.cpp":
             absorbed, leftover = absorb_field_aliases(leftover, LLAMA_FIELD_ALIASES)
+        # Presets bar: quick save / apply for common per-model config combos.
+        # Backed by ~/.config/allma/presets.json — a { model_key: { preset_name:
+        # {form_values} } } dict shared across sessions.
+        preset_names = sorted(_load_tui_presets().get(m["key"], {}).keys())
+        preset_opts = [("(preset)", "")] + [(n, n) for n in preset_names]
         widgets = [Static(f"[{ACC_BLUE}]▮[/] Base config" + ("" if m["configured"] else " — new"),
                           classes="section-hdr"),
+                   Horizontal(
+                       Select(preset_opts, value="", allow_blank=False,
+                              id="ld-preset-select"),
+                       Input(placeholder="preset name",
+                             id="ld-preset-name", classes="preset-name"),
+                       Button("💾", id="btn-preset-save", classes="mini"),
+                       Button("🗑", id="btn-preset-del", classes="mini"),
+                       classes="preset-row",
+                   ),
                    Static("", id="vram-line", classes="vram-line")]
         COUNTER_KEYS = {"tensor_parallel", "max_num_seqs"}
         for key, label, vmin, vmax, step, is_int, default in self._slider_specs(m):
@@ -2303,17 +2352,32 @@ class AllmaTUI(App):
                 self._auto_layers = False
             if key == "max_num_seqs":
                 self._auto_seqs = False
-            # coupling: context ↑ → shrink whatever competes for the same VRAM
+            # coupling: context ↑ → shrink whatever competes for the same VRAM.
+            # Guardrail: NEVER auto-drop to 0 (full CPU) silently — that turned
+            # a 27B model into a 33 GB RAM elephant when Nick nudged the ctx
+            # slider while another model briefly held the VRAM. If the math
+            # says "nothing fits", keep the previous value and just warn.
             if key == "n_ctx" and self._auto_layers and m["size_gb"]:
                 weights = m["size_gb"] * 1.15
                 kv = event.value * m["size_gb"] / 500_000
                 _, avail = self._vram_estimate(m)
                 fit = (avail - kv) / weights if weights else 1.0
-                new_layers = -1 if fit >= 1.0 else max(0, int(99 * max(0.0, fit)))
+                if fit >= 1.0:
+                    new_layers = -1
+                elif fit > 0:
+                    # Refuse to go below 1 layer — CPU-only requires an
+                    # explicit user choice, not a slider side-effect.
+                    new_layers = max(1, int(99 * fit))
+                else:
+                    new_layers = None   # keep current, warn
                 ps = self._ps_value_widget("ld-n_gpu_layers")
-                if ps and ps.value != new_layers:
+                if ps and new_layers is not None and ps.value != new_layers:
                     ps.set_value(new_layers)
                     self._status(f"auto: GPU Offload → {ps._display()}")
+                elif ps and new_layers is None:
+                    self._status(f"⚠ ctx too large for available VRAM "
+                                 f"({kv:.1f}GB kv + {weights:.1f}GB weights > "
+                                 f"{avail:.1f}GB free) — GPU Offload unchanged")
             if key == "max_model_len" and self._auto_seqs and self._kv_budget:
                 new_seqs = max(1, min(64, int(self._kv_budget / max(1024, event.value))))
                 ps = self._ps_value_widget("ld-max_num_seqs")
@@ -2500,6 +2564,10 @@ class AllmaTUI(App):
             self._pick_mmproj(m)
         elif bid == "btn-browse-chat-template":
             self._pick_chat_template(m)
+        elif bid == "btn-preset-save":
+            self._save_current_as_preset(m)
+        elif bid == "btn-preset-del":
+            self._delete_current_preset(m)
         elif bid.startswith("pf") and bid.endswith("-load"):
             idx = int(bid[2:].split("-")[0])
             c = self.query_one(f"#pf{idx}", Collapsible)
@@ -2538,6 +2606,103 @@ class AllmaTUI(App):
                 except Exception:
                     pass
         self.push_screen(PickerScreen(root, "jinja", "Select chat template (.jinja)"), _done)
+
+    # ── LOAD-form presets ────────────────────────────────────────────────────
+    def _save_current_as_preset(self, m: dict) -> None:
+        """Snapshot the current LOAD-form values under a name typed in the
+        preset-name Input. Empty name = no-op with a toast."""
+        try:
+            name = self.query_one("#ld-preset-name", Input).value.strip()
+        except Exception:
+            name = ""
+        if not name:
+            self.notify("Type a preset name first", severity="warning")
+            return
+        data = _load_tui_presets()
+        model_presets = data.setdefault(m["key"], {})
+        model_presets[name] = self._load_form_values(m)
+        _save_tui_presets(data)
+        # Refresh the dropdown so the new name shows up immediately.
+        try:
+            sel = self.query_one("#ld-preset-select", Select)
+            names = sorted(model_presets.keys())
+            sel.set_options([("(preset)", "")] + [(n, n) for n in names])
+            sel.value = name
+        except Exception:
+            pass
+        self.notify(f"Preset '{name}' saved for {m['key']}")
+
+    def _delete_current_preset(self, m: dict) -> None:
+        """Delete the preset currently selected in the dropdown."""
+        try:
+            sel = self.query_one("#ld-preset-select", Select)
+            name = str(sel.value or "")
+        except Exception:
+            name = ""
+        if not name:
+            self.notify("Pick a preset from the dropdown first", severity="warning")
+            return
+        data = _load_tui_presets()
+        model_presets = data.get(m["key"], {})
+        if name not in model_presets:
+            return
+        del model_presets[name]
+        if not model_presets:
+            data.pop(m["key"], None)
+        _save_tui_presets(data)
+        try:
+            names = sorted(model_presets.keys())
+            sel.set_options([("(preset)", "")] + [(n, n) for n in names])
+            sel.value = ""
+        except Exception:
+            pass
+        self.notify(f"Preset '{name}' removed")
+
+    def _apply_preset(self, m: dict, name: str) -> None:
+        """Populate the LOAD-form widgets from a saved preset dict."""
+        data = _load_tui_presets().get(m["key"], {}).get(name)
+        if not data:
+            return
+        # Sliders / counters
+        for key, *_ in self._slider_specs(m):
+            if key in data:
+                w = self._ps_value_widget(f"ld-{key}")
+                if w is not None:
+                    try:
+                        w.set_value(data[key])
+                    except Exception:
+                        pass
+        # Path-shaped fields
+        for wid, key in (("ld-mmproj", "mmproj"),
+                         ("ld-chat-template", "chat_template_file")):
+            if key in data:
+                try:
+                    self.query_one(f"#{wid}", Input).value = str(data[key])
+                except Exception:
+                    pass
+        # GPU pin
+        if "gpu_id" in data:
+            try:
+                self.query_one("#ld-gpu_id", RadioRow).value = str(data["gpu_id"])
+            except Exception:
+                pass
+        # Flag toggles + values
+        want = {}
+        for tok in (data.get("extra_args") or []):
+            if isinstance(tok, str) and tok.startswith("--"):
+                want[tok] = []
+            elif want:
+                last_key = list(want.keys())[-1]
+                want[last_key].append(tok)
+        try:
+            for row in self.query_one("#load-form").query(FlagRow):
+                on = row.flag in want
+                row.set_state(on, want.get(row.flag))
+        except Exception:
+            pass
+        if self.selected:
+            self._update_vram_line(self.selected)
+            self._update_cmd_preview(self.selected)
 
     def _selected_profile_name(self, m: dict) -> str | None:
         try:
