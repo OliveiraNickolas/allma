@@ -193,14 +193,37 @@ def _kfmt(n) -> str:
     return f"{n:.0f}"
 
 
+_SPARK_CHARS = "▁▂▃▄▅▆▇█"
+_HISTORY_LEN = 60   # samples kept per metric — one minute at 1s refresh
+
+
+def _sparkline(values, width: int = 20) -> str:
+    """Compact sparkline from a sequence of 0..1 values. Empty history
+    renders as blank, so freshly-loaded cards don't flash a spike."""
+    if not values:
+        return " " * width
+    tail = list(values)[-width:]
+    if len(tail) < width:
+        tail = [0.0] * (width - len(tail)) + tail
+    n = len(_SPARK_CHARS) - 1
+    return "".join(_SPARK_CHARS[max(0, min(n, int(v * n)))] for v in tail)
+
+
 class TopView:
     def __init__(self):
+        from collections import deque
         # per-model tok/s state: name -> (last_counter, last_ts, rate)
         self._rate: dict = {}
         self._prate: dict = {}         # same, for prompt/prefill tokens
         self._maxctx: dict = {}
         self._last_active: dict = {}   # name -> last gen rate seen
         self._last_prefill: dict = {}  # name -> last prompt/prefill rate seen
+        # Rolling history for the sparklines: {gpu_index: {"util": deque,
+        # "vram": deque, "power_pct": deque}} and {model_name: {"tok_s": deque}}.
+        # Fixed maxlen so the memory footprint is trivially bounded.
+        self._gpu_hist: dict = {}
+        self._model_hist: dict = {}
+        self._hist_factory = lambda: deque(maxlen=_HISTORY_LEN)
 
     def _speed_text(self, name: str, rate: float, active: bool) -> Text:
         """Show the most recent measured rate and keep it there until a new
@@ -237,11 +260,30 @@ class TopView:
 
     def _gpu_card(self, g: dict) -> Panel:
         short = (g["name"].replace("NVIDIA GeForce ", "").replace("NVIDIA ", ""))[:10]
+        # Record current values for the sparkline history (one sample per
+        # snapshot call).
+        h = self._gpu_hist.setdefault(g["index"], {
+            "util": self._hist_factory(), "vram": self._hist_factory(),
+        })
+        h["util"].append(g["util"] / 100.0)
+        h["vram"].append(g["used"] / max(g["total"], 1e-9))
         grid = Table.grid(padding=(0, 0))
         grid.add_column()
         grid.add_row(self._barrow("util", g["util"] / 100, f"{g['util']:3.0f}%", width=20))
         grid.add_row(self._barrow("vram", g["used"] / g["total"],
                                   f"{g['used']:.1f}/{g['total']:.0f}G", width=20))
+        # Sparkline row: last minute of util (teal) + vram (orange), so a
+        # spike is obvious even if you glanced away for a few seconds.
+        spark = Text(style=_S)
+        spark.append(f"{'      ':<5}", style=f"{C_DIM} on {C_BG}")
+        spark.append(_sparkline(h["util"], width=20), style=f"{C_ACCENT} on {C_BG}")
+        spark.append("  util 1m", style=f"{C_DIM} on {C_BG}")
+        grid.add_row(spark)
+        spark2 = Text(style=_S)
+        spark2.append(f"{'      ':<5}", style=f"{C_DIM} on {C_BG}")
+        spark2.append(_sparkline(h["vram"], width=20), style=f"{C_ORANGE} on {C_BG}")
+        spark2.append("  vram 1m", style=f"{C_DIM} on {C_BG}")
+        grid.add_row(spark2)
         # footer: temp (colored) · clock · power · fan
         foot = Text(style=_S)
         foot.append(f"{g['temp']:.0f}°C", style=f"bold {_temp_style(g['temp'])} on {C_BG}")
@@ -322,6 +364,15 @@ class TopView:
         for label, val in (("speed", speed), ("prefill", prefill),
                            ("context", context), ("requests", load)):
             body.add_row(label, val)
+        # Rolling tok/s sparkline — one minute of the last measured rate,
+        # normalised against the peak seen so far. Zero if never active.
+        mh = self._model_hist.setdefault(name, {"tok_s": self._hist_factory()})
+        current_rate = self._last_active.get(name, 0.0) or 0.0
+        mh["tok_s"].append(current_rate)
+        peak = max(mh["tok_s"]) or 1.0
+        spark = Text(_sparkline([v / peak for v in mh["tok_s"]], width=20),
+                     style=f"{C_ACCENT} on {C_BG}")
+        body.add_row("1m", spark)
         if note:
             body.add_row("", Text(note, style=_dim))
 
