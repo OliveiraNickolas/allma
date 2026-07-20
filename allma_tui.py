@@ -64,6 +64,32 @@ from core.detect import (  # noqa: E402
 )
 from core.ghost_art import BIG_GHOST  # noqa: E402
 
+
+# ── TUI layout persistence ──────────────────────────────────────────────────
+# Column widths, filter state, active tab and last-selected model are stored
+# in ~/.config/allma/tui.json so the interface reopens where you left it.
+# Kept dumb-on-disk (single flat JSON) so the user can hand-edit / reset by
+# deleting the file. Never crashes the TUI on read/write errors.
+_LAYOUT_PATH = Path(os.environ.get(
+    "ALLMA_TUI_LAYOUT",
+    str(Path.home() / ".config" / "allma" / "tui.json"),
+))
+
+
+def _load_tui_layout() -> dict:
+    try:
+        return json.loads(_LAYOUT_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _save_tui_layout(state: dict) -> None:
+    try:
+        _LAYOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _LAYOUT_PATH.write_text(json.dumps(state, indent=2, sort_keys=True))
+    except Exception:
+        pass
+
 # Watermark ghost for the middle column — sits in the empty space between the
 # models table and the log collapsible. Textual has no true opacity, so we
 # fake it with a desaturated sepia palette: mid-tone brown for the body,
@@ -1427,6 +1453,11 @@ class _ColumnSplitter(Widget):
         if self._dragging:
             self._dragging = False
             self.release_mouse()
+            # Persist so the layout reopens at the same widths next time.
+            try:
+                self.app._persist_layout()
+            except Exception:
+                pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1533,6 +1564,79 @@ class AllmaTUI(App):
         table.focus()
         self.set_interval(3.0, self._poll_server)
         self._poll_server()
+        # Restore last session's layout (column widths, filter state, tab,
+        # selected model). Runs AFTER the initial scan so `_select_model_key`
+        # can find the row in the freshly-populated table.
+        self._apply_saved_layout()
+
+    def _apply_saved_layout(self) -> None:
+        """Apply state loaded from ~/.config/allma/tui.json. Every step is
+        try/except-guarded so a stale/malformed file just gets ignored."""
+        st = _load_tui_layout()
+        if not st:
+            return
+        # Column widths
+        for col_id in ("col-left", "col-mid", "col-right"):
+            w = st.get("cols", {}).get(col_id)
+            if isinstance(w, int) and w > 0:
+                try:
+                    self.query_one(f"#{col_id}").styles.width = w
+                except Exception:
+                    pass
+        # Filter toggles
+        for fid, val in (st.get("filters") or {}).items():
+            try:
+                t = self.query_one(f"#flt-{fid}", Toggle)
+                if bool(val) != t.value:
+                    t.toggle_value()
+            except Exception:
+                pass
+        # Active setup tab
+        tab = st.get("setup_tab")
+        if tab in ("tab-load", "tab-profiles"):
+            try:
+                self.query_one("#setup-tabs", TabbedContent).active = tab
+            except Exception:
+                pass
+        # Last selected model — queued so it runs after any pending renders.
+        key = st.get("selected_model")
+        if key:
+            self.call_after_refresh(self._select_model_key, key)
+
+    def _select_model_key(self, key: str) -> None:
+        try:
+            table = self.query_one("#models-table", DataTable)
+            for row_ix in range(table.row_count):
+                if table.get_row_at(row_ix)[1] == key:
+                    table.move_cursor(row=row_ix)
+                    return
+        except Exception:
+            pass
+
+    def _snapshot_layout(self) -> dict:
+        st: dict = {"cols": {}, "filters": {}}
+        for col_id in ("col-left", "col-mid", "col-right"):
+            try:
+                st["cols"][col_id] = self.query_one(f"#{col_id}").size.width
+            except Exception:
+                pass
+        for fid, *_ in self.FILTERS:
+            try:
+                st["filters"][fid] = self.query_one(f"#flt-{fid}", Toggle).value
+            except Exception:
+                pass
+        try:
+            st["setup_tab"] = self.query_one("#setup-tabs", TabbedContent).active
+        except Exception:
+            pass
+        if self.selected:
+            st["selected_model"] = self.selected.get("key")
+        return st
+
+    def _persist_layout(self) -> None:
+        """Fire-and-forget snapshot to disk. Called from event handlers that
+        touched something worth remembering (drag, filter, tab, selection)."""
+        _save_tui_layout(self._snapshot_layout())
 
     def _update_footer(self) -> None:
         self.query_one("#models-footer", Static).update(
@@ -1628,6 +1732,7 @@ class AllmaTUI(App):
         tid = event.toggle.id or ""
         if tid.startswith("flt-"):
             self._refresh_table()
+            self._persist_layout()
             return
         # A FlagRow toggle flips extra_args → VRAM costs change (mtp,
         # cudagraph, kv dtype...). Walk up to detect it.
@@ -1654,11 +1759,17 @@ class AllmaTUI(App):
             self.selected = model
             await self._show_model(model)
             self._maybe_retail()
+            self._persist_layout()
 
     # ── backend log tail (allma backend logs -f, inside the middle column) ──
     # Expanded/Collapsed are dispatched reliably on the real click; the older
     # Toggled handler mis-read `.collapsed` on the first open (logs only showed
     # up after a rescan re-triggered the tail).
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        # Remember which SETUP tab (LOAD vs PROFILES) the user left on.
+        if (event.tabbed_content.id or "") == "setup-tabs":
+            self._persist_layout()
+
     def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
         if (event.collapsible.id or "") == "log-collapsible":
             self._start_tail()
