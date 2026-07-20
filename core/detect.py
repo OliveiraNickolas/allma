@@ -309,6 +309,14 @@ def detect_model(path: Path) -> dict:
         "architectures": [],
         "max_ctx":      None,
         "has_vision":   False,
+        # True when the chat template opts into a chain-of-thought mode
+        # (Qwen3 `enable_thinking`, DeepSeek-R1 `<think>` tags, Gemma-flash
+        # `reasoning_effort`, ...). Callers use this to pick a lower-
+        # temperature preset — reasoning models fall apart with T=1.0.
+        "has_reasoning": False,
+        # True when the model ships a Multi-Token-Prediction head — enables
+        # speculative decoding via draft-mtp on llama.cpp / mtp on vLLM.
+        "has_mtp":      False,
         "gguf_files":   [],
         "mmproj_files": [],
         "size_gb":      0.0,
@@ -343,12 +351,45 @@ def detect_model(path: Path) -> dict:
             info["model_type"]    = cfg.get("model_type", "")
             info["architectures"] = cfg.get("architectures", [])
             info["has_vision"]    = "vision_config" in cfg
-
-            # max_position_embeddings may be in text_config (VL models)
+            # MTP head is either declared in config (mtp_num_hidden_layers,
+            # num_nextn_predict_layers) or discoverable in the safetensors
+            # index (keys prefixed with `mtp.` / `nextn.`).
             tc = cfg.get("text_config", cfg)
+            if tc.get("mtp_num_hidden_layers") or tc.get("num_nextn_predict_layers"):
+                info["has_mtp"] = True
             info["max_ctx"] = tc.get("max_position_embeddings")
         except Exception as e:
             print(f"⚠  Could not read config.json: {e}", file=sys.stderr)
+
+    # ── chat template — reasoning-mode heuristic ────────────────────────────
+    # A model is a "reasoning" model if its chat template opts into a
+    # thinking / chain-of-thought block. Vendor-specific tokens keep
+    # changing (Qwen3 `enable_thinking`, DeepSeek `<think>`, Gemma
+    # `reasoning_effort`), so we OR every known signal — false positives
+    # here just mean a slightly conservative sampling preset.
+    _REASONING_HINTS = ("enable_thinking", "<think>", "</think>",
+                        "reasoning_effort", "<|reasoning|>")
+    for template_name in ("chat_template.jinja", "chat_template_v2.jinja"):
+        t = path / template_name
+        if t.exists():
+            try:
+                blob = t.read_text(errors="replace")
+                if any(h in blob for h in _REASONING_HINTS):
+                    info["has_reasoning"] = True
+                    break
+            except Exception:
+                pass
+    # tokenizer_config.json embeds the template as a string in many
+    # HF-native repos — check there too when a separate .jinja isn't shipped.
+    if not info["has_reasoning"]:
+        tok_cfg = path / "tokenizer_config.json"
+        if tok_cfg.exists():
+            try:
+                blob = tok_cfg.read_text(errors="replace")
+                if any(h in blob for h in _REASONING_HINTS):
+                    info["has_reasoning"] = True
+            except Exception:
+                pass
 
     # ── Family — tries model_type, then architectures, then folder name ──
     candidates = [info["model_type"] or ""] + [a.lower() for a in info["architectures"]]
