@@ -54,21 +54,127 @@ def clear_backend_registry():
     _save_registry({})
 
 
+class _AttachedProcess:
+    """Popen look-alike for backends the allma daemon adopts from the PID
+    registry after a restart. Exposes just the .pid and .poll() shape the
+    rest of the code assumes (health_monitor, shutdown_server, etc.).
+
+    Adoption is a one-way ticket: once attached, we treat the process
+    exactly like a spawned one. We can't recover stdout/stderr streams
+    (they're gone with the old parent), but the log file is still being
+    appended by the child so tail_file continues to work.
+    """
+    def __init__(self, pid: int):
+        self.pid = pid
+
+    def poll(self) -> Optional[int]:
+        # None while running, arbitrary negative code once gone. We can't
+        # recover the actual exit code of a process we didn't spawn.
+        try:
+            p = psutil.Process(self.pid)
+            if p.is_running() and p.status() != psutil.STATUS_ZOMBIE:
+                return None
+            return -1
+        except psutil.NoSuchProcess:
+            return -1
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        # Best-effort — only called from cleanup paths.
+        try:
+            p = psutil.Process(self.pid)
+            p.wait(timeout=timeout)
+        except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+            pass
+        return self.poll() or -1
+
+
+def _reattach_backend(name: str, info: dict) -> bool:
+    """Try to adopt an orphaned backend from a previous allma session.
+
+    Adoption criteria (all must hold):
+      * Process still alive at the registered PID
+      * cmdline still looks like a vLLM/llama backend (guards against
+        PID reuse by an unrelated process)
+      * HTTP /health on the registered port answers within 1s
+
+    On success, populates state.active_servers so the rest of the daemon
+    treats it as a live backend (health_monitor, /v1/ps, unload, etc).
+    Returns True if adopted, False otherwise (caller then kills it).
+    """
+    import urllib.request
+    import urllib.error
+    pid = info.get("pid")
+    port = info.get("port")
+    backend = info.get("backend") or "unknown"
+    if not pid or not port:
+        return False
+    try:
+        proc = psutil.Process(pid)
+        cmdline = " ".join(proc.cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    is_vllm = "vllm" in cmdline and "serve" in cmdline
+    is_llama = "llama-server" in cmdline or "llama.cpp" in cmdline
+    if not (is_vllm or is_llama):
+        return False
+    # llama-server exposes /health, vLLM exposes /health too. 1s is plenty
+    # for a healthy backend to answer; anything slower is probably wedged.
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as r:
+            if r.status != 200:
+                return False
+    except (urllib.error.URLError, OSError):
+        return False
+
+    attached = _AttachedProcess(pid)
+    logfile = str(ALLMA_LOG_DIR / f"{name}.log")
+    with state.global_lock:
+        state.active_servers[name] = {
+            "process": attached,
+            "pid": pid,
+            "port": port,
+            "backend": backend,
+            "gpus": info.get("gpus") or [],
+            "logfile": logfile,
+            "pin_loaded": False,
+            "attached": True,       # marker for debugging / future UI
+        }
+        state.server_idle_time[name] = time.time()
+    logger.info(f"Reattached orphan backend {name} (PID {pid}, port {port}, {backend})")
+    return True
+
+
 def cleanup_orphaned_backends():
-    """Kill backend processes left over from a previous allma session."""
+    """Adopt or kill backend processes left from a previous allma session.
+
+    A responsive backend on the port we remember is reincorporated (no
+    reload cost). Anything else — dead PID, wrong process, unresponsive
+    port — gets killed as before. Registry is rebuilt from the survivors,
+    not blindly cleared.
+    """
     reg = _load_registry()
     if not reg:
         return
 
-    killed = 0
+    reattached, killed = 0, 0
+    survivors: dict = {}
     for name, info in list(reg.items()):
         pid = info.get("pid")
         if not pid:
             continue
+        # Try adoption first — much better UX than killing a healthy backend
+        # just because the allma daemon restarted.
+        try:
+            if _reattach_backend(name, info):
+                survivors[name] = info
+                reattached += 1
+                continue
+        except Exception as e:
+            logger.debug(f"Reattach probe failed for {name}: {e}")
+        # Adoption failed — fall through to the old kill path.
         try:
             proc = psutil.Process(pid)
             cmdline = " ".join(proc.cmdline())
-            # Verify it's actually a backend process (not a random PID reuse)
             is_vllm = "vllm" in cmdline and "serve" in cmdline
             is_llama = "llama-server" in cmdline or "llama.cpp" in cmdline
             if is_vllm or is_llama:
@@ -82,9 +188,11 @@ def cleanup_orphaned_backends():
         except Exception as e:
             logger.warning(f"Error cleaning up {name} (PID {pid}): {e}")
 
-    # Clear the registry
-    _save_registry({})
+    # Rebuild the registry — keep the survivors, drop everything else.
+    _save_registry(survivors)
 
+    if reattached:
+        logger.info(f"Reattached {reattached} live backend(s) from previous session.")
     if killed:
         time.sleep(2)
         gpus = get_free_gpu_memory()
