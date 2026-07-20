@@ -1246,6 +1246,14 @@ Toggle.line.-on {
     scrollbar-color: #007878; scrollbar-background: #c8b898;
     scrollbar-size: 1 1;
 }
+/* Search input above MY MODELS: collapsed to zero rows until `/` reveals
+   it, so the layout doesn't waste vertical space in the common case. */
+#models-search {
+    height: 3; margin: 0 0 0 0;
+    background: #f0e8d0; color: #007878; border: solid #008888;
+}
+#models-search.hidden { height: 0; border: none; padding: 0; margin: 0; }
+#models-search:focus { border: solid #007878; background: #fff8e0; }
 #models-table > .datatable--header {
     background: #c8b898; color: #007878; text-style: bold;
 }
@@ -1471,6 +1479,8 @@ class AllmaTUI(App):
         Binding("f5", "rescan", "Rescan"),
         Binding("ctrl+l", "load_one_time", "Load once"),
         Binding("ctrl+s", "save_base", "Save base"),
+        Binding("slash", "focus_search", "Search"),
+        Binding("escape", "clear_search", "Clear search", show=False),
     ]
 
     FILTERS = [
@@ -1493,6 +1503,7 @@ class AllmaTUI(App):
         self.loaded_status: dict[str, dict] = {}
         self.server_online = False
         self._detect_cache: dict[str, dict] = {}
+        self._search_query: str = ""    # `/` opens a filter over MY MODELS
         self.gpus = get_gpus()
         # automatic coupling: turns off once the user touches the target manually
         self._auto_layers = True     # llama: n_ctx → n_gpu_layers
@@ -1532,6 +1543,11 @@ class AllmaTUI(App):
                 yield _ColumnSplitter("col-left", side="left",
                                        min_target=20, min_absorb=30, id="split-lm")
                 with Vertical(id="col-mid", classes="panel"):
+                    # Search bar: hidden until `/` focuses it. Filters the table
+                    # by substring against model key or backend name. Escape
+                    # clears and returns focus to the table.
+                    yield Input(placeholder="/ to search…  esc to clear",
+                                id="models-search", classes="hidden")
                     yield DataTable(id="models-table", cursor_type="row", zebra_stripes=True)
                     # Watermark rides the empty space between the table and the
                     # collapsible: sepia body, cream eyes, centered on both axes.
@@ -1688,6 +1704,7 @@ class AllmaTUI(App):
 
     def _refresh_table(self) -> None:
         f = self._filter_state()
+        needle = (self._search_query or "").strip().lower()
         table = self.query_one("#models-table", DataTable)
         prev_key = self.selected["key"] if self.selected else None
         table.clear()
@@ -1705,6 +1722,8 @@ class AllmaTUI(App):
             if f["loaded"] and m["key"] not in self.loaded_status:
                 continue
             if f["new"] and m["configured"]:
+                continue
+            if needle and needle not in m["key"].lower() and needle not in m["backend"].lower():
                 continue
             if m["key"] in self.loaded_status:
                 dot = (f"[{ACC_ORANGE}]✱[/]" if self.loaded_status[m["key"]].get("custom_load")
@@ -2837,6 +2856,41 @@ class AllmaTUI(App):
             pass
 
     # — shortcuts —
+    def action_focus_search(self) -> None:
+        """`/` reveals the search bar (in the MY MODELS column) and focuses it."""
+        try:
+            box = self.query_one("#models-search", Input)
+        except Exception:
+            return
+        box.remove_class("hidden")
+        box.focus()
+
+    def action_clear_search(self) -> None:
+        """Escape clears the search query, hides the box, returns focus to
+        the models table. If the search bar wasn't visible, no-op — normal
+        Escape handling continues (modal close etc.)."""
+        try:
+            box = self.query_one("#models-search", Input)
+        except Exception:
+            return
+        if box.has_class("hidden") and not self._search_query:
+            return
+        box.value = ""
+        self._search_query = ""
+        box.add_class("hidden")
+        self._refresh_table()
+        try:
+            self.query_one("#models-table", DataTable).focus()
+        except Exception:
+            pass
+
+    def on_input_changed(self, event: "Input.Changed") -> None:
+        # Live-filter MY MODELS as you type in the search bar. Other Inputs
+        # in the form don't need special handling here.
+        if (event.input.id or "") == "models-search":
+            self._search_query = event.value
+            self._refresh_table()
+
     def action_load_one_time(self) -> None:
         if self.selected:
             self._do_load_once(self.selected, self._selected_profile_name(self.selected))
