@@ -1760,6 +1760,8 @@ class AllmaTUI(App):
             if isinstance(w, FlagRow):
                 if self.selected:
                     self._update_vram_line(self.selected)
+
+                    self._update_cmd_preview(self.selected)
                 return
             w = w.parent
 
@@ -1768,6 +1770,8 @@ class AllmaTUI(App):
         # --cache-type-k from q8_0 to q4_0 halves the KV estimate.
         if self.selected:
             self._update_vram_line(self.selected)
+
+            self._update_cmd_preview(self.selected)
 
     async def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key is None:
@@ -2056,13 +2060,24 @@ class AllmaTUI(App):
         if m["configured"] and not profs:
             widgets.append(Static("[#7a1818]no profiles — create one in the PROFILES tab[/]",
                                   classes="field-hint"))
+        # Live command preview — the actual backend command that would run
+        # with the current form values. Great for learning what each toggle
+        # produces, and for pasting into a shell to reproduce a load outside
+        # of allma. Refreshed via _update_cmd_preview() on form changes.
+        widgets.append(Collapsible(
+            Static("", id="cmd-preview"),
+            title="Command preview", collapsed=True, id="cmd-preview-collapsible",
+        ))
         await form.mount_all(widgets)
+        self._update_cmd_preview(m)
         if m["backend"] == "vllm":
             # KV budget for the len ↔ seqs coupling (from the current config)
             len0 = float(cfg.get("max_model_len", 131072) or 131072)
             seqs0 = float(cfg.get("max_num_seqs", 8) or 8)
             self._kv_budget = max(1024.0, len0) * max(1.0, seqs0)
         self._update_vram_line(m)
+
+        self._update_cmd_preview(m)
 
     # — VRAM estimate + couplings —
     def _ps_value(self, wid: str, default=None):
@@ -2118,6 +2133,78 @@ class AllmaTUI(App):
         need = self._vram_breakdown(m)["total_gb"]
         avail = sum(g["free_gb"] for g in self._target_gpus(m))
         return need, avail
+
+    def _update_cmd_preview(self, m: dict | None = None) -> None:
+        """Render the backend command as it would run with current form values.
+
+        Not a byte-perfect copy of what core/process.py::build_*_cmd emits
+        (that resolves port/GPU allocation and reads shared state), but
+        close enough to answer "what does this flag actually do?" and to
+        let the user paste something into a shell to reproduce a run.
+        """
+        m = m or self.selected
+        if not m:
+            return
+        try:
+            preview = self.query_one("#cmd-preview", Static)
+        except Exception:
+            return
+        try:
+            values = self._load_form_values(m)
+        except Exception:
+            preview.update("[dim]…[/dim]")
+            return
+
+        # Start from the on-disk config and overlay the current form values.
+        # (We don't call core.state.effective_base_cfg here — this widget must
+        # work without the server running.)
+        cfg = dict(m.get("cfg") or {})
+        cfg.update({k: v for k, v in values.items() if v not in (None, "", [])})
+        extra_args = list(cfg.get("extra_args") or [])
+
+        def _q(s: str) -> str:
+            s = str(s)
+            return f'"{s}"' if any(c in s for c in ' \t"\'{}[]') else s
+
+        if m["backend"] == "vllm":
+            from core.config import VLLM_PATH
+            cmd = [VLLM_PATH, "serve", cfg.get("path", "?")]
+            for k, flag in (("tokenizer", "--tokenizer"),
+                            ("gpu_memory_utilization", "--gpu-memory-utilization"),
+                            ("max_model_len", "--max-model-len"),
+                            ("max_num_seqs", "--max-num-seqs"),
+                            ("max_num_batched_tokens", "--max-num-batched-tokens"),
+                            ("tensor_parallel", "--tensor-parallel-size"),
+                            ("chat_template_file", "--chat-template")):
+                if cfg.get(k):
+                    cmd += [flag, str(cfg[k])]
+            cmd += ["--host", "127.0.0.1", "--port", "<AUTO>"]
+        else:
+            from core.config import LLAMA_CPP_PATH
+            cmd = [LLAMA_CPP_PATH, "-m", cfg.get("model", "?")]
+            for k, flag in (("n_ctx", "-c"),
+                            ("n_batch", "-b"),
+                            ("n_ubatch", "-ub"),
+                            ("n_threads", "-t"),
+                            ("n_gpu_layers", "-ngl"),
+                            ("mmproj", "--mmproj"),
+                            ("chat_template_file", "--chat-template-file")):
+                if cfg.get(k):
+                    cmd += [flag, str(cfg[k])]
+            cmd += ["--host", "127.0.0.1", "--port", "<AUTO>"]
+        cmd += [str(x) for x in extra_args]
+
+        rendered = " ".join(_q(x) for x in cmd)
+        # Wrap on space every ~80 chars so long lines don't overflow.
+        wrapped, line = [], ""
+        for tok in rendered.split(" "):
+            if line and len(line) + 1 + len(tok) > 78:
+                wrapped.append(line + " \\")
+                line = "  " + tok
+            else:
+                line = f"{line} {tok}" if line else tok
+        wrapped.append(line)
+        preview.update(f"[#007878]{rescape(chr(10).join(wrapped))}[/]")
 
     def _update_vram_line(self, m: dict) -> None:
         try:
@@ -2235,6 +2322,8 @@ class AllmaTUI(App):
                     self._status(f"auto: Max Sequences → {new_seqs}")
             self._update_vram_line(m)
 
+            self._update_cmd_preview(m)
+
     def _ps_value_widget(self, wid: str):
         """ParamSlider or ParamCounter by id (shared interface: value/value_str/set_value)."""
         try:
@@ -2247,12 +2336,16 @@ class AllmaTUI(App):
         if (event.radio.id or "") == "ld-gpu_id" and self.selected:
             self._update_vram_line(self.selected)
 
+            self._update_cmd_preview(self.selected)
+
     def on_param_counter_changed(self, event: ParamCounter.Changed) -> None:
         if not self.selected or not (event.param.id or "").startswith("ld-"):
             return
         if event.key == "max_num_seqs":
             self._auto_seqs = False   # the user took over
         self._update_vram_line(self.selected)
+
+        self._update_cmd_preview(self.selected)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         # Enter in "Other (advanced)": known flags move up to the list
@@ -2702,6 +2795,8 @@ class AllmaTUI(App):
         # mmproj path affects the VRAM estimate (vision projector weight)
         if (event.input.id or "") == "ld-mmproj" and self.selected:
             self._update_vram_line(self.selected)
+
+            self._update_cmd_preview(self.selected)
             return
         # typing a new URL invalidates the previous listing
         if (event.input.id or "") == "dl-url" and self._dl_files is not None:
