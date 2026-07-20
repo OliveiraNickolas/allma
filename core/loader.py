@@ -217,6 +217,72 @@ def _kv_ceiling_from_log(basename: str) -> int:
     return int(matches[-1]) if matches else 0
 
 
+# Auto-degrade retry: memory-shaped errors that we know how to recover from
+# by shrinking the context window. Matches what ErrorDetector produces.
+_DEGRADABLE_ERROR_TYPES = {
+    "cuda_out_of_memory", "cuda_allocation_failed",
+    "model_too_large", "context_too_large",
+}
+_CTX_FLOOR = 4096
+
+
+def _plan_degrade_retry(basename: str, cfg: dict, backend: str) -> tuple[dict | None, str]:
+    """Decide whether to retry after a failed load, and with what override.
+
+    Two strategies, in priority order:
+      1. vLLM `estimated maximum model length is N` — retry at 95% of N.
+         Precise (backend told us the ceiling).
+      2. Any degradable error (OOM/alloc/context) — halve the context and
+         retry. Blunt fallback.
+
+    Returns (patched_cfg, reason) if a retry is warranted, else (None, "").
+    Never proposes going below _CTX_FLOOR — a smaller ctx than that means
+    the model just doesn't fit and no retry will fix it.
+    """
+    from core.error_detector import ErrorDetector
+    # Read the tail of the failed run's log ourselves — the exception path
+    # doesn't hand it to us directly.
+    logpath = ALLMA_LOG_DIR / f"{basename}.log"
+    try:
+        with open(logpath, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 65536))
+            log_tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        log_tail = ""
+
+    # Strategy 1: vLLM ceiling hint
+    if backend == "vllm":
+        fitted = _kv_ceiling_from_log(basename)
+        configured = int(cfg.get("max_model_len", 0) or 0)
+        if fitted and configured and fitted < configured and fitted >= _CTX_FLOOR:
+            new_len = max(_CTX_FLOOR, (int(fitted * 0.95) // 4096) * 4096)
+            if new_len < configured:
+                retry_cfg = dict(cfg, max_model_len=new_len)
+                return retry_cfg, (f"max_model_len={configured} doesn't fit "
+                                    f"(vLLM ceiling {fitted}); auto-fit to {new_len}")
+
+    # Strategy 2: generic OOM / allocation / context degrade
+    analysis = ErrorDetector.analyze_log(log_tail) if log_tail else None
+    if analysis and analysis.error_type in _DEGRADABLE_ERROR_TYPES:
+        if backend == "vllm":
+            cur = int(cfg.get("max_model_len", 0) or 0)
+            if cur > _CTX_FLOOR * 2:
+                new_len = max(_CTX_FLOOR, (cur // 2 // 4096) * 4096)
+                retry_cfg = dict(cfg, max_model_len=new_len)
+                return retry_cfg, (f"{analysis.error_type}: halving "
+                                    f"max_model_len {cur} → {new_len}")
+        else:  # llama.cpp
+            cur = int(cfg.get("n_ctx", 0) or 0)
+            if cur > _CTX_FLOOR * 2:
+                new_ctx = max(_CTX_FLOOR, (cur // 2 // 4096) * 4096)
+                retry_cfg = dict(cfg, n_ctx=new_ctx)
+                return retry_cfg, (f"{analysis.error_type}: halving "
+                                    f"n_ctx {cur} → {new_ctx}")
+
+    return None, ""
+
+
 async def ensure_base_model(basename: str, profilename: Optional[str] = None, gpu_id: Optional[int] = None):
     if basename not in BASE_MODELS:
         raise RuntimeError(f"Model {basename} not configured")
@@ -279,25 +345,33 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
         try:
             port = await _load_model_impl(basename, cfg, backend, displayname, gpu_id=gpu_id)
         except RuntimeError as first_err:
-            # Auto-fit: vLLM refuses to start when the configured context
-            # doesn't fit the KV cache budget, but tells us the ceiling:
-            #   "the estimated maximum model length is 46464"
-            # Retry ONCE at 95% of that ceiling (session-only override — the
-            # .allm on disk is untouched) instead of failing on the user.
-            fitted = _kv_ceiling_from_log(basename) if backend == "vllm" else 0
-            configured = int(cfg.get("max_model_len", 0) or 0)
-            if not fitted or (configured and fitted >= configured):
+            # Auto-degrade: try once more with a smaller context when the
+            # backend crashed on a memory-shaped problem. Two paths:
+            #
+            #   (a) vLLM auto-fit — vLLM tells us the ceiling in its log
+            #       ("the estimated maximum model length is 46464"); we
+            #       retry at 95% of that. Precise, no guessing.
+            #
+            #   (b) Generic OOM degrade — for CUDA OOM / allocation
+            #       failures / context-too-large errors on either backend,
+            #       halve max_model_len (vLLM) or n_ctx (llama.cpp) with
+            #       a floor of 4096 and retry once. Blunt but effective.
+            #
+            # In both cases the retry uses a session-only override (the
+            # .allm on disk stays untouched); a log line tells the user to
+            # make the change permanent by editing it. One retry only —
+            # avoids infinite loops when the model is fundamentally too
+            # large for the box.
+            retry_cfg, retry_reason = _plan_degrade_retry(basename, cfg, backend)
+            if retry_cfg is None:
                 raise
-            new_len = max(4096, (int(fitted * 0.95) // 4096) * 4096)
-            logger.warning(
-                f"{displayname}: max_model_len={configured or '?'} doesn't fit "
-                f"(vLLM ceiling {fitted}). Auto-fit: retrying once with "
-                f"max_model_len={new_len}. Edit the .allm to make this permanent."
-            )
-            retry_cfg = dict(cfg)
-            retry_cfg["max_model_len"] = new_len
+            logger.warning(f"{displayname}: {retry_reason}. Retrying once — "
+                           f"edit the .allm to make this permanent.")
             with state.global_lock:
-                state.session_load_overrides.setdefault(basename, {})["max_model_len"] = new_len
+                overrides = state.session_load_overrides.setdefault(basename, {})
+                for k in ("max_model_len", "n_ctx"):
+                    if k in retry_cfg and retry_cfg[k] != cfg.get(k):
+                        overrides[k] = retry_cfg[k]
             try:
                 port = await _load_model_impl(basename, retry_cfg, backend, displayname, gpu_id=gpu_id)
             except RuntimeError:
