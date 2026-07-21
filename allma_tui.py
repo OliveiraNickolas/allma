@@ -91,27 +91,33 @@ def _save_tui_layout(state: dict) -> None:
         pass
 
 
-# LOAD form presets. Same file-per-config pattern as the layout above; kept
-# separate so wiping presets doesn't lose column widths (and vice versa).
-_PRESETS_PATH = Path(os.environ.get(
-    "ALLMA_TUI_PRESETS",
-    str(Path.home() / ".config" / "allma" / "presets.json"),
+# ── Load-config snapshots ────────────────────────────────────────────────────
+# Named LOAD-form snapshots per model. Distinct from PROFILES (sampling): those
+# live in configs/profile/*.allm and belong to the runtime/request layer. What
+# gets stored here is boot-time knobs — ctx, ngl, flash-attn, per-flag tweaks —
+# so the user can flip between "long-context / fast-test / code-mode" without
+# re-editing the whole form. Shape: {model_key: {config_name: {field: value}}}
+_LOAD_CFG_PATH = Path(os.environ.get(
+    "ALLMA_TUI_LOAD_CFG",
+    str(Path.home() / ".config" / "allma" / "load-configs.json"),
 ))
 
 
 def _load_tui_presets() -> dict:
     try:
-        return json.loads(_PRESETS_PATH.read_text())
+        return json.loads(_LOAD_CFG_PATH.read_text())
     except Exception:
         return {}
 
 
-def _save_tui_presets(data: dict) -> None:
+def _save_tui_presets(state: dict) -> None:
     try:
-        _PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _PRESETS_PATH.write_text(json.dumps(data, indent=2, sort_keys=True))
+        _LOAD_CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _LOAD_CFG_PATH.write_text(json.dumps(state, indent=2, sort_keys=True))
     except Exception:
         pass
+
+
 
 # Watermark ghost for the middle column — sits in the empty space between the
 # models table and the log collapsible. Textual has no true opacity, so we
@@ -1183,7 +1189,10 @@ Screen { background: #0a0a08; }
     padding: 0 1;
 }
 /* max-width lifted so the drag splitter can grow the sidebar past the old
-   40-cell ceiling. min-width still holds. */
+   40-cell ceiling. Initial widths (25% / 50% / 25%) are set as fractions
+   ONCE at mount and immediately converted to fixed cells by
+   `_pin_columns_to_current_size` so the drag splitter can move exactly N
+   cells without Textual redistributing any leftover. */
 #col-left  { width: 1fr; min-width: 24; }
 #col-mid   { width: 2fr; min-width: 30; }
 /* Watermark ghost: siphons the leftover vertical space between the models
@@ -1372,10 +1381,8 @@ Button.mini  { min-width: 4; }
 .mmproj-row { height: 3; margin: 0 2 0 0; }
 .mmproj-row Input { width: 1fr; }
 .mmproj-row Button { margin: 1 0 0 0; }
-.preset-row { height: 3; margin: 0 2 0 0; }
-.preset-row Select { width: 1fr; }
-.preset-row Input.preset-name { width: 1fr; }
-.preset-row Button { margin: 1 0 0 0; }
+.mmproj-row Select { width: 2fr; margin: 0 1 0 0; }
+.mmproj-row .preset-name { width: 2fr; }
 #statusline { height: 1; background: #c8b898; color: #007878; padding: 0 2; }
 
 /* picker modal */
@@ -1449,40 +1456,44 @@ class _ColumnSplitter(Widget):
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         event.stop()
-        target = self.app.query_one(f"#{self._target_id}")
-        absorb = self.app.query_one("#col-mid")
-        # Pin the OTHER side column too, in cells, before the drag starts.
-        # Otherwise col-left↔col-right both remain `1fr` and Textual redivides
-        # the leftover between them on every resize — dragging split-lm would
-        # tug col-right sideways as a side effect. After pinning, only
-        # col-mid (`1fr`) absorbs the delta; the other side stays put.
-        other_id = "col-right" if self._target_id == "col-left" else "col-left"
-        other = self.app.query_one(f"#{other_id}")
-        # Freeze the far side at its current rendered width every drag.
-        # Cheap and idempotent: if it's already pinned to N cells, we set N
-        # again; if it's still `1fr`, the pin locks it in place so col-mid
-        # (also 1fr) is the only column that absorbs the delta.
-        other.styles.width = other.size.width
+        # Snapshot ALL THREE column widths. Every mouse_move re-applies the
+        # three explicitly (target + absorb move, third stays constant),
+        # so Textual never gets a chance to redistribute a leftover.
+        left = self.app.query_one("#col-left")
+        mid = self.app.query_one("#col-mid")
+        right = self.app.query_one("#col-right")
+        self._start_left_w = left.size.width
+        self._start_mid_w = mid.size.width
+        self._start_right_w = right.size.width
         self._dragging = True
         self._start_x = event.screen_x
-        self._start_target_w = target.size.width
-        self._start_absorb_w = absorb.size.width
         self.capture_mouse()
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         if not self._dragging:
             return
-        # Sign: dragging right grows the LEFT target and shrinks the RIGHT one.
         raw_delta = event.screen_x - self._start_x
-        delta = raw_delta if self._side == "left" else -raw_delta
-        new_target = self._start_target_w + delta
-        # Predicted col-mid width if we accept this drag (mid absorbs -delta).
-        new_absorb = self._start_absorb_w - delta
-        if new_target < self._min_target or new_absorb < self._min_absorb:
-            return
-        # Only the target gets a fixed width; col-mid stays 1fr and picks
-        # up the slack automatically. No two fixed widths, no drift.
-        self.app.query_one(f"#{self._target_id}").styles.width = new_target
+        # split-lm: `side="left"`, target=col-left → drag right grows left,
+        # shrinks mid; col-right stays put.
+        # split-mr: `side="right"`, target=col-right → drag right shrinks
+        # right, grows mid; col-left stays put.
+        if self._side == "left":
+            new_left = self._start_left_w + raw_delta
+            new_mid = self._start_mid_w - raw_delta
+            new_right = self._start_right_w
+            if new_left < self._min_target or new_mid < self._min_absorb:
+                return
+        else:
+            new_right = self._start_right_w - raw_delta
+            new_mid = self._start_mid_w + raw_delta
+            new_left = self._start_left_w
+            if new_right < self._min_target or new_mid < self._min_absorb:
+                return
+        # Write all three every frame — the "untouched" side is rewritten to
+        # its snapshot value too, so Textual can't nudge it via 1fr math.
+        self.app.query_one("#col-left").styles.width = new_left
+        self.app.query_one("#col-mid").styles.width = new_mid
+        self.app.query_one("#col-right").styles.width = new_right
 
     def on_mouse_up(self, event: events.MouseUp) -> None:
         if self._dragging:
@@ -1611,6 +1622,40 @@ class AllmaTUI(App):
         # selected model). Runs AFTER the initial scan so `_select_model_key`
         # can find the row in the freshly-populated table.
         self._apply_saved_layout()
+        # Freeze all three columns to their current rendered widths right
+        # after mount. Without this the CSS `1fr` survives, and Textual
+        # keeps redividing the leftover after each drag — the column you
+        # didn't touch shrinks or grows on its own. `call_after_refresh`
+        # lets us read `.size.width` after the first layout pass produced
+        # real numbers.
+        self.call_after_refresh(self._pin_columns_to_current_size)
+
+    def _pin_columns_to_current_size(self) -> None:
+        # Convert the CSS `1fr / 2fr / 1fr` into fixed cells. After this the
+        # #columns container has no free space to redistribute — the drag
+        # splitter's math (target + absorb + fixed third = total) actually
+        # holds. Ate the "leftover 8 cells" we were seeing before by
+        # extending col-mid: it already absorbs everything else in real use.
+        try:
+            columns = self.query_one("#columns")
+            container = columns.size.width
+        except Exception:
+            container = 0
+        sizes: dict[str, int] = {}
+        for col_id in ("col-left", "col-mid", "col-right"):
+            try:
+                w = self.query_one(f"#{col_id}")
+                sizes[col_id] = max(1, w.size.width)
+            except Exception:
+                return
+        current = sizes["col-left"] + sizes["col-mid"] + sizes["col-right"] + 2  # +2 splitters
+        if container > current:
+            sizes["col-mid"] += container - current
+        for col_id, val in sizes.items():
+            try:
+                self.query_one(f"#{col_id}").styles.width = val
+            except Exception:
+                pass
 
     def _apply_saved_layout(self) -> None:
         """Apply state loaded from ~/.config/allma/tui.json. Every step is
@@ -1820,13 +1865,6 @@ class AllmaTUI(App):
         if (event.tabbed_content.id or "") == "setup-tabs":
             self._persist_layout()
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        # Preset dropdown → apply that saved config over the form. Other
-        # Selects in the form don't need special handling here.
-        if (event.select.id or "") == "ld-preset-select":
-            val = str(event.value or "")
-            if val and self.selected:
-                self._apply_preset(self.selected, val)
 
     def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
         if (event.collapsible.id or "") == "log-collapsible":
@@ -2025,22 +2063,8 @@ class AllmaTUI(App):
         absorbed: dict[str, str] = {}
         if m["backend"] == "llama.cpp":
             absorbed, leftover = absorb_field_aliases(leftover, LLAMA_FIELD_ALIASES)
-        # Presets bar: quick save / apply for common per-model config combos.
-        # Backed by ~/.config/allma/presets.json — a { model_key: { preset_name:
-        # {form_values} } } dict shared across sessions.
-        preset_names = sorted(_load_tui_presets().get(m["key"], {}).keys())
-        preset_opts = [("(preset)", "")] + [(n, n) for n in preset_names]
         widgets = [Static(f"[{ACC_BLUE}]▮[/] Base config" + ("" if m["configured"] else " — new"),
                           classes="section-hdr"),
-                   Horizontal(
-                       Select(preset_opts, value="", allow_blank=False,
-                              id="ld-preset-select"),
-                       Input(placeholder="preset name",
-                             id="ld-preset-name", classes="preset-name"),
-                       Button("💾", id="btn-preset-save", classes="mini"),
-                       Button("🗑", id="btn-preset-del", classes="mini"),
-                       classes="preset-row",
-                   ),
                    Static("", id="vram-line", classes="vram-line")]
         COUNTER_KEYS = {"tensor_parallel", "max_num_seqs"}
         for key, label, vmin, vmax, step, is_int, default in self._slider_specs(m):
@@ -2093,12 +2117,23 @@ class AllmaTUI(App):
             Input(value=" ".join(leftover), id="ld-x-custom"),
             title="Other (advanced)", collapsed=not leftover,
         ))
-        # profile to load + actions
+        # Load configs — named snapshots of the LOAD-form values for THIS
+        # model. Different from PROFILES (sampling): those live in the
+        # PROFILES tab (with its own dropdown + Load button) because sampling
+        # is a per-request concern. What lives here is the boot-time cfg
+        # you want to reuse: "long-context", "code mode", "fast test", etc.
+        configs = sorted(_load_tui_presets().get(m["key"], {}).keys())
+        cfg_opts = [("(load config)", "")] + [(c, c) for c in configs]
+        widgets.append(Static("Load config", classes="field-hint"))
+        widgets.append(Horizontal(
+            Select(cfg_opts, value="", allow_blank=False, id="ld-cfg-select"),
+            Input(placeholder="name to save",
+                  id="ld-cfg-name", classes="preset-name"),
+            Button("💾", id="btn-cfg-save", classes="mini"),
+            Button("🗑", id="btn-cfg-del", classes="mini"),
+            classes="mmproj-row",
+        ))
         profs = [p["name"] for p in self.profiles if p["base"] == m["key"]]
-        if profs:
-            widgets.append(Static("Load via profile", classes="field-hint"))
-            widgets.append(Select([(p, p) for p in profs], value=profs[0],
-                                  allow_blank=False, id="ld-profile"))
         btns = []
         if m["configured"] and profs:
             btns.append(Button("▶ Load once", id="btn-load-once"))
@@ -2564,10 +2599,10 @@ class AllmaTUI(App):
             self._pick_mmproj(m)
         elif bid == "btn-browse-chat-template":
             self._pick_chat_template(m)
-        elif bid == "btn-preset-save":
-            self._save_current_as_preset(m)
-        elif bid == "btn-preset-del":
-            self._delete_current_preset(m)
+        elif bid == "btn-cfg-save":
+            self._save_current_load_config(m)
+        elif bid == "btn-cfg-del":
+            self._delete_current_load_config(m)
         elif bid.startswith("pf") and bid.endswith("-load"):
             idx = int(bid[2:].split("-")[0])
             c = self.query_one(f"#pf{idx}", Collapsible)
@@ -2607,112 +2642,68 @@ class AllmaTUI(App):
                     pass
         self.push_screen(PickerScreen(root, "jinja", "Select chat template (.jinja)"), _done)
 
-    # ── LOAD-form presets ────────────────────────────────────────────────────
-    def _save_current_as_preset(self, m: dict) -> None:
-        """Snapshot the current LOAD-form values under a name typed in the
-        preset-name Input. Empty name = no-op with a toast."""
-        try:
-            name = self.query_one("#ld-preset-name", Input).value.strip()
-        except Exception:
-            name = ""
-        if not name:
-            self.notify("Type a preset name first", severity="warning")
-            return
-        data = _load_tui_presets()
-        model_presets = data.setdefault(m["key"], {})
-        model_presets[name] = self._load_form_values(m)
-        _save_tui_presets(data)
-        # Refresh the dropdown so the new name shows up immediately.
-        try:
-            sel = self.query_one("#ld-preset-select", Select)
-            names = sorted(model_presets.keys())
-            sel.set_options([("(preset)", "")] + [(n, n) for n in names])
-            sel.value = name
-        except Exception:
-            pass
-        self.notify(f"Preset '{name}' saved for {m['key']}")
-
-    def _delete_current_preset(self, m: dict) -> None:
-        """Delete the preset currently selected in the dropdown."""
-        try:
-            sel = self.query_one("#ld-preset-select", Select)
-            name = str(sel.value or "")
-        except Exception:
-            name = ""
-        if not name:
-            self.notify("Pick a preset from the dropdown first", severity="warning")
-            return
-        data = _load_tui_presets()
-        model_presets = data.get(m["key"], {})
-        if name not in model_presets:
-            return
-        del model_presets[name]
-        if not model_presets:
-            data.pop(m["key"], None)
-        _save_tui_presets(data)
-        try:
-            names = sorted(model_presets.keys())
-            sel.set_options([("(preset)", "")] + [(n, n) for n in names])
-            sel.value = ""
-        except Exception:
-            pass
-        self.notify(f"Preset '{name}' removed")
-
-    def _apply_preset(self, m: dict, name: str) -> None:
-        """Populate the LOAD-form widgets from a saved preset dict."""
-        data = _load_tui_presets().get(m["key"], {}).get(name)
-        if not data:
-            return
-        # Sliders / counters
-        for key, *_ in self._slider_specs(m):
-            if key in data:
-                w = self._ps_value_widget(f"ld-{key}")
-                if w is not None:
-                    try:
-                        w.set_value(data[key])
-                    except Exception:
-                        pass
-        # Path-shaped fields
-        for wid, key in (("ld-mmproj", "mmproj"),
-                         ("ld-chat-template", "chat_template_file")):
-            if key in data:
-                try:
-                    self.query_one(f"#{wid}", Input).value = str(data[key])
-                except Exception:
-                    pass
-        # GPU pin
-        if "gpu_id" in data:
-            try:
-                self.query_one("#ld-gpu_id", RadioRow).value = str(data["gpu_id"])
-            except Exception:
-                pass
-        # Flag toggles + values
-        want = {}
-        for tok in (data.get("extra_args") or []):
-            if isinstance(tok, str) and tok.startswith("--"):
-                want[tok] = []
-            elif want:
-                last_key = list(want.keys())[-1]
-                want[last_key].append(tok)
-        try:
-            for row in self.query_one("#load-form").query(FlagRow):
-                on = row.flag in want
-                row.set_state(on, want.get(row.flag))
-        except Exception:
-            pass
-        if self.selected:
-            self._update_vram_line(self.selected)
-            self._update_cmd_preview(self.selected)
-
     def _selected_profile_name(self, m: dict) -> str | None:
-        try:
-            sel = self.query_one("#ld-profile", Select)
-            if sel.value not in ("", Select.BLANK, None):
-                return str(sel.value)
-        except Exception:
-            pass
+        # Sampling profile lives in the PROFILES tab now, so LOAD always uses
+        # the first profile matching this base. Wrapper kept because the
+        # loader chain expects a single "profile name to bind on load".
         profs = [p["name"] for p in self.profiles if p["base"] == m["key"]]
         return profs[0] if profs else None
+
+    # ── load-config snapshots ─────────────────────────────────────────────
+    def _save_current_load_config(self, m: dict) -> None:
+        try:
+            name = self.query_one("#ld-cfg-name", Input).value.strip()
+        except Exception:
+            name = ""
+        if not name:
+            self.notify("Type a name to save the config", severity="warning")
+            return
+        store = _load_tui_presets()
+        store.setdefault(m["key"], {})[name] = self._load_form_values(m)
+        _save_tui_presets(store)
+        self.notify(f"Saved load config '{name}'")
+        # rebuild to refresh the dropdown; preserve the just-saved selection
+        self.call_after_refresh(lambda: self._rebuild_load_form_selecting(m, name))
+
+    def _delete_current_load_config(self, m: dict) -> None:
+        try:
+            sel = self.query_one("#ld-cfg-select", Select)
+            name = str(sel.value or "").strip()
+        except Exception:
+            name = ""
+        if not name:
+            self.notify("Pick a config to delete", severity="warning")
+            return
+        store = _load_tui_presets()
+        if name in store.get(m["key"], {}):
+            del store[m["key"]][name]
+            if not store[m["key"]]:
+                del store[m["key"]]
+            _save_tui_presets(store)
+            self.notify(f"Deleted load config '{name}'")
+        self.call_after_refresh(lambda: self._rebuild_load_form_selecting(m, ""))
+
+    def _apply_load_config(self, m: dict, name: str) -> None:
+        snap = _load_tui_presets().get(m["key"], {}).get(name)
+        if not snap:
+            return
+        # merge into a shallow copy of cfg and rebuild — reuses the whole
+        # widget-construction path (sliders, flags, custom leftovers) so we
+        # don't need a fragile inverse of _load_form_values.
+        merged = dict(m["cfg"])
+        merged.update(snap)
+        m["cfg"] = merged
+        self.call_after_refresh(lambda: self._rebuild_load_form_selecting(m, name))
+
+    def _rebuild_load_form_selecting(self, m: dict, name: str) -> None:
+        async def _go():
+            await self._build_load_form(m)
+            if name:
+                try:
+                    self.query_one("#ld-cfg-select", Select).value = name
+                except Exception:
+                    pass
+        self.run_worker(_go(), exclusive=True, group="load-form")
 
     # — save base —
     # Promoted-field → v2 flag-name map (mirror of the parser's promotions).
@@ -2955,6 +2946,13 @@ class AllmaTUI(App):
         else:
             self._status(f"⇣ listing {url}…")
             self._dl_list_async(url)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        # Applying a saved load config rebuilds the form with those values.
+        if (event.select.id or "") == "ld-cfg-select" and self.selected:
+            name = str(event.value or "").strip()
+            if name and name not in ("", Select.BLANK):
+                self._apply_load_config(self.selected, name)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         # mmproj path affects the VRAM estimate (vision projector weight)
