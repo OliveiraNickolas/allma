@@ -1385,16 +1385,17 @@ Collapsible.flag-adv {
 Collapsible.flag-adv > CollapsibleTitle {
     color: #8a7a60; text-style: bold;
 }
-/* Edit-extras affordance under the command preview: field-hint left,
-   proper 3-row button right so it lines up with the mmproj-row buttons. */
-.cmd-edit-row { height: 3; margin: 1 0 0 0; }
-.cmd-edit-row Static { width: 1fr; color: #6a5a48; padding: 1 0 0 0; }
+/* Command preview edit affordance — base-aligned to match the sibling
+   rows so the chip sits on the same baseline as the mmproj / config rows. */
+.cmd-edit-row { height: 3; margin: 1 0 0 0; align: left bottom; }
+.cmd-edit-row Static { width: 1fr; color: #6a5a48; }
 /* Generic hidden — same escape hatch used for the models-search input,
    generalised so the command-preview edit UI can toggle in and out. */
 .hidden { display: none; }
-/* Buttons default to 1-row chips for the compact top bar. The third-column
-   setup form (below) overrides to 3-row cards so the action row breathes
-   instead of reading as squashed pills. */
+/* Compact 2-row chip buttons. The top bar renders a subtle keyboard-key
+   highlight via `border: hkey` (single-line horizontal accents on top and
+   bottom in the same fill colour) — a hint of chrome without inflating
+   the button to a full 3-row card. Reads like a chiclet key. */
 Button {
     background: #007878; color: #f0e8d0;
     border: none; height: 1;
@@ -1403,28 +1404,43 @@ Button {
 }
 Button:hover { background: #7a1818; }
 Button.warn  { background: #7a1818; }
-Button.mini  { min-width: 4; }
-.btn-row    { height: 3; margin: 1 2 1 0; }
-.mmproj-row { height: 3; margin: 0 2 0 0; }
+Button.mini  { min-width: 3; padding: 0 1; }
+/* Rows carrying the chip button next to a boxed Input. `align: left bottom`
+   pins the button's bottom edge to the row's bottom edge — the same line
+   as the Input's bottom border — so the two shapes share a base instead
+   of the button floating higher than the Input. */
+.btn-row    { height: 3; margin: 1 2 1 0; align: left bottom; }
+.mmproj-row { height: 3; margin: 0 2 0 0; align: left bottom; }
 .mmproj-row Input { width: 1fr; }
 .mmproj-row Select { width: 2fr; margin: 0 1 0 0; }
 .mmproj-row .preset-name { width: 2fr; }
-/* col-right button style: 3-row card with a soft `tall` chrome bar so
-   the action rows in the LOAD/PROFILES forms stop reading as thin pills.
-   Same colour palette as the default chip; the vertical bars give the
-   button real presence without a full solid border. */
+.mmproj-row Button { margin: 0; }
+/* col-right chip buttons: 3-cell total (1-row label + hkey accents top
+   and bottom). Textual borders sit OUTSIDE the height, so `height: 1`
+   + two hkey lines renders exactly 3 rows — the same as an Input's
+   border-content-border layout — and the chip lines up flush inside a
+   3-tall row without overflowing. */
 #col-right Button {
-    height: 3;
+    height: 1;
     padding: 0 2;
-    border: tall #007878;
+    border-top: hkey #4a9e9e;
+    border-bottom: hkey #005050;
     background: #007878; color: #f0e8d0;
     min-width: 10;
     margin: 0 1 0 0;
 }
-#col-right Button:hover { background: #7a1818; border: tall #7a1818; }
-#col-right Button:focus { border: tall #b89000; }
-#col-right Button.warn  { background: #7a1818; border: tall #7a1818; }
-#col-right Button.mini  { min-width: 5; padding: 0 1; }
+#col-right Button:hover {
+    background: #7a1818;
+    border-top: hkey #a83030; border-bottom: hkey #501010;
+}
+#col-right Button:focus {
+    border-top: hkey #f7d000; border-bottom: hkey #7a5a00;
+}
+#col-right Button.warn {
+    background: #7a1818;
+    border-top: hkey #a83030; border-bottom: hkey #501010;
+}
+#col-right Button.mini { min-width: 4; padding: 0 1; }
 #statusline { height: 1; background: #c8b898; color: #007878; padding: 0 2; }
 
 /* picker modal */
