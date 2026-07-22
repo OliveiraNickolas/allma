@@ -342,6 +342,7 @@ def load_models_from_configs(
                 logger.warning(f"{cfg_file.name}: no @vllm or @llamacpp declaration; skipping")
                 continue
             name = cfg.get("name") or cfg_file.stem
+            cfg["_source_path"] = str(cfg_file)
             base_models[name] = cfg
 
     profile_dir = config_path / "profile"
@@ -358,6 +359,7 @@ def load_models_from_configs(
                 logger.warning(f"{cfg_file.name}: no @base directive; skipping")
                 continue
             name = cfg.get("name") or cfg_file.stem
+            cfg["_source_path"] = str(cfg_file)
             if cfg["base"] not in base_models:
                 logger.warning(f"Profile '{name}' references unknown base '{cfg['base']}'")
             profile_models[name] = cfg

@@ -807,6 +807,62 @@ def cmd_unload(args):
     print(f"Unloaded: {resp.get('model', model)}")
 
 
+def cmd_edit(args):
+    """Open a model's .allm file in $EDITOR (or --which to just print the path).
+
+    Accepts a base name ('Qwen3.5-27b'), a profile name ('Qwen3.5:27b-Instruct'),
+    or a file stem — profile names resolve to their base file when --base is
+    passed, otherwise the profile file itself is opened. After the editor
+    exits, the running daemon (if any) is asked to re-read configs from disk
+    so the edit takes effect on the next spawn.
+    """
+    from core.config import CONFIG_DIR
+    from configs.allm_parser import load_models_from_configs
+    base_models, profile_models = load_models_from_configs(CONFIG_DIR)
+
+    target = args.model
+    src_path = None
+    if args.base:
+        prof = profile_models.get(target)
+        base_name = prof.get("base") if prof else target
+        if base_name in base_models:
+            src_path = base_models[base_name].get("_source_path")
+    else:
+        for store in (profile_models, base_models):
+            if target in store:
+                src_path = store[target].get("_source_path")
+                break
+    if not src_path:
+        # fall back to file-stem match on either directory
+        for sub in ("profile", "base"):
+            candidate = Path(CONFIG_DIR) / sub / f"{target}.allm"
+            if candidate.exists():
+                src_path = str(candidate)
+                break
+    if not src_path or not Path(src_path).exists():
+        print(f"No .allm file found for '{target}'.")
+        print("Try: allma list — to see configured models")
+        return
+
+    if args.which:
+        print(src_path)
+        return
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+    print(f"Editing {src_path} ({editor})…")
+    rc = subprocess.call([editor, src_path])
+    if rc != 0:
+        print(f"Editor exited with code {rc}.")
+        return
+    if _is_running():
+        resp = _post("/v1/reload-configs", {})
+        if resp and resp.get("status") == "reloaded":
+            print(f"⟳ Configs reloaded ({resp.get('bases')} bases, "
+                  f"{resp.get('profiles')} profiles).")
+        else:
+            print("⚠ Server did not reload configs — try `allma restart`.")
+
+
 def cmd_reload(args):
     """Unload a running model then load it again — no server restart.
 
@@ -2417,6 +2473,14 @@ commands:
     p_reload = sub.add_parser("reload", help="Unload a model and load it again (pick up config changes)")
     p_reload.add_argument("model", help="Base model name or profile name")
     p_reload.set_defaults(func=cmd_reload)
+
+    p_edit = sub.add_parser("edit", help="Open a model's .allm file in $EDITOR")
+    p_edit.add_argument("model", help="Base name, profile name, or file stem")
+    p_edit.add_argument("--base", action="store_true",
+                        help="For a profile, edit its base .allm instead of the profile file")
+    p_edit.add_argument("--which", action="store_true",
+                        help="Print the resolved .allm path and exit (no editor)")
+    p_edit.set_defaults(func=cmd_edit)
 
     # logs
     p_logs = sub.add_parser("logs", help="Show Allma logs")
