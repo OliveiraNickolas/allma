@@ -753,6 +753,39 @@ class _InfoMark(Static):
         self.app.notify(self._desc, title=self._title, timeout=8)
 
 
+class _FlagCatToggle(Static):
+    """Clickable category header that shows/hides its flag rows.
+
+    Renders exactly like the plain `── Category ──` headers (same class) but
+    with a ▶/▼ disclosure arrow, and the flag rows it controls stay direct
+    siblings in the form — so they keep the identical indentation as every
+    other flag, unlike a Textual Collapsible which wraps its children in a
+    padded Contents container and shifts them right.
+    """
+
+    def __init__(self, label: str, row_class: str, expanded: bool, **kwargs):
+        self._label = label
+        self._row_class = row_class
+        self._expanded = expanded
+        super().__init__(self._render_text(), classes="flag-cat flag-cat-toggle", **kwargs)
+
+    def _render_text(self) -> str:
+        arrow = "▼" if self._expanded else "▶"
+        return f"{arrow} ── {self._label} ──"
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self._expanded = not self._expanded
+        self.update(self._render_text())
+        # Find the nearest scrollable form ancestor; fall back to the screen.
+        node = self.parent
+        while node is not None and not isinstance(node, ScrollableContainer):
+            node = node.parent
+        scope = node if node is not None else self.screen
+        for row in scope.query(f".{self._row_class}"):
+            row.set_class(not self._expanded, "hidden")
+
+
 class FlagRow(Horizontal):
     """Extra-args flag row: ● flag-name  [editable value]  (i).
 
@@ -1341,6 +1374,10 @@ TabPane { background: #e8dfc8; padding: 0 0 0 1; }
 }
 .field-hint { color: #6a5a48; margin: 0 2 0 0; }
 .flag-cat   { color: #8a7a60; text-style: bold; margin: 1 0 0 1; height: 1; }
+/* Clickable Advanced header: same look as a plain category header, plus a
+   ▶/▼ arrow and a hover tint so it reads as interactive. */
+.flag-cat-toggle { color: #007878; }
+.flag-cat-toggle:hover { color: #7a1818; background: #ddd4b8; }
 .vram-line  { color: #1a1408; margin: 0 2 1 0; }
 
 /* sliders */
@@ -1376,26 +1413,12 @@ Collapsible {
     background: #e8dfc8; border: solid #008888; margin: 0 2 1 0; padding: 0;
 }
 CollapsibleTitle { color: #007878; text-style: bold; }
-/* Advanced flag groups sit inline in the flag list — no border makes them
-   read as a fold-out section header, not a separate panel. Same for the
-   "Other (advanced)" free-flag input. */
-Collapsible.flag-adv {
-    border: none; padding: 0 1; margin: 0 2 0 0;
-}
-Collapsible.flag-adv > CollapsibleTitle {
-    color: #8a7a60; text-style: bold;
-}
-/* Command preview edit affordance — base-aligned to match the sibling
-   rows so the chip sits on the same baseline as the mmproj / config rows. */
-.cmd-edit-row { height: 3; margin: 1 0 0 0; align: left bottom; }
-.cmd-edit-row Static { width: 1fr; color: #6a5a48; }
 /* Generic hidden — same escape hatch used for the models-search input,
    generalised so the command-preview edit UI can toggle in and out. */
 .hidden { display: none; }
-/* Compact 2-row chip buttons. The top bar renders a subtle keyboard-key
-   highlight via `border: hkey` (single-line horizontal accents on top and
-   bottom in the same fill colour) — a hint of chrome without inflating
-   the button to a full 3-row card. Reads like a chiclet key. */
+/* Flat 1-row chip buttons everywhere. Rows that host them stay height 3
+   only when they contain a taller sibling (Input, Select); vertical
+   `margin-top: 1` centres the chip against the sibling's content line. */
 Button {
     background: #007878; color: #f0e8d0;
     border: none; height: 1;
@@ -1404,43 +1427,30 @@ Button {
 }
 Button:hover { background: #7a1818; }
 Button.warn  { background: #7a1818; }
-Button.mini  { min-width: 3; padding: 0 1; }
-/* Rows carrying the chip button next to a boxed Input. `align: left bottom`
-   pins the button's bottom edge to the row's bottom edge — the same line
-   as the Input's bottom border — so the two shapes share a base instead
-   of the button floating higher than the Input. */
-.btn-row    { height: 3; margin: 1 2 1 0; align: left bottom; }
-.mmproj-row { height: 3; margin: 0 2 0 0; align: left bottom; }
-.mmproj-row Input { width: 1fr; }
-.mmproj-row Select { width: 2fr; margin: 0 1 0 0; }
-.mmproj-row .preset-name { width: 2fr; }
-.mmproj-row Button { margin: 0; }
-/* col-right chip buttons: 3-cell total (1-row label + hkey accents top
-   and bottom). Textual borders sit OUTSIDE the height, so `height: 1`
-   + two hkey lines renders exactly 3 rows — the same as an Input's
-   border-content-border layout — and the chip lines up flush inside a
-   3-tall row without overflowing. */
-#col-right Button {
-    height: 1;
-    padding: 0 2;
-    border-top: hkey #4a9e9e;
-    border-bottom: hkey #005050;
-    background: #007878; color: #f0e8d0;
-    min-width: 10;
-    margin: 0 1 0 0;
-}
-#col-right Button:hover {
-    background: #7a1818;
-    border-top: hkey #a83030; border-bottom: hkey #501010;
-}
-#col-right Button:focus {
-    border-top: hkey #f7d000; border-bottom: hkey #7a5a00;
-}
-#col-right Button.warn {
-    background: #7a1818;
-    border-top: hkey #a83030; border-bottom: hkey #501010;
-}
-#col-right Button.mini { min-width: 4; padding: 0 1; }
+Button.mini  { min-width: 6; padding: 0 2; }
+/* Buttons-only row (Load once / Save base / Unload): single line. */
+.btn-row { height: 1; margin: 1 2 1 0; }
+/* Rows carrying a flat chip next to a boxed Input/Select. Row is 3 tall to
+   fit the Input; the chip gets `margin-top: 1` so it centres against the
+   Input's content line (the Input is border-content-border, so its text
+   lives on the middle row). This is the layout that worked before the
+   button restyle — don't reintroduce `align: bottom`, it floats the chip
+   off the field. */
+.mmproj-row { height: 3; margin: 0 2 0 0; }
+.mmproj-row Input  { width: 1fr; }
+.mmproj-row Button { margin: 1 0 0 0; }
+/* Load-config: Select spans the full width; save-delete pair sits on
+   its own row so nothing gets squished in a narrow terminal. */
+.cfg-row-sel  { height: 3; margin: 0 2 0 0; }
+.cfg-row-sel Select { width: 1fr; }
+.cfg-row-act  { height: 3; margin: 0 2 1 0; }
+.cfg-row-act Input  { width: 1fr; }
+.cfg-row-act Button { margin: 1 0 0 0; }
+/* Command preview edit affordance: hint text on the left, ✎ Edit chip
+   on the right, both middled on the 3-tall row. */
+.cmd-edit-row { height: 3; margin: 1 0 0 0; }
+.cmd-edit-row Static { width: 1fr; color: #6a5a48; padding: 1 0 0 0; }
+.cmd-edit-row Button { margin: 1 0 0 0; }
 #statusline { height: 1; background: #c8b898; color: #007878; padding: 0 2; }
 
 /* picker modal */
@@ -2151,11 +2161,13 @@ class AllmaTUI(App):
         for entry in catalog:
             cat = FLAG_CATEGORY.get(entry[0], "Advanced")
             by_cat.setdefault(cat, []).append(entry)
-        # Everything but the "Advanced" bucket renders flat. Advanced flags
-        # (niche stuff — device pinning, request logging, custom all-reduce,
-        # web UI toggle, metrics, embeddings…) get folded into a borderless
-        # Collapsible so they stop pushing the useful groups off-screen.
-        # `collapsed` starts True unless one is already enabled from disk.
+        # Every category renders as a flat list of flag rows under its
+        # `── Category ──` header. "Advanced" (niche stuff — device pinning,
+        # request logging, custom all-reduce, web UI, metrics, embeddings…)
+        # gets a clickable header that hides its rows by default so it stops
+        # pushing the useful groups off-screen. The rows stay direct siblings
+        # (not wrapped in a Collapsible) so they keep the exact same
+        # indentation as every other flag.
         advanced_group = by_cat.get("Advanced") or []
         for cat in CATEGORY_ORDER:
             if cat == "Advanced":
@@ -2168,16 +2180,16 @@ class AllmaTUI(App):
                 widgets.append(FlagRow(flag, defaults, desc,
                                        on=flag in enabled, vals=enabled.get(flag)))
         if advanced_group:
-            adv_rows = [FlagRow(flag, defaults, desc,
-                                on=flag in enabled, vals=enabled.get(flag))
-                        for flag, defaults, desc in advanced_group]
-            adv_collapsed = not any(f in enabled for f, *_ in advanced_group)
-            widgets.append(Collapsible(
-                *adv_rows,
-                title="── Advanced ──",
-                collapsed=adv_collapsed,
-                classes="flag-adv",
-            ))
+            adv_expanded = any(f in enabled for f, *_ in advanced_group)
+            widgets.append(_FlagCatToggle("Advanced", "flag-adv-row",
+                                          expanded=adv_expanded))
+            for flag, defaults, desc in advanced_group:
+                row = FlagRow(flag, defaults, desc,
+                              on=flag in enabled, vals=enabled.get(flag))
+                row.add_class("flag-adv-row")
+                if not adv_expanded:
+                    row.add_class("hidden")
+                widgets.append(row)
         # Load configs — named snapshots of the LOAD-form values for THIS
         # model. Different from PROFILES (sampling): those live in the
         # PROFILES tab (with its own dropdown + Load button) because sampling
@@ -2186,13 +2198,18 @@ class AllmaTUI(App):
         configs = sorted(_load_tui_presets().get(m["key"], {}).keys())
         cfg_opts = [("(load config)", "")] + [(c, c) for c in configs]
         widgets.append(Static("Load config", classes="field-hint"))
+        # Select takes the whole width — squeezing it into a 4-way row was
+        # producing an unreadable "(loa\nd" wrap in narrow terminals.
         widgets.append(Horizontal(
             Select(cfg_opts, value="", allow_blank=False, id="ld-cfg-select"),
-            Input(placeholder="name to save",
-                  id="ld-cfg-name", classes="preset-name"),
+            classes="cfg-row-sel",
+        ))
+        # Save/delete on their own row: name-to-save input + 💾 save + 🗑 delete.
+        widgets.append(Horizontal(
+            Input(placeholder="name to save as", id="ld-cfg-name"),
             Button("💾", id="btn-cfg-save", classes="mini"),
             Button("🗑", id="btn-cfg-del", classes="mini"),
-            classes="mmproj-row",
+            classes="cfg-row-act",
         ))
         profs = [p["name"] for p in self.profiles if p["base"] == m["key"]]
         btns = []
