@@ -1,0 +1,11 @@
+@name Fable:27B-Q4-MTP
+@base Qwen3.6-27B-Fable-Fusion-711-MTP
+
+# DavidAU "general thinking" preset — reasoning/general use, thinking ON.
+# rep_pen 1.0: v2/this merge fixed the looping, so no penalty band-aid needed.
+temperature 1.0
+top-p 0.95
+top-k 20
+min-p 0.0
+presence-penalty 0.0
+repetition-penalty 1.0
