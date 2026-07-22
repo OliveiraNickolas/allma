@@ -1376,6 +1376,20 @@ Collapsible {
     background: #e8dfc8; border: solid #008888; margin: 0 2 1 0; padding: 0;
 }
 CollapsibleTitle { color: #007878; text-style: bold; }
+/* Advanced flag groups sit inline in the flag list — no border makes them
+   read as a fold-out section header, not a separate panel. Same for the
+   "Other (advanced)" free-flag input. */
+Collapsible.flag-adv {
+    border: none; padding: 0 1; margin: 0 2 0 0;
+}
+Collapsible.flag-adv > CollapsibleTitle {
+    color: #8a7a60; text-style: bold;
+}
+/* Edit-extras affordance under the command preview: field-hint left,
+   compact button right. */
+.cmd-edit-row { height: 1; margin: 1 0 0 0; }
+.cmd-edit-row Static { width: 1fr; color: #6a5a48; }
+.cmd-edit-row Button { min-width: 8; }
 /* slim chip-style buttons: 1 row, no fat border */
 Button {
     background: #007878; color: #f0e8d0;
@@ -2102,7 +2116,15 @@ class AllmaTUI(App):
         for entry in catalog:
             cat = FLAG_CATEGORY.get(entry[0], "Advanced")
             by_cat.setdefault(cat, []).append(entry)
+        # Everything but the "Advanced" bucket renders flat. Advanced flags
+        # (niche stuff — device pinning, request logging, custom all-reduce,
+        # web UI toggle, metrics, embeddings…) get folded into a borderless
+        # Collapsible so they stop pushing the useful groups off-screen.
+        # `collapsed` starts True unless one is already enabled from disk.
+        advanced_group = by_cat.get("Advanced") or []
         for cat in CATEGORY_ORDER:
+            if cat == "Advanced":
+                continue
             group = by_cat.get(cat)
             if not group:
                 continue
@@ -2110,12 +2132,24 @@ class AllmaTUI(App):
             for flag, defaults, desc in group:
                 widgets.append(FlagRow(flag, defaults, desc,
                                        on=flag in enabled, vals=enabled.get(flag)))
+        if advanced_group:
+            adv_rows = [FlagRow(flag, defaults, desc,
+                                on=flag in enabled, vals=enabled.get(flag))
+                        for flag, defaults, desc in advanced_group]
+            adv_collapsed = not any(f in enabled for f, *_ in advanced_group)
+            widgets.append(Collapsible(
+                *adv_rows,
+                title="── Advanced ──",
+                collapsed=adv_collapsed,
+                classes="flag-adv",
+            ))
         widgets.append(Collapsible(
             Static("Flags outside the list, original spelling (--flag value). "
                    "Enter moves known flags to the list above.",
                    classes="field-hint"),
             Input(value=" ".join(leftover), id="ld-x-custom"),
             title="Other (advanced)", collapsed=not leftover,
+            classes="flag-adv",
         ))
         # Load configs — named snapshots of the LOAD-form values for THIS
         # model. Different from PROFILES (sampling): those live in the
@@ -2150,6 +2184,13 @@ class AllmaTUI(App):
         # of allma. Refreshed via _update_cmd_preview() on form changes.
         widgets.append(Collapsible(
             Static("", id="cmd-preview"),
+            Horizontal(
+                Static("Missing a flag? Add it to Other (advanced) — it'll "
+                       "appear here on next tick.",
+                       classes="field-hint"),
+                Button("✎ Edit extras", id="btn-cmd-edit", classes="mini"),
+                classes="cmd-edit-row",
+            ),
             title="Command preview", collapsed=True, id="cmd-preview-collapsible",
         ))
         await form.mount_all(widgets)
@@ -2603,6 +2644,23 @@ class AllmaTUI(App):
             self._save_current_load_config(m)
         elif bid == "btn-cfg-del":
             self._delete_current_load_config(m)
+        elif bid == "btn-cmd-edit":
+            # Jump to the "Other (advanced)" input so the user can add flags
+            # not in the catalog; they land in extra_args and the cmd
+            # preview refreshes on Input.Changed.
+            try:
+                inp = self.query_one("#ld-x-custom", Input)
+                # Expand the collapsible parent if the input is folded.
+                p = inp.parent
+                while p is not None:
+                    if isinstance(p, Collapsible):
+                        p.collapsed = False
+                        break
+                    p = p.parent
+                inp.scroll_visible()
+                inp.focus()
+            except Exception:
+                pass
         elif bid.startswith("pf") and bid.endswith("-load"):
             idx = int(bid[2:].split("-")[0])
             c = self.query_one(f"#pf{idx}", Collapsible)
@@ -2961,10 +3019,19 @@ class AllmaTUI(App):
                 self._apply_load_config(self.selected, name)
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        iid = event.input.id or ""
         # mmproj path affects the VRAM estimate (vision projector weight)
-        if (event.input.id or "") == "ld-mmproj" and self.selected:
+        if iid == "ld-mmproj" and self.selected:
             self._update_vram_line(self.selected)
 
+            self._update_cmd_preview(self.selected)
+            return
+        # Free-form advanced flags: re-render the command preview live so
+        # the user sees typos and effect immediately. VRAM estimate is
+        # cheap so we refresh it too — `--cache-type-k q8_0` typed here
+        # halves the KV bar as soon as the token is complete.
+        if iid == "ld-x-custom" and self.selected:
+            self._update_vram_line(self.selected)
             self._update_cmd_preview(self.selected)
             return
         # typing a new URL invalidates the previous listing
