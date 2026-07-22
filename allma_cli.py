@@ -756,7 +756,16 @@ def cmd_list(args):
         return
     models = [m["id"] for m in data.get("data", [])]
     if not models:
-        print("No models configured.")
+        # This is the exact state of every fresh install, so it must point at
+        # the next action instead of dead-ending. `quickstart` is the guided
+        # path (goal → curated pick → download → chat) and is otherwise only
+        # discoverable by reading `allma --help`.
+        print("No models configured yet.")
+        print()
+        print("  Get your first model:")
+        print("    allma quickstart          guided: pick a model for your GPU, download, chat")
+        print("    allma run <hf-repo>       download a specific HuggingFace model and chat")
+        print("    allma tui                 browse/configure models in the full interface")
         return
     for m in sorted(models):
         print(m)
@@ -774,7 +783,8 @@ def cmd_ps(args):
     servers = data.get("servers", [])
     errors = data.get("errors", {})
     if not servers and not errors:
-        print("No models loaded.")
+        print("No models loaded. (Models load on demand — send a request, or:")
+        print("  allma run <profile>    load one now and open a chat)")
         return
     for s in servers:
         status = "● running" if s.get("alive") else "✗ dead"

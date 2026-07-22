@@ -50,7 +50,7 @@ Claude Code / OpenAI client / curl
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/allma
+git clone https://github.com/OliveiraNickolas/allma
 cd allma
 bash install.sh
 ```

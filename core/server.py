@@ -1278,6 +1278,8 @@ def show_banner():
         logger.info(f"Models configured: {len(BASE_MODELS)} base, {len(PROFILE_MODELS)} profile")
         logger.info(f"Keep-alive: {KEEP_ALIVE_SECONDS}s")
         logger.info(f"API: http://127.0.0.1:{ALLMA_PORT}")
+        if not PROFILE_MODELS:
+            logger.info("No models configured yet — run `allma quickstart` to get one.")
         logger.info("=" * 60)
         return
 
@@ -1588,4 +1590,15 @@ def show_banner():
     if not _narrow:
         _sys.stdout.write(_bshd + '\n')
     _sys.stdout.write('\n')
+
+    # First-run guidance. An empty model list is the state of every fresh
+    # install, and the banner alone gives no hint about what to do next —
+    # `quickstart` is the guided path but is otherwise only discoverable
+    # by reading `allma --help`.
+    if not PROFILE_MODELS:
+        _sys.stdout.write(
+            f"{_lpad}  No models configured yet.\n"
+            f"{_lpad}  Run  allma quickstart  — it picks a model that fits your GPU,\n"
+            f"{_lpad}  downloads it, writes the config, and opens a chat.\n\n"
+        )
     _sys.stdout.flush()

@@ -150,6 +150,14 @@ if [ "$VLLM_OK" = false ] || [ "$LLAMA_OK" = false ]; then
     echo "  $STEP. Install the backend(s) you need:"
     STEP=$((STEP+1))
     echo ""
+    # Choosing a backend is the first fork in the road and the user has no
+    # basis to decide yet. Give a default instead of two equal options.
+    if [ "$VLLM_OK" = false ] && [ "$LLAMA_OK" = false ]; then
+        echo "     Not sure which one? Install llama.cpp — it runs GGUF models,"
+        echo "     which are smaller, easier to find, and work on any GPU size."
+        echo "     Add vLLM later if you want maximum throughput on full-precision models."
+        echo ""
+    fi
     if [ "$VLLM_OK" = false ]; then
         echo "     ── vLLM (for safetensors / FP8 models) ──"
         echo "     $VENV/bin/pip install vllm"
@@ -162,8 +170,11 @@ if [ "$VLLM_OK" = false ] || [ "$LLAMA_OK" = false ]; then
         echo "       bash scripts/install-llama-cpp.sh"
         echo ""
         echo "     Option B — pip (easier, limited features, no vision):"
-        # Detect CUDA version for the right wheel URL
-        CUDA_VER=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+" | head -1)
+        # Detect CUDA version for the right wheel URL. abetlen's wheel tags are
+        # major+minor with no dot (cu121, cu124, cu128) — grabbing only the
+        # major produced a bogus "cu13" on CUDA 13.x and the printed pip
+        # command failed on copy-paste.
+        CUDA_VER=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+" | head -1 | tr -d '.')
         if [ -n "$CUDA_VER" ]; then
             echo "       $VENV/bin/pip install \"llama-cpp-python[server]\" \\"
             echo "         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu${CUDA_VER}"
@@ -174,18 +185,25 @@ if [ "$VLLM_OK" = false ] || [ "$LLAMA_OK" = false ]; then
     fi
 fi
 
-echo "  $STEP. Create your model configs:"
+echo "  $STEP. Get your first model:"
 STEP=$((STEP+1))
-echo "     cp configs/base/Qwen3.6-27B-FP8.allm.example configs/base/MyModel.allm"
-echo "     # Edit the file and set the correct model path"
-echo "     # Or use the interactive wizard:"
-echo "     allma wizard"
 echo ""
-echo "  $STEP. Start:"
-echo "     allma serve"
-echo "     allma list"
-echo "     allma run <profile-name>"
+echo "     allma serve                  start the daemon"
+echo "     allma quickstart             guided: pick a model for your GPU,"
+echo "                                  download it, and open a chat"
 echo ""
+echo "     That's the whole setup — quickstart writes the config for you."
+echo ""
+echo "     Prefer to do it by hand? Copy an example and edit the model path:"
+echo "       cp configs/base/MyModel-GGUF.allm.example configs/base/MyModel.allm"
+echo "       allma edit MyModel"
+echo ""
+echo "  $STEP. Day-to-day:"
+echo "     allma list                   show configured models"
+echo "     allma run <profile>          load a model and chat"
+echo "     allma tui                    full interface (browse, configure, monitor)"
+echo ""
+echo "  Something not working?  allma doctor"
 echo "  Full docs: README.md"
 echo "  ─────────────────────────────────────────"
 echo ""
