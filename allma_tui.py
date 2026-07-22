@@ -2863,6 +2863,12 @@ class AllmaTUI(App):
 
     @work(thread=True, group="http")
     def _load_async(self, profile: str, overrides: dict, sampling: dict) -> None:
+        # Refresh cached BASE_MODELS/PROFILE_MODELS from disk before spawn —
+        # picks up any hand-edits to configs/*.allm that would otherwise
+        # sit dormant until a full daemon restart. Overrides sent in the
+        # body still win, but the fields NOT in overrides come from the
+        # freshly-parsed base cfg.
+        _http("POST", "/v1/reload-configs")
         body = {"model": profile, "load_overrides": overrides, "sampling": sampling}
         ok, resp = _http("POST", "/v1/load", body, timeout=600)
         if ok:

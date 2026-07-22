@@ -808,11 +808,23 @@ def cmd_unload(args):
 
 
 def cmd_reload(args):
-    """Unload a running model then load it again — no server restart."""
+    """Unload a running model then load it again — no server restart.
+
+    Also re-reads configs/*.allm from disk before the load, so hand-edits to
+    an .allm file take effect on the next spawn. Without this the server
+    holds a cached copy of BASE_MODELS and edits like `spec-draft-n-max 8`
+    would silently stay at their old value until a full daemon restart.
+    """
     if not _is_running():
         print("Allma is not running.")
         return
     model = args.model
+    cfg_resp = _post("/v1/reload-configs", {})
+    if cfg_resp and cfg_resp.get("status") == "reloaded":
+        print(f"Configs re-read from disk ({cfg_resp.get('bases')} bases, "
+              f"{cfg_resp.get('profiles')} profiles).")
+    elif cfg_resp and "error" in cfg_resp:
+        print(f"⚠ Config reload skipped: {cfg_resp['error']}")
     resp = _post("/v1/unload", {"model": model})
     if resp is None:
         print("Failed to reach Allma server.")
