@@ -185,8 +185,10 @@ DEFAULT_MODELS_DIR = Path(_state.get("models_dir")
 LLAMA_SLIDERS = [
     ("n_ctx",        "Context Length",      1024, 262144, 1024, True, 40960),
     ("n_gpu_layers", "GPU Offload (layers)",  -1,     99,    1, True,    -1),
-    ("n_batch",      "Batch Size",            64,   4096,   64, True,  1024),
-    ("n_ubatch",     "µBatch Size",           64,   2048,   64, True,   512),
+    # 0 is the "unset" sentinel: keep the flag off entirely and let llama.cpp
+    # use its own defaults (~2048 for -b, 512 for -ub). Loader honours this.
+    ("n_batch",      "Batch Size",             0,   4096,   64, True,  1024),
+    ("n_ubatch",     "µBatch Size",            0,   2048,   64, True,   512),
     ("n_threads",    "CPU Threads",            1,     32,    1, True,    16),
 ]
 VLLM_SLIDERS = [

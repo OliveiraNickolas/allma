@@ -318,6 +318,8 @@ def build_llama_cmd(base_name: str, gpu_id: int | None = None) -> tuple[list, in
                 state.gpu_allocation[base_name] = gpu_id
             logger.info(f"{base_name} → GPU {gpu_id}")
 
+    # 0 is the TUI's "unset" sentinel — do not emit -b/-ub at all so
+    # llama.cpp falls back to its own defaults (2048 / 512 respectively).
     n_batch = cfg.get("n_batch", "1024")
     n_ctx = cfg.get("n_ctx", "40960")
     extra_args = get_auto_extra_args(cfg, "llama.cpp")
@@ -343,11 +345,18 @@ def build_llama_cmd(base_name: str, gpu_id: int | None = None) -> tuple[list, in
             "--port", str(port),
             "-t", str(cfg.get("n_threads", "16")),
             "-c", str(n_ctx),
-            "-b", str(n_batch),
             "-ngl", str(cfg.get("n_gpu_layers", "-1")),
         ]
-        if cfg.get("n_ubatch"):
-            cmd.extend(["-ub", str(cfg["n_ubatch"])])
+        try:
+            if int(float(str(n_batch))) > 0:
+                cmd.extend(["-b", str(n_batch)])
+        except (TypeError, ValueError):
+            pass
+        try:
+            if int(float(str(cfg.get("n_ubatch", 0)))) > 0:
+                cmd.extend(["-ub", str(cfg["n_ubatch"])])
+        except (TypeError, ValueError):
+            pass
         if cfg.get("mmproj") and os.path.exists(cfg["mmproj"]):
             cmd.extend(["--mmproj", cfg["mmproj"]])
         if cfg.get("chat_template_file") and os.path.exists(cfg["chat_template_file"]):
@@ -379,10 +388,16 @@ def _build_llama_cpp_python_cmd(
         "--host", "127.0.0.1",
         "--port", str(port),
         "--n_ctx", str(n_ctx),
-        "--n_batch", str(n_batch),
         "--n_threads", str(cfg.get("n_threads", "16")),
         "--n_gpu_layers", str(cfg.get("n_gpu_layers", "-1")),
     ]
+    # Same "0 = unset" contract as the native backend — skip --n_batch entirely
+    # so llama-cpp-python uses its default rather than getting `--n_batch 0`.
+    try:
+        if int(float(str(n_batch))) > 0:
+            cmd.extend(["--n_batch", str(n_batch)])
+    except (TypeError, ValueError):
+        pass
     # Map subset of extra_args that llama-cpp-python supports
     _SUPPORTED = {"--chat-format", "--rope-scaling", "--rope-freq-base", "--rope-freq-scale"}
     skip_next = False
