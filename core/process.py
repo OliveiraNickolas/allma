@@ -138,6 +138,9 @@ def _reattach_backend(name: str, info: dict) -> bool:
             "logfile": logfile,
             "pin_loaded": False,
             "attached": True,       # marker for debugging / future UI
+            # Reattach only happens after /health returned 200 above, so this
+            # backend is serving right now — safe to hand out immediately.
+            "ready": True,
         }
         state.server_idle_time[name] = time.time()
     logger.info(f"Reattached orphan backend {name} (PID {pid}, port {port}, {backend})")

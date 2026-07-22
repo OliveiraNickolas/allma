@@ -177,14 +177,28 @@ async def wait_for_model_ready(
                 logger.debug(f"Error reading log for {displayname}: {e}")
 
             if use_health_fallback:
+                # Run the /health probe in a worker thread. urllib.urlopen is
+                # synchronous: once the backend binds its port but is still
+                # busy loading (llama.cpp is single-threaded during load), the
+                # GET blocks for the full 1s timeout, and doing that inline
+                # freezes THIS event loop — so the proxy can't accept new
+                # client connections while a big model loads, and the first
+                # request lands on a frozen loop ("All connection attempts
+                # failed"). Offloading keeps the loop responsive during load.
+                def _probe_health() -> bool:
+                    try:
+                        with urllib.request.urlopen(
+                            f"http://127.0.0.1:{port}/health", timeout=1
+                        ) as resp:
+                            return resp.status == 200
+                    except (urllib.error.URLError, OSError, TimeoutError):
+                        return False
+
                 try:
-                    with urllib.request.urlopen(
-                        f"http://127.0.0.1:{port}/health", timeout=1
-                    ) as resp:
-                        if resp.status == 200:
-                            spinner.stop(success=True)
-                            return True
-                except (urllib.error.URLError, OSError, TimeoutError):
+                    if await asyncio.to_thread(_probe_health):
+                        spinner.stop(success=True)
+                        return True
+                except Exception:
                     pass
 
             await asyncio.sleep(1)
@@ -304,39 +318,53 @@ async def ensure_base_model(basename: str, profilename: Optional[str] = None, gp
     backend = cfg.get("backend", "vllm")
     displayname = profilename or basename
 
+    # A registered server is only usable once its backend actually answers.
+    # `active_servers[...]` is populated the moment the process is SPAWNED
+    # (see _load_model_impl), long before the model finishes loading, so
+    # "process is alive" is not a usable readiness test: clients that got the
+    # port that early would connect to a socket nobody is listening on yet
+    # ("All connection attempts failed") or get a 503 "Loading model".
+    # The `ready` flag is flipped only after wait_for_model_ready() succeeds.
+    def _ready_port() -> Optional[int]:
+        """Port of a live AND ready backend for this base, else None.
+        Caller must hold state.global_lock."""
+        entry = state.active_servers.get(basename)
+        if not entry:
+            return None
+        proc = entry.get("process")
+        if not proc or proc.poll() is not None:
+            return None
+        if not entry.get("ready"):
+            return None
+        return entry["port"]
+
     with state.global_lock:
-        if basename in state.active_servers:
-            proc = state.active_servers[basename]["process"]
-            if proc.poll() is None:
-                port = state.active_servers[basename]["port"]
-                state.server_idle_time[basename] = time.time()
-                logger.debug(f" Reusing {displayname}:{port}")
-                return port
+        port = _ready_port()
+        if port is not None:
+            state.server_idle_time[basename] = time.time()
+            logger.debug(f" Reusing {displayname}:{port}")
+            return port
 
         already_loading = basename in state.loading_models
         if not already_loading:
             state.loading_models.add(basename)
 
     if already_loading:
+        # Concurrent callers (OpenWebUI fires chat + title + tags requests
+        # within milliseconds of each other) park here until the primary
+        # loader reports the backend ready.
         logger.info(f"{displayname} already loading, waiting...")
         for _ in range(150):
             await asyncio.sleep(2)
             with state.global_lock:
-                if basename in state.active_servers:
-                    proc = state.active_servers[basename]["process"]
-                    if proc and proc.poll() is None:
-                        port = state.active_servers[basename]["port"]
-                        state.server_idle_time[basename] = time.time()
-                        logger.debug(f" Reusing {displayname}:{port} after wait")
-                        return port
+                port = _ready_port()
+                if port is not None:
+                    state.server_idle_time[basename] = time.time()
+                    logger.debug(f" Reusing {displayname}:{port} after wait")
+                    return port
                 if basename not in state.loading_models:
-                    # Primary loader finished — check if it succeeded
-                    if basename in state.active_servers:
-                        proc = state.active_servers[basename]["process"]
-                        if proc and proc.poll() is None:
-                            port = state.active_servers[basename]["port"]
-                            state.server_idle_time[basename] = time.time()
-                            return port
+                    # Primary loader finished — it either produced a ready
+                    # backend (caught above) or failed.
                     raise RuntimeError(f"{displayname} failed to load")
         raise RuntimeError(f"Loading timeout for {displayname} - load may have stuck")
 
@@ -606,6 +634,11 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                 "gpus": server_gpus,
                 "logfile": logfilepath,
                 "pin_loaded": bool(cfg.get("pin_loaded")),
+                # Not serving yet — the process exists but the backend has not
+                # bound its port / finished loading weights. Flipped to True
+                # right after wait_for_model_ready() below. Concurrent callers
+                # in ensure_base_model() block until then.
+                "ready": False,
             }
             state.server_idle_time[basename] = time.time()
 
@@ -645,6 +678,12 @@ async def _load_model_impl(basename: str, cfg: dict, backend: str, displayname: 
                 )
                 raise RuntimeError(f"{displayname} startup failed (code {returncode})")
             raise RuntimeError(f"{displayname} not ready after {MODEL_LOAD_TIMEOUT}s")
+
+        # Backend answered /health (or logged its ready signal) — only now is
+        # the port safe to hand out to waiting callers.
+        with state.global_lock:
+            if basename in state.active_servers:
+                state.active_servers[basename]["ready"] = True
 
         logger.info(f"{displayname} loaded on GPU {current_gpu_id}")
         return port
