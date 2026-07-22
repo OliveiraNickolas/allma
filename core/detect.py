@@ -459,15 +459,172 @@ def calc_model_size_gb(model_path: str) -> float:
     return total_bytes / (1024 ** 3)
 
 
+_GGUF_ARCH_CACHE: dict[tuple[str, int, int], dict | None] = {}
+
+# GGUF metadata value types (spec: github.com/ggerganov/ggml/blob/master/docs/gguf.md)
+_GGUF_TYPE_SCALAR = {
+    0: ("B", 1),   # UINT8
+    1: ("b", 1),   # INT8
+    2: ("H", 2),   # UINT16
+    3: ("h", 2),   # INT16
+    4: ("I", 4),   # UINT32
+    5: ("i", 4),   # INT32
+    6: ("f", 4),   # FLOAT32
+    7: ("?", 1),   # BOOL
+    10: ("Q", 8),  # UINT64
+    11: ("q", 8),  # INT64
+    12: ("d", 8),  # FLOAT64
+}
+_GGUF_TYPE_STRING = 8
+_GGUF_TYPE_ARRAY = 9
+
+
+def _parse_gguf_metadata(path: str, wanted: dict) -> None:
+    """Scan a GGUF's metadata block and fill any wanted keys we recognize.
+
+    `wanted` is mutated in place — keys are architecture-agnostic suffixes
+    (e.g. "block_count", "attention.head_count_kv") that we match against
+    the fully-qualified names GGUF stores. Only reads the metadata section
+    at the file head; stops when all wanted keys are filled OR when we've
+    walked the whole metadata block.
+    """
+    import struct
+    with open(path, "rb") as fh:
+        magic = fh.read(4)
+        if magic != b"GGUF":
+            raise ValueError("not a GGUF file")
+        version, tensor_count, kv_count = struct.unpack("<IQQ", fh.read(20))
+        for _ in range(kv_count):
+            key_len = struct.unpack("<Q", fh.read(8))[0]
+            key = fh.read(key_len).decode("utf-8", errors="replace")
+            vtype = struct.unpack("<I", fh.read(4))[0]
+            if vtype in _GGUF_TYPE_SCALAR:
+                fmt, size = _GGUF_TYPE_SCALAR[vtype]
+                value = struct.unpack("<" + fmt, fh.read(size))[0]
+            elif vtype == _GGUF_TYPE_STRING:
+                slen = struct.unpack("<Q", fh.read(8))[0]
+                value = fh.read(slen).decode("utf-8", errors="replace")
+            elif vtype == _GGUF_TYPE_ARRAY:
+                inner_type, count = struct.unpack("<IQ", fh.read(12))
+                if inner_type in _GGUF_TYPE_SCALAR:
+                    fmt, size = _GGUF_TYPE_SCALAR[inner_type]
+                    fh.read(size * count)
+                elif inner_type == _GGUF_TYPE_STRING:
+                    for _ in range(count):
+                        slen = struct.unpack("<Q", fh.read(8))[0]
+                        fh.read(slen)
+                else:
+                    return  # unknown inner type — give up scanning
+                value = None
+            else:
+                return  # unknown type — give up
+            for w_key in list(wanted):
+                if wanted[w_key] is None and key.endswith("." + w_key):
+                    if isinstance(value, (int, bool)):
+                        wanted[w_key] = int(value)
+                    break
+            if all(v is not None for v in wanted.values()):
+                return
+
+
+def _read_gguf_arch(gguf_path: str) -> dict | None:
+    """Return {num_layers, num_kv_heads, head_dim} from a GGUF file, or None.
+
+    Reads the metadata KV block via the `gguf` package. Fields are namespaced
+    by architecture (e.g. `qwen35.block_count`, `llama.attention.head_count_kv`),
+    so we match by suffix. Returns None on any failure — the caller should
+    treat that as "metadata unavailable, use a coarse fallback".
+
+    Result is cached per (path, mtime, size) — opening a 15 GB GGUF takes
+    ~5s so we cannot afford to redo it on every slider tick. Any edit to
+    the file invalidates the cache via the mtime/size key components.
+    """
+    try:
+        st = os.stat(gguf_path)
+        cache_key = (gguf_path, int(st.st_mtime), st.st_size)
+    except OSError:
+        return None
+    if cache_key in _GGUF_ARCH_CACHE:
+        return _GGUF_ARCH_CACHE[cache_key]
+    # gguf.GGUFReader eats ~5s on 15GB files because it walks every tensor
+    # descriptor. We only need the metadata KV block at the file head, so we
+    # parse it directly with struct — reads under 10ms.
+    want = {
+        "block_count": None,
+        "attention.head_count": None,
+        "attention.head_count_kv": None,
+        "attention.key_length": None,
+        "embedding_length": None,
+        # hybrid attention (Qwen3.5/3.6): only every Nth layer holds KV.
+        # Missing on non-hybrid models — treated as "regular attention".
+        "full_attention_interval": None,
+    }
+    try:
+        _parse_gguf_metadata(gguf_path, want)
+    except Exception:
+        _GGUF_ARCH_CACHE[cache_key] = None
+        return None
+    if not want["block_count"]:
+        _GGUF_ARCH_CACHE[cache_key] = None
+        return None
+    num_kv_heads = want["attention.head_count_kv"] or want["attention.head_count"] or 8
+    head_dim = want["attention.key_length"]
+    if not head_dim and want["embedding_length"] and want["attention.head_count"]:
+        head_dim = want["embedding_length"] // want["attention.head_count"]
+    if not head_dim:
+        head_dim = 128
+    full_attn_interval = want["full_attention_interval"]
+    if full_attn_interval and full_attn_interval > 1:
+        num_kv_layers = max(1, want["block_count"] // full_attn_interval)
+    else:
+        num_kv_layers = want["block_count"]
+    result = {
+        "num_layers": want["block_count"],
+        "num_kv_layers": num_kv_layers,
+        "num_kv_heads": num_kv_heads,
+        "head_dim": head_dim,
+    }
+    _GGUF_ARCH_CACHE[cache_key] = result
+    return result
+
+
 def estimate_kv_cache_gb(model_path: str, max_model_len: int, kv_dtype: str = "auto") -> float:
     """Estimate KV cache memory in GB by reading model config.json.
 
     Handles hybrid models (e.g. Qwen3.5) that only allocate KV cache on full
     attention layers, not on linear/recurrent layers.
+
+    For llama.cpp installs the model_path is often a GGUF file (or a dir that
+    only contains a .gguf, no config.json). In that case we read the arch
+    metadata straight from the GGUF header — no config.json required.
     """
-    config_path = Path(model_path) / "config.json"
+    dtype_bytes = 1 if kv_dtype in ("fp8", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1") else 2
+
+    p = Path(model_path)
+    gguf_file: Path | None = None
+    if p.is_file() and p.suffix.lower() == ".gguf":
+        gguf_file = p
+    elif p.is_dir():
+        gguf_candidates = list(p.glob("*.gguf"))
+        if gguf_candidates:
+            gguf_file = gguf_candidates[0]
+    if gguf_file is not None:
+        arch = _read_gguf_arch(str(gguf_file))
+        if arch is not None:
+            kv_bytes_per_token = (
+                2 * arch["num_kv_heads"] * arch["head_dim"]
+                * arch["num_kv_layers"] * dtype_bytes
+            )
+            return max_model_len * kv_bytes_per_token / (1024 ** 3)
+
+    config_path = p / "config.json" if p.is_dir() else p.parent / "config.json"
     if not config_path.exists():
-        return max_model_len * 65536 / (1024 ** 3)  # rough fallback
+        # Coarse fallback: modern 27B/30B GGUFs come without a config.json.
+        # Assume grouped attention (8 KV heads), 64 layers, 128 head_dim —
+        # close enough that a 262k-ctx Qwen-27B reads ~65 GB fp16 instead of
+        # the old formula's ~4 GB (which was way too low and misled sizing).
+        kv_bytes_per_token = 2 * 8 * 128 * 64 * dtype_bytes
+        return max_model_len * kv_bytes_per_token / (1024 ** 3)
     try:
         config = json.loads(config_path.read_text())
         # Multimodal models nest text config under "text_config"

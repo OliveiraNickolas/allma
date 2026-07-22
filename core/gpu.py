@@ -340,14 +340,11 @@ def get_vram_breakdown(cfg: Dict[str, Any], base_name: str = "") -> Dict[str, fl
                 idx = extra_args.index("--cache-type-k")
                 kv_dtype = extra_args[idx + 1] if idx + 1 < len(extra_args) else "q8_0"
 
-            kv_cache_gb = _estimate_kv_cache_gb(model_dir, n_ctx, kv_dtype)
-            # If config.json not found in GGUF dir, fall back using real bytes/element
-            # q4_0/q4_1 = 0.5 B/elem; q5_x = 0.625; q8_0/fp8 = 1.0; fp16 = 2.0
-            if kv_cache_gb == n_ctx * 65536 / (1024 ** 3):
-                _dtype_bytes = {"q4_0": 0.5, "q4_1": 0.5, "q5_0": 0.625, "q5_1": 0.625,
-                                "q8_0": 1.0, "fp8": 1.0}.get(kv_dtype, 2.0)
-                kv_cache_gb = (n_ctx * 2 * 32 * 128 * _dtype_bytes) / (1024 ** 3)
-            b["kv_cache_gb"] = kv_cache_gb
+            # estimate_kv_cache_gb reads the GGUF metadata directly (num
+            # layers, KV heads, head dim) when a .gguf is present — no
+            # config.json needed. Pass the GGUF file itself for maximum
+            # precision instead of the parent directory.
+            b["kv_cache_gb"] = _estimate_kv_cache_gb(model_file, n_ctx, kv_dtype)
 
             # MTP / speculative draft context (llama-server logs ~0.5-0.6 GB
             # for "estimated memory usage of MTP context").
