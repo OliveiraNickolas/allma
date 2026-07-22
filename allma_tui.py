@@ -1390,6 +1390,9 @@ Collapsible.flag-adv > CollapsibleTitle {
 .cmd-edit-row { height: 1; margin: 1 0 0 0; }
 .cmd-edit-row Static { width: 1fr; color: #6a5a48; }
 .cmd-edit-row Button { min-width: 8; }
+/* Generic hidden — same escape hatch used for the models-search input,
+   generalised so the command-preview edit UI can toggle in and out. */
+.hidden { display: none; }
 /* slim chip-style buttons: 1 row, no fat border */
 Button {
     background: #007878; color: #f0e8d0;
@@ -2143,14 +2146,6 @@ class AllmaTUI(App):
                 collapsed=adv_collapsed,
                 classes="flag-adv",
             ))
-        widgets.append(Collapsible(
-            Static("Flags outside the list, original spelling (--flag value). "
-                   "Enter moves known flags to the list above.",
-                   classes="field-hint"),
-            Input(value=" ".join(leftover), id="ld-x-custom"),
-            title="Other (advanced)", collapsed=not leftover,
-            classes="flag-adv",
-        ))
         # Load configs — named snapshots of the LOAD-form values for THIS
         # model. Different from PROFILES (sampling): those live in the
         # PROFILES tab (with its own dropdown + Load button) because sampling
@@ -2182,15 +2177,24 @@ class AllmaTUI(App):
         # with the current form values. Great for learning what each toggle
         # produces, and for pasting into a shell to reproduce a load outside
         # of allma. Refreshed via _update_cmd_preview() on form changes.
+        # Command preview + inline extras editor. `#cmd-preview` shows the
+        # generated command; the Input below holds any flags outside the
+        # catalog (what used to sit in "Other (advanced)"). Hidden by default;
+        # the ✎ Edit button unhides+focuses it so extras get edited inside
+        # the preview zone itself instead of a separate section.
         widgets.append(Collapsible(
             Static("", id="cmd-preview"),
             Horizontal(
-                Static("Missing a flag? Add it to Other (advanced) — it'll "
-                       "appear here on next tick.",
-                       classes="field-hint"),
-                Button("✎ Edit extras", id="btn-cmd-edit", classes="mini"),
+                Static("Extra flags land in the command above as-is "
+                       "(original spelling, e.g. `--defrag-thold 0.2`).",
+                       id="cmd-edit-hint", classes="field-hint hidden"),
+                Button("✎ Edit", id="btn-cmd-edit", classes="mini"),
                 classes="cmd-edit-row",
             ),
+            Input(value=" ".join(leftover),
+                  id="ld-x-custom",
+                  placeholder="extra flags…",
+                  classes="hidden"),
             title="Command preview", collapsed=True, id="cmd-preview-collapsible",
         ))
         await form.mount_all(widgets)
@@ -2645,20 +2649,27 @@ class AllmaTUI(App):
         elif bid == "btn-cfg-del":
             self._delete_current_load_config(m)
         elif bid == "btn-cmd-edit":
-            # Jump to the "Other (advanced)" input so the user can add flags
-            # not in the catalog; they land in extra_args and the cmd
-            # preview refreshes on Input.Changed.
+            # Toggle the inline extras editor sitting inside the command
+            # preview collapsible. First click unhides + focuses the Input,
+            # button flips to "✓ Done"; second click hides + refreshes.
             try:
                 inp = self.query_one("#ld-x-custom", Input)
-                # Expand the collapsible parent if the input is folded.
-                p = inp.parent
-                while p is not None:
-                    if isinstance(p, Collapsible):
-                        p.collapsed = False
-                        break
-                    p = p.parent
-                inp.scroll_visible()
-                inp.focus()
+                hint = self.query_one("#cmd-edit-hint", Static)
+                btn = self.query_one("#btn-cmd-edit", Button)
+                editing = "hidden" in inp.classes
+                if editing:
+                    inp.remove_class("hidden")
+                    hint.remove_class("hidden")
+                    btn.label = "✓ Done"
+                    self.query_one("#cmd-preview-collapsible",
+                                   Collapsible).collapsed = False
+                    inp.scroll_visible()
+                    inp.focus()
+                else:
+                    inp.add_class("hidden")
+                    hint.add_class("hidden")
+                    btn.label = "✎ Edit"
+                    self._update_cmd_preview(self.selected)
             except Exception:
                 pass
         elif bid.startswith("pf") and bid.endswith("-load"):
