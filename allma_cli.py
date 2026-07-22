@@ -982,6 +982,7 @@ def cmd_tune(args):
         print("\n  Loading as configured...")
 
     t0 = time.time()
+    _post("/v1/reload-configs", {})  # pick up any .allm edits since daemon start
     resp = _post("/v1/load", {"model": profile_name, "load_overrides": overrides},
                  timeout=1200)
     if not resp or "error" in (resp or {}):
