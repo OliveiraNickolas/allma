@@ -1190,13 +1190,15 @@ Screen { background: #0a0a08; }
     background: #e8dfc8;
     padding: 0 1;
 }
-/* max-width lifted so the drag splitter can grow the sidebar past the old
-   40-cell ceiling. Initial widths (25% / 50% / 25%) are set as fractions
-   ONCE at mount and immediately converted to fixed cells by
-   `_pin_columns_to_current_size` so the drag splitter can move exactly N
-   cells without Textual redistributing any leftover. */
+/* col-mid ALWAYS stays `1fr` — it's the elastic middle that absorbs
+   whatever the container has left over. col-left and col-right are the
+   only ones the splitter mutates (to fixed cell widths), so their outer
+   edges are automatically pinned to the container edges: the mid takes
+   any leftover, never the outer columns. If we ever gave col-mid a fixed
+   width too, Textual's Horizontal layout would leak the leftover to the
+   right side of the row and col-right's right edge would drift inward. */
 #col-left  { width: 1fr; min-width: 24; }
-#col-mid   { width: 2fr; min-width: 30; }
+#col-mid   { width: 1fr; min-width: 30; }
 /* Watermark ghost: siphons the leftover vertical space between the models
    table and the log collapsible, centering the sprite on both axes. When
    the table has few rows this stretches large; when the table is packed
@@ -1210,6 +1212,11 @@ Screen { background: #0a0a08; }
    the second `#models-table` selector) — a duplicate here loses the CSS
    cascade fight and the table would eat the watermark's space. */
 #col-right { width: 1fr; min-width: 32; }
+/* col-right's left edge is what the split-mr drag moves; the RIGHT edge
+   of col-right must always sit flush against the container border. The
+   splitter enforces this by never touching col-mid — col-mid stays 1fr,
+   so any width col-right takes/releases flows into col-mid instead of
+   opening a gap on the right. */
 
 /* ── EXPLORE / toggles ── */
 #explore { height: auto; }
@@ -1458,15 +1465,14 @@ class _ColumnSplitter(Widget):
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         event.stop()
-        # Snapshot ALL THREE column widths. Every mouse_move re-applies the
-        # three explicitly (target + absorb move, third stays constant),
-        # so Textual never gets a chance to redistribute a leftover.
-        left = self.app.query_one("#col-left")
-        mid = self.app.query_one("#col-mid")
-        right = self.app.query_one("#col-right")
-        self._start_left_w = left.size.width
-        self._start_mid_w = mid.size.width
-        self._start_right_w = right.size.width
+        # Snapshot only the two outer columns. col-mid is the elastic 1fr
+        # spacer: it absorbs whatever col-left / col-right release without
+        # us ever writing its width. That's what keeps col-right's right
+        # edge flush against the container border — the "leftover" always
+        # lives inside col-mid, never past col-right.
+        self._start_left_w = self.app.query_one("#col-left").size.width
+        self._start_right_w = self.app.query_one("#col-right").size.width
+        self._start_mid_w = self.app.query_one("#col-mid").size.width
         self._dragging = True
         self._start_x = event.screen_x
         self.capture_mouse()
@@ -1475,27 +1481,23 @@ class _ColumnSplitter(Widget):
         if not self._dragging:
             return
         raw_delta = event.screen_x - self._start_x
-        # split-lm: `side="left"`, target=col-left → drag right grows left,
-        # shrinks mid; col-right stays put.
-        # split-mr: `side="right"`, target=col-right → drag right shrinks
-        # right, grows mid; col-left stays put.
+        # split-lm: dragging RIGHT grows col-left and shrinks col-mid.
+        # split-mr: dragging RIGHT shrinks col-right and grows col-mid.
+        # We only ever mutate ONE column per drag; col-mid re-flows on its
+        # own because it's `1fr`. Never touch col-mid's styles.width or
+        # you'll break the invariant that keeps the outer edges flush.
         if self._side == "left":
             new_left = self._start_left_w + raw_delta
-            new_mid = self._start_mid_w - raw_delta
-            new_right = self._start_right_w
-            if new_left < self._min_target or new_mid < self._min_absorb:
+            projected_mid = self._start_mid_w - raw_delta
+            if new_left < self._min_target or projected_mid < self._min_absorb:
                 return
+            self.app.query_one("#col-left").styles.width = new_left
         else:
             new_right = self._start_right_w - raw_delta
-            new_mid = self._start_mid_w + raw_delta
-            new_left = self._start_left_w
-            if new_right < self._min_target or new_mid < self._min_absorb:
+            projected_mid = self._start_mid_w + raw_delta
+            if new_right < self._min_target or projected_mid < self._min_absorb:
                 return
-        # Write all three every frame — the "untouched" side is rewritten to
-        # its snapshot value too, so Textual can't nudge it via 1fr math.
-        self.app.query_one("#col-left").styles.width = new_left
-        self.app.query_one("#col-mid").styles.width = new_mid
-        self.app.query_one("#col-right").styles.width = new_right
+            self.app.query_one("#col-right").styles.width = new_right
 
     def on_mouse_up(self, event: events.MouseUp) -> None:
         if self._dragging:
@@ -1633,29 +1635,18 @@ class AllmaTUI(App):
         self.call_after_refresh(self._pin_columns_to_current_size)
 
     def _pin_columns_to_current_size(self) -> None:
-        # Convert the CSS `1fr / 2fr / 1fr` into fixed cells. After this the
-        # #columns container has no free space to redistribute — the drag
-        # splitter's math (target + absorb + fixed third = total) actually
-        # holds. Ate the "leftover 8 cells" we were seeing before by
-        # extending col-mid: it already absorbs everything else in real use.
-        try:
-            columns = self.query_one("#columns")
-            container = columns.size.width
-        except Exception:
-            container = 0
-        sizes: dict[str, int] = {}
-        for col_id in ("col-left", "col-mid", "col-right"):
+        # Convert the outer columns' current 1fr allocation into fixed cells
+        # so the drag splitter has a stable baseline to work from. col-mid
+        # is INTENTIONALLY left as `1fr` — it is the elastic spacer that
+        # absorbs terminal-resize deltas and the width that col-left /
+        # col-right release when dragged narrower. Any explicit width on
+        # col-mid would let leftover cells escape to the right of col-right
+        # and detach that right edge from the container border.
+        for col_id in ("col-left", "col-right"):
             try:
                 w = self.query_one(f"#{col_id}")
-                sizes[col_id] = max(1, w.size.width)
-            except Exception:
-                return
-        current = sizes["col-left"] + sizes["col-mid"] + sizes["col-right"] + 2  # +2 splitters
-        if container > current:
-            sizes["col-mid"] += container - current
-        for col_id, val in sizes.items():
-            try:
-                self.query_one(f"#{col_id}").styles.width = val
+                if w.size.width > 0:
+                    w.styles.width = w.size.width
             except Exception:
                 pass
 
@@ -1665,8 +1656,11 @@ class AllmaTUI(App):
         st = _load_tui_layout()
         if not st:
             return
-        # Column widths
-        for col_id in ("col-left", "col-mid", "col-right"):
+        # Column widths — restore only the outer columns. col-mid must stay
+        # `1fr` (see `_pin_columns_to_current_size`): if a saved run wrote a
+        # fixed cell width for col-mid, applying it here would peel col-right's
+        # right edge away from the container border on the next drag.
+        for col_id in ("col-left", "col-right"):
             w = st.get("cols", {}).get(col_id)
             if isinstance(w, int) and w > 0:
                 try:
@@ -1705,7 +1699,11 @@ class AllmaTUI(App):
 
     def _snapshot_layout(self) -> dict:
         st: dict = {"cols": {}, "filters": {}}
-        for col_id in ("col-left", "col-mid", "col-right"):
+        # Never persist col-mid: it's the elastic 1fr spacer, its width is
+        # derived from container - (col-left + col-right + splitters). Saving
+        # it would let a stale value re-freeze col-mid on next launch and
+        # reintroduce the "right edge floats free" bug.
+        for col_id in ("col-left", "col-right"):
             try:
                 st["cols"][col_id] = self.query_one(f"#{col_id}").size.width
             except Exception:
