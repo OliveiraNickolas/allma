@@ -1386,14 +1386,15 @@ Collapsible.flag-adv > CollapsibleTitle {
     color: #8a7a60; text-style: bold;
 }
 /* Edit-extras affordance under the command preview: field-hint left,
-   compact button right. */
-.cmd-edit-row { height: 1; margin: 1 0 0 0; }
-.cmd-edit-row Static { width: 1fr; color: #6a5a48; }
-.cmd-edit-row Button { min-width: 8; }
+   proper 3-row button right so it lines up with the mmproj-row buttons. */
+.cmd-edit-row { height: 3; margin: 1 0 0 0; }
+.cmd-edit-row Static { width: 1fr; color: #6a5a48; padding: 1 0 0 0; }
 /* Generic hidden — same escape hatch used for the models-search input,
    generalised so the command-preview edit UI can toggle in and out. */
 .hidden { display: none; }
-/* slim chip-style buttons: 1 row, no fat border */
+/* Buttons default to 1-row chips for the compact top bar. The third-column
+   setup form (below) overrides to 3-row cards so the action row breathes
+   instead of reading as squashed pills. */
 Button {
     background: #007878; color: #f0e8d0;
     border: none; height: 1;
@@ -1403,12 +1404,27 @@ Button {
 Button:hover { background: #7a1818; }
 Button.warn  { background: #7a1818; }
 Button.mini  { min-width: 4; }
-.btn-row { height: 1; margin: 1 2 1 0; }
+.btn-row    { height: 3; margin: 1 2 1 0; }
 .mmproj-row { height: 3; margin: 0 2 0 0; }
 .mmproj-row Input { width: 1fr; }
-.mmproj-row Button { margin: 1 0 0 0; }
 .mmproj-row Select { width: 2fr; margin: 0 1 0 0; }
 .mmproj-row .preset-name { width: 2fr; }
+/* col-right button style: 3-row card with a soft `tall` chrome bar so
+   the action rows in the LOAD/PROFILES forms stop reading as thin pills.
+   Same colour palette as the default chip; the vertical bars give the
+   button real presence without a full solid border. */
+#col-right Button {
+    height: 3;
+    padding: 0 2;
+    border: tall #007878;
+    background: #007878; color: #f0e8d0;
+    min-width: 10;
+    margin: 0 1 0 0;
+}
+#col-right Button:hover { background: #7a1818; border: tall #7a1818; }
+#col-right Button:focus { border: tall #b89000; }
+#col-right Button.warn  { background: #7a1818; border: tall #7a1818; }
+#col-right Button.mini  { min-width: 5; padding: 0 1; }
 #statusline { height: 1; background: #c8b898; color: #007878; padding: 0 2; }
 
 /* picker modal */
