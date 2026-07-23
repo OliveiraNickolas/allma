@@ -61,6 +61,23 @@ class TestParserRoundTrip(unittest.TestCase):
         cfg = parse_allm(text, "test.allm")
         self.assertIn(cfg.get("gpu_id"), (None, "", "-1"))
 
+    def test_chat_template_promotes_on_both_backends(self):
+        # chat-template-file used to promote only for llama.cpp. On a vLLM base
+        # it fell into extra_args as the literal `--chat-template-file`, which
+        # vLLM rejects (it wants `--chat-template`) — so a chat template on a
+        # vLLM model silently failed at spawn. Both backends must promote it to
+        # cfg["chat_template_file"] so process.py can emit the right flag.
+        for decl, backend in (("@llamacpp", "llama.cpp"), ("@vllm", "vllm")):
+            text = f"{decl}\n@path /models/m\n\nchat-template-file /t/froggeric.jinja\n"
+            cfg = parse_allm(text, "m.allm")
+            self.assertEqual(
+                cfg.get("chat_template_file"), "/t/froggeric.jinja",
+                f"{backend}: chat template not promoted",
+            )
+            residue = [a for a in cfg.get("extra_args", [])
+                       if "template" in str(a).lower()]
+            self.assertEqual(residue, [], f"{backend}: leaked into extra_args")
+
 
 # Path to a base config the harness test can safely own and rewrite.
 def _write_temp_base(cfg_dir: Path) -> None:

@@ -67,6 +67,12 @@ _VLLM_PROMOTIONS = {
     "gpu-memory-utilization": "gpu_memory_utilization",
     "enforce-eager":          "enforce_eager",  # boolean (no value)
     "tokenizer":              "tokenizer",
+    # Canonical config key for both backends. Only llama.cpp promoted it before,
+    # so a chat template on a vLLM base fell into extra_args as the literal
+    # `--chat-template-file` — which vLLM doesn't accept (it wants
+    # `--chat-template`). Promoting it here lets process.py emit the correct
+    # per-backend flag from cfg["chat_template_file"].
+    "chat-template-file":     "chat_template_file",
 }
 
 # llama.cpp/llama-server flags treated specially. Includes both short and long
