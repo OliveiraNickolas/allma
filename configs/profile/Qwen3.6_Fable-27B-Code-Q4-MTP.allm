@@ -1,0 +1,12 @@
+# Profile: Qwen3.6_Fable:27B-Code-Q4-MTP
+@name Qwen3.6_Fable:27B-Code-Q4-MTP
+@base Qwen3.6-27B-Fable-Fusion-711-MTP
+
+# Code-oriented sampling — DavidAU's coding preset for this merge (temp 0.6),
+# thinking left on. Mirrors Qwen3.6:27B-Code-FP8.
+temperature 0.6
+top-p 0.95
+top-k 20
+min-p 0.0
+presence-penalty 0.0
+repetition-penalty 1.0

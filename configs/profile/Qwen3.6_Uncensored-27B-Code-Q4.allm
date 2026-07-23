@@ -1,0 +1,12 @@
+# Profile: Qwen3.6_Uncensored:27B-Code-Q4
+@name Qwen3.6_Uncensored:27B-Code-Q4
+@base Qwen3.6-27B-Uncensored-HauhauCS-Aggressive
+
+# Code-oriented sampling — lower temperature for determinism, thinking left on
+# (reasoning helps coding). Mirrors Qwen3.6:27B-Code-FP8.
+temperature 0.6
+top-p 0.95
+top-k 20
+min-p 0.0
+presence-penalty 0.0
+repetition-penalty 1.0
