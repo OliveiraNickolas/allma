@@ -1318,14 +1318,14 @@ def show_banner():
     console = Console(width=W)
 
     # ── helpers ──────────────────────────────────────────────────────────────
-    # Section titles ride a C64-keycap bevel — the keycap-brown name framed by
-    # two block "buttons" that read like a physical key. Cheaper than the old
-    # [ Name ] wizard style and instantly reads as "vintage hardware".
+    # Section titles use the ANSI/BBS shaded-block gradient (░▒▓) — the
+    # demoscene/bulletin-board motif, which reads instantly as vintage
+    # computing and fades the title in and out of the panel edge.
     def section(name: str) -> Text:
         t = Text()
-        t.append("▐▉ ", style=f"bold {C_ACCENT}")
+        t.append("░▒▓ ", style=f"bold {C_ACCENT}")
         t.append(name, style=f"bold {C_ACCENT}")
-        t.append(" ▉▌", style=f"bold {C_ACCENT}")
+        t.append(" ▓▒░", style=f"bold {C_ACCENT}")
         return t
 
     # Wordmark: block chars for the letter bodies + box-drawing (╗╔╚╝═║)
