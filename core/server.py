@@ -330,8 +330,12 @@ async def chat_completions(request: Request, body: dict = Body(...)):
         else:
             body["messages"] = [{"role": "system", "content": profile_system_prompt}] + msgs
 
-    # Disable thinking when profile says so or when "instruct" is in the model name
-    if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
+    # Disable thinking only when the profile explicitly says so (@thinking-off).
+    # We used to also infer it from "instruct" in the name, but that was magic:
+    # it fired on any model whose name happened to contain "instruct" and could
+    # not be turned off without renaming. Profiles now carry @thinking-off
+    # explicitly; flip it in the TUI or make a second profile instead.
+    if logical_cfg.get("enable_thinking") is False:
         body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
     elif backend == "llama.cpp":
         # Inject reasoning_budget for llama.cpp to prevent infinite thinking loops.
@@ -719,10 +723,11 @@ async def messages(request: Request, body: dict = Body(...)):
     if oai_tools:
         oai_body["tools"] = oai_tools
 
-    # Thinking control:
+    # Thinking control (explicit @thinking-off only — see the /v1/chat
+    # /completions path for why the "instruct" name-inference was dropped):
     #  - llama.cpp uses chat_template_kwargs.enable_thinking + reasoning_budget
     #  - vLLM Qwen template uses chat_template_kwargs.enable_thinking only
-    if logical_cfg.get("enable_thinking") is False or "instruct" in model_name.lower():
+    if logical_cfg.get("enable_thinking") is False:
         oai_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
     elif backend == "llama.cpp":
         # Same reasoning_budget guard as the /v1/chat/completions path

@@ -104,7 +104,10 @@ presence_penalty = 0.0
 repetition_penalty = 1.0
 ```
 
-**Regra**: Modelos com "instruct" no nome desativam thinking automaticamente.
+**Thinking**: controlado explicitamente pelo profile via `@thinking-off` (ou
+o toggle no TUI). Não há mais inferência pelo nome — a antiga regra "instruct
+no nome desativa thinking" foi removida por ser mágica e não-desligável sem
+renomear. Pra um modelo sem thinking, ponha `@thinking-off` no profile.
 
 ---
 
