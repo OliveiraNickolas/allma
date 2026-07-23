@@ -43,7 +43,11 @@ from textual.widgets import (
 # Paths / constants
 # ──────────────────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
-CONFIG_DIR = BASE_DIR / "configs"
+# Honour ALLMA_CONFIG_DIR like core.config / the CLI do. The TUI used to
+# hardcode BASE_DIR/configs, so a config-dir override worked everywhere
+# except here — the one place you browse and edit configs. Keeping them in
+# sync also makes the TUI testable against a temp config dir.
+CONFIG_DIR = Path(os.environ.get("ALLMA_CONFIG_DIR", str(BASE_DIR / "configs")))
 STATE_FILE = BASE_DIR / "cache" / "tui_state.json"
 ALLMA_URL  = f"http://127.0.0.1:{os.environ.get('ALLMA_PORT', '9000')}"
 
@@ -2912,7 +2916,16 @@ class AllmaTUI(App):
             lines.append(f"@path {model_path}")
         else:
             lines.append(f"@path {m['path']}")
-        gid = values.get("gpu_id", m["cfg"].get("gpu_id"))
+        # GPU pin. The form's RadioRow is authoritative when present: reading
+        # it directly lets "auto" (empty value) clear a previous @gpu pin.
+        # _load_form_values omits gpu_id on auto, so values.get() alone would
+        # fall back to the stale cfg pin and the @gpu line could never be
+        # removed. Fall back to cfg only when the form isn't mounted (e.g. a
+        # non-interactive render path).
+        try:
+            gid = self.query_one("#ld-gpu_id", RadioRow).value
+        except Exception:
+            gid = values.get("gpu_id", m["cfg"].get("gpu_id"))
         if gid == "all":
             # spread across every GPU (llama.cpp multi-GPU for big contexts)
             ids = ",".join(str(g["index"]) for g in self.gpus) or "0,1"
