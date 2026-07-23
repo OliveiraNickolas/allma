@@ -175,7 +175,7 @@ def _bar(frac: float, width: int = 10, color: Optional[str] = None) -> Text:
         color = C_GOOD if frac < 0.7 else (C_WARN if frac < 0.9 else C_BAD)
     t = Text()
     t.append("▰" * filled, style=color)
-    t.append("▱" * (width - filled), style="#c9bfa2")
+    t.append("▱" * (width - filled), style="#C2B8AC")  # C64 case beige — empty track
     return t
 
 
@@ -195,6 +195,12 @@ def _kfmt(n) -> str:
 
 _SPARK_CHARS = "▁▂▃▄▅▆▇█"
 _HISTORY_LEN = 60   # samples kept per metric — one minute at 1s refresh
+
+# Sparkline colours from the logo rainbow (kept alongside the C64 browns) so
+# the two GPU metrics and the model's tok/s read apart at a glance on cream.
+_SPARK_UTIL = "#43b047"   # logo green
+_SPARK_TOKS = "#009ddc"   # logo blue
+#  (vram uses C_ORANGE)
 
 
 def _sparkline(values, width: int = 20) -> str:
@@ -249,12 +255,13 @@ class TopView:
         return rate
 
     # ── card builders ─────────────────────────────────────────────────────
-    def _barrow(self, label: str, frac: float, value: str,
-                width: int = 14, color: Optional[str] = None) -> Text:
-        """'label  ██████░░░  value' — one aligned bar row inside a card."""
+    def _sparkrow(self, label: str, hist, value: str, color: str,
+                  width: int = 20) -> Text:
+        """'label  ▁▂▃▄▅▆▇  value' — a metric's 1-minute sparkline plus its
+        current reading, on one aligned row."""
         t = Text(style=_S)
         t.append(f"{label:<5}", style=f"{C_DIM} on {C_BG}")
-        t.append_text(_bar(frac, width=width, color=color))
+        t.append(_sparkline(hist, width=width), style=f"{color} on {C_BG}")
         t.append(f" {value}", style=f"{C_FG} on {C_BG}")
         return t
 
@@ -269,21 +276,14 @@ class TopView:
         h["vram"].append(g["used"] / max(g["total"], 1e-9))
         grid = Table.grid(padding=(0, 0))
         grid.add_column()
-        grid.add_row(self._barrow("util", g["util"] / 100, f"{g['util']:3.0f}%", width=20))
-        grid.add_row(self._barrow("vram", g["used"] / g["total"],
-                                  f"{g['used']:.1f}/{g['total']:.0f}G", width=20))
-        # Sparkline row: last minute of util (teal) + vram (orange), so a
-        # spike is obvious even if you glanced away for a few seconds.
-        spark = Text(style=_S)
-        spark.append(f"{'      ':<5}", style=f"{C_DIM} on {C_BG}")
-        spark.append(_sparkline(h["util"], width=20), style=f"{C_ACCENT} on {C_BG}")
-        spark.append("  util 1m", style=f"{C_DIM} on {C_BG}")
-        grid.add_row(spark)
-        spark2 = Text(style=_S)
-        spark2.append(f"{'      ':<5}", style=f"{C_DIM} on {C_BG}")
-        spark2.append(_sparkline(h["vram"], width=20), style=f"{C_ORANGE} on {C_BG}")
-        spark2.append("  vram 1m", style=f"{C_DIM} on {C_BG}")
-        grid.add_row(spark2)
+        # One row per metric: label + 1-minute sparkline + current value. The
+        # old separate bar row was dropped — it showed the same number the
+        # sparkline already trends, so the two stacked rows were redundant.
+        # Now the sparkline carries the shape and the value on the right the
+        # instantaneous reading.
+        grid.add_row(self._sparkrow("util", h["util"], f"{g['util']:3.0f}%", _SPARK_UTIL))
+        grid.add_row(self._sparkrow("vram", h["vram"],
+                                    f"{g['used']:.1f}/{g['total']:.0f}G", C_ORANGE))
         # footer: temp (colored) · clock · power · fan
         foot = Text(style=_S)
         foot.append(f"{g['temp']:.0f}°C", style=f"bold {_temp_style(g['temp'])} on {C_BG}")
@@ -297,7 +297,7 @@ class TopView:
         if g["throttled"]:
             title.append("  ⚠ throttle", style=f"bold {C_BAD}")
         return Panel(grid, title=title, title_align="left", box=_box.ROUNDED,
-                     border_style=C_DIM, style=_S, padding=(0, 1), width=40)
+                     border_style=C_BORDER, style=_S, padding=(0, 1), width=40)
 
     def _ctx_bar(self, frac: float, value: str) -> Text:
         """A bar + label, for the fixed 'context' stat row."""
@@ -371,7 +371,7 @@ class TopView:
         mh["tok_s"].append(current_rate)
         peak = max(mh["tok_s"]) or 1.0
         spark = Text(_sparkline([v / peak for v in mh["tok_s"]], width=20),
-                     style=f"{C_ACCENT} on {C_BG}")
+                     style=f"{_SPARK_TOKS} on {C_BG}")
         body.add_row("1m", spark)
         if note:
             body.add_row("", Text(note, style=_dim))
@@ -381,7 +381,7 @@ class TopView:
         sub = Text(f" {backend} · gpu {s.get('gpu', '?')} ", style=_dim)
         return Panel(body, title=title, title_align="left",
                      subtitle=sub, subtitle_align="right",
-                     box=_box.ROUNDED, border_style=C_DIM, style=_S,
+                     box=_box.ROUNDED, border_style=C_BORDER, style=_S,
                      padding=(0, 1), width=40)
 
     def snapshot(self) -> Panel:

@@ -25,7 +25,7 @@ _STRIPES = [
     (255, 215, 95),   # yellow  #ffd75f
     (67, 176, 71),    # green   #43b047
     (0, 157, 220),    # blue    #009ddc
-    (0, 136, 136),    # teal    #008888
+    (199, 162, 116),  # tan     #C7A274  (C64 function-key — was teal)
 ]
 _GHOST_RGB = (240, 232, 208)   # cream — reads white on dark terminals
 _STAR_RGB = (168, 152, 120)

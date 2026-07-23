@@ -63,14 +63,14 @@ if _VENV_PYTHON.exists() and Path(sys.prefix).resolve() != _VENV_DIR.resolve():
     os.execv(str(_VENV_PYTHON),
              [str(_VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]])
 
-# Warm cream / teal palette shared by the REPL header, the model switcher and
-# the backend-log banner (same scheme as the main server banner)
+# Commodore 64 case palette shared by the REPL header, the model switcher and
+# the backend-log banner (same scheme as the server banner, TUI and `allma top`)
 C_BG     = "#e8dfc8"
 C_SCREEN = "#d0c4a8"
 C_FG     = "#1a1408"
 C_DIM    = "#6a5a48"
-C_ACCENT = "#007878"
-C_BORDER = "#008888"
+C_ACCENT = "#382D24"   # keycap brown (was teal)
+C_BORDER = "#534D3D"   # dark warm grey (was teal)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _get(path: str, timeout: float = 3.0):

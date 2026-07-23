@@ -1305,19 +1305,20 @@ def show_banner():
     C_YELL   = "#f7d000"
     C_GRN    = "#43b047"
     C_BLUE   = "#009ddc"
-    # Warm cream + teal palette (DOS wizard style)
+    # Commodore 64 case palette (same as the TUI and `allma top`). Cream paper,
+    # keycap browns for chrome and titles, the logo rainbow for accents/status.
     C_BG     = "#e8dfc8"   # window background (warm cream)
     C_SCREEN = "#d0c4a8"   # desktop / outer background (darker cream)
     C_FG     = "#1a1408"   # main text (near-black, warm)
     C_DIM    = "#6a5a48"   # secondary / dim (warm gray-brown)
-    C_ACCENT = "#007878"   # section titles, accents (teal)
-    C_BORDER = "#008888"   # panel border lines (teal)
-    C_OK     = "#007878"   # READY / online (teal)
+    C_ACCENT = "#382D24"   # section titles, accents (keycap brown, was teal)
+    C_BORDER = "#534D3D"   # panel border lines (dark warm grey, was teal)
+    C_OK     = "#43b047"   # READY / online (logo green, was teal)
 
     console = Console(width=W)
 
     # ── helpers ──────────────────────────────────────────────────────────────
-    # Section titles ride a C64-keycap bevel — the accent teal name framed by
+    # Section titles ride a C64-keycap bevel — the keycap-brown name framed by
     # two block "buttons" that read like a physical key. Cheaper than the old
     # [ Name ] wizard style and instantly reads as "vintage hardware".
     def section(name: str) -> Text:
@@ -1339,7 +1340,7 @@ def show_banner():
         "        ╚══════╝╚══════╝__________________",
     ]
 
-    # Rainbow signature stripe — the Commodore 64 badge motif. Six teal-tinted
+    # Rainbow signature stripe — the Commodore 64 badge motif. Six logo-tinted
     # bands ride under the wordmark; segment widths repeat so it reads like a
     # flag, not a gradient.
     _STRIPE_COLORS = [C_RED, C_ORG, C_YELL, C_GRN, C_BLUE, C_ACCENT]
@@ -1547,7 +1548,7 @@ def show_banner():
     KEY_FG = "#f0e8d0"          # cream (keycap label)
     _bar_style = f"{KEY_FG} on {KEY_BG}"
     status_line = Text(justify="center", style=_bar_style)
-    status_line.append("● ", style=f"bold #7fff7f on {KEY_BG}")
+    status_line.append("● ", style=f"bold #43b047 on {KEY_BG}")  # logo-green LED
     status_line.append("READY", style=f"bold {KEY_FG} on {KEY_BG}")
     status_line.append("  ·  ", style=_bar_style)
     if _narrow:

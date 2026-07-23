@@ -18,13 +18,16 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
-# ── Allma palette ─────────────────────────────────────────────────────────────
-C_BG     = "#e8dfc8"
-C_SCREEN = "#d0c4a8"
-C_FG     = "#1a1408"
-C_DIM    = "#6a5a48"
-C_ACCENT = "#007878"
-C_BORDER = "#008888"
+# ── Allma palette (Commodore 64 case) ────────────────────────────────────────
+# Same palette as the TUI: cream paper, C64-case browns for chrome and text,
+# the logo rainbow for data/accents. The old teal is gone so the whole app
+# reads as one product. See allma_tui.py's CSS header for the full rationale.
+C_BG     = "#e8dfc8"   # cream paper
+C_SCREEN = "#d0c4a8"   # darker cream — desktop behind panels
+C_FG     = "#1a1408"   # near-black brown body text
+C_DIM    = "#6a5a48"   # dim brown — labels, subtitles
+C_ACCENT = "#382D24"   # keycap brown — titles, emphasis (was teal)
+C_BORDER = "#534D3D"   # dark warm grey — panel borders (was teal)
 # Verdict colors — dark variants readable on the cream background
 # (terminal-bright green/yellow wash out on #e8dfc8).
 C_GOOD   = "#1e7d23"
