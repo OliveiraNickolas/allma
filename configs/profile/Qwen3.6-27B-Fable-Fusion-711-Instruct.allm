@@ -1,4 +1,4 @@
-@name Fable:27B-Instruct-Q4-MTP
+@name Qwen3.6_Fable:27B-Instruct-Q4-MTP
 @base Qwen3.6-27B-Fable-Fusion-711-MTP
 @thinking-off
 

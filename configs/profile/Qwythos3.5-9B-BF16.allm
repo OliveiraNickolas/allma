@@ -1,4 +1,4 @@
-@name Qwythos3.5:9B-BF16
+@name Qwen3.5_Mythos:9B-BF16
 @base Qwythos3.5-9B-BF16
 
 temperature 0.6

@@ -1,9 +1,12 @@
-@name Qwen3VL:30B-A3B-ABT
+@name Qwen3VL_Abliterated:30B-A3B-Instruct-Q4
 @base Huihui-Qwen3-VL-30B-A3B-Instruct-abliterated-GGUF_Q4
+@thinking-off
 
-# Sampling oficial Qwen3-VL (não os defaults abliterated do Qwen3.6):
-# temp 0.7, top-p 0.8, presence 1.5 — cf. mradermacher/huihui docs.
-# Thinking off por padrão (visão + estrutura, não raciocínio longo).
+# Vision-only model: one profile, no thinking training. "Instruct" in the
+# name signals that to users, and @thinking-off enforces it (the old config
+# only claimed thinking-off in a comment but parsed as thinking=True).
+# Sampling: official Qwen3-VL — temp 0.7, top-p 0.8, presence 1.5
+# (mradermacher/huihui docs), not the abliterated Qwen3.6 defaults.
 
 temperature 0.7
 top-p 0.8
