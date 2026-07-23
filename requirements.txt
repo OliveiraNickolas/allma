@@ -7,7 +7,9 @@ huggingface_hub>=0.20.0
 rich>=13.0.0
 textual>=0.80.0
 
-# Optional for development
+# Optional for development. The test suite runs on the stdlib
+# (`python -m unittest discover tests`) and needs none of these; pytest is
+# only for the integration tests that talk to a running server.
 # pytest>=7.4.0
 # ruff>=0.1.0
 # mypy>=1.6.0

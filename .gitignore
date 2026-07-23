@@ -48,8 +48,10 @@ secrets.json
 .DS_Store
 Thumbs.db
 
-# Tests — local development only, not published
-tests/
+# Tests are versioned — see tests/ and `python -m unittest discover tests`.
+# Only the caches stay out.
+tests/__pycache__/
+tests/.pytest_cache/
 
 # Allma specific
 # Base configs contain machine-specific paths — users copy from .example and customize
