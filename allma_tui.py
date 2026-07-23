@@ -103,6 +103,11 @@ _LOAD_CFG_PATH = Path(os.environ.get(
 ))
 
 
+# Sentinel value for the "restore the .allm from disk" entry in the load-config
+# dropdown. Prefixed so it can never collide with a user-chosen config name.
+_DISK_CFG = "\x00__disk_cfg__"
+
+
 def _load_tui_presets() -> dict:
     try:
         return json.loads(_LOAD_CFG_PATH.read_text())
@@ -680,7 +685,7 @@ class Toggle(Static):
         text = rescape(self.label)
         if not self.show_mark:
             return f" {text}"
-        mark = "[#007878]●[/]" if self.value else "[#6a5a48]○[/]"
+        mark = "[#382D24]●[/]" if self.value else "[#6a5a48]○[/]"
         return f" {mark}  {text}"
 
     def _sync(self):
@@ -979,8 +984,8 @@ class SliderBar(Widget):
         w = max(self.size.width, 8)
         knob = round(self.fraction * (w - 1))
         t = Text()
-        t.append("─" * knob, style="#007878")
-        t.append("●", style="bold #007878")
+        t.append("─" * knob, style="#382D24")
+        t.append("●", style="bold #382D24")
         t.append("─" * (w - 1 - knob), style="#a89878")
         return t
 
@@ -1202,6 +1207,23 @@ class PickerScreen(ModalScreen):
 # CSS — allma cream/teal palette
 # ──────────────────────────────────────────────────────────────────────────────
 CSS = """
+/* ── Palette ─────────────────────────────────────────────────────────────
+   Sampled from a Commodore 64 case. The rainbow accents were already the
+   Commodore logo colours, so dropping the old teal closes the reference
+   instead of running two visual languages at once.
+
+     #C2B8AC  case beige      chrome, hover fills
+     #534D3D  dark warm grey  panel borders, button/selection fills
+     #382D24  keycap brown    body text, titles, headings
+     #C7A274  function-key tan  focus rings, active state  ← the accent
+     #130C06  deepest brown   maximum-contrast ink
+
+   Kept from before: the cream paper (#e8dfc8 / #f0e8d0) and the five logo
+   accents (red/orange/yellow/green/blue).
+
+   One constraint: #C7A274 is tan-on-cream, so it never carries text on a
+   light background — borders, focus and fills only.
+   ──────────────────────────────────────────────────────────────────────── */
 Screen { background: #0a0a08; }
 #root  { background: #d0c4a8; height: 100%; }
 #topbar {
@@ -1210,15 +1232,15 @@ Screen { background: #0a0a08; }
 #topbar-ghost { width: 8; height: 3; }
 #topbar-status {
     width: 1fr; height: 3;
-    color: #007878; text-style: bold;
+    color: #382D24; text-style: bold;
     content-align: left middle;
 }
 .top-btn { margin: 1 0 0 1; min-width: 11; }
 #columns { height: 1fr; }
 
 .panel {
-    border: double #008888;
-    border-title-color: #007878;
+    border: double #534D3D;
+    border-title-color: #382D24;
     border-title-style: bold;
     background: #e8dfc8;
     padding: 0 1;
@@ -1256,11 +1278,11 @@ Screen { background: #0a0a08; }
 Toggle {
     height: 1; color: #6a5a48; background: #e8dfc8; padding: 0 1;
 }
-Toggle:hover  { background: #ddd4b8; }
+Toggle:hover  { background: #C2B8AC; }
 Toggle:focus  { text-style: underline; }
 Toggle.-on    { color: #1a1408; text-style: bold; }
 Toggle.line.-on {
-    background: #007878; color: #f0e8d0; text-style: bold;
+    background: #534D3D; color: #f0e8d0; text-style: bold;
 }
 .radio-row { height: 1; margin: 0 2 0 0; }
 .radio-row Toggle { width: auto; padding: 0 2 0 1; }
@@ -1270,7 +1292,7 @@ Toggle.line.-on {
 .xrow Toggle { width: 1fr; min-width: 16; text-overflow: ellipsis; }
 .flag-val {
     width: 12; height: 1; border: none;
-    background: #f0e8d0; color: #007878; padding: 0 1;
+    background: #f0e8d0; color: #382D24; padding: 0 1;
 }
 /* border: none on focus too — the global Input:focus rule adds a border and
    inflates the 1-row field to 3 rows, covering the line below */
@@ -1278,9 +1300,9 @@ Toggle.line.-on {
 .flag-sel { width: 12; height: 1; margin: 0; }
 .flag-sel SelectCurrent {
     border: none; height: 1; padding: 0 1;
-    background: #f0e8d0; color: #007878;
+    background: #f0e8d0; color: #382D24;
 }
-.flag-sel SelectCurrent Static { background: #f0e8d0; color: #007878; }
+.flag-sel SelectCurrent Static { background: #f0e8d0; color: #382D24; }
 /* border: none on focus too — the global Select:focus rule would inflate the
    1-row field to 3 rows (same trap as Input:focus) */
 .flag-sel:focus SelectCurrent { border: none; background: #fff8e0; }
@@ -1289,21 +1311,21 @@ Toggle.line.-on {
    one line; it floats above the row so the extra width doesn't reflow it */
 .flag-sel SelectOverlay { width: 24; height: auto; max-height: 12; }
 .info-mark { width: 3; height: 1; color: #6a5a48; }
-.info-mark:hover { color: #007878; text-style: bold; }
+.info-mark:hover { color: #382D24; text-style: bold; }
 .param-counter { height: 1; margin: 0 2 1 0; }
 .ctr-label { width: 1fr; color: #1a1408; }
 .ctr-btn {
     width: 3; height: 1; padding: 0;
-    background: #c8b898; color: #007878;
+    background: #c8b898; color: #382D24;
     text-align: center; text-style: bold;
 }
-.ctr-btn:hover { background: #007878; color: #f0e8d0; }
-.ctr-val { width: 7; height: 1; text-align: center; color: #007878; text-style: bold; }
+.ctr-btn:hover { background: #534D3D; color: #f0e8d0; }
+.ctr-val { width: 7; height: 1; text-align: center; color: #382D24; text-style: bold; }
 
 /* ── MODEL INFO / DOWNLOAD ── */
 #model-info {
     height: 1fr; color: #1a1408;
-    scrollbar-color: #007878; scrollbar-background: #c8b898;
+    scrollbar-color: #534D3D; scrollbar-background: #c8b898;
     scrollbar-size: 1 1;
 }
 #download { height: auto; }
@@ -1317,32 +1339,32 @@ Toggle.line.-on {
     /* Claim only what the rows need, up to the column's height, so the
        watermark below can breathe. Was `height: 1fr`, which ate everything. */
     height: auto; max-height: 1fr;
-    scrollbar-color: #007878; scrollbar-background: #c8b898;
+    scrollbar-color: #534D3D; scrollbar-background: #c8b898;
     scrollbar-size: 1 1;
 }
 /* Search input above MY MODELS: collapsed to zero rows until `/` reveals
    it, so the layout doesn't waste vertical space in the common case. */
 #models-search {
     height: 3; margin: 0 0 0 0;
-    background: #f0e8d0; color: #007878; border: solid #008888;
+    background: #f0e8d0; color: #382D24; border: solid #534D3D;
 }
 #models-search.hidden { height: 0; border: none; padding: 0; margin: 0; }
-#models-search:focus { border: solid #007878; background: #fff8e0; }
+#models-search:focus { border: solid #C7A274; background: #fff8e0; }
 #models-table > .datatable--header {
-    background: #c8b898; color: #007878; text-style: bold;
+    background: #c8b898; color: #382D24; text-style: bold;
 }
-#models-table > .datatable--cursor { background: #007878; color: #f0e8d0; }
+#models-table > .datatable--cursor { background: #534D3D; color: #f0e8d0; }
 #models-table > .datatable--even-row { background: #ddd4b8; }
 #models-footer {
-    height: 1; background: #c8b898; color: #007878; padding: 0 1;
+    height: 1; background: #c8b898; color: #382D24; padding: 0 1;
 }
 #models-footer:hover { background: #b8a888; text-style: bold; }
 /* backend-log tail at the bottom of the middle column */
 #log-collapsible { height: auto; background: #c8b898; }
-#log-collapsible CollapsibleTitle { color: #007878; text-style: bold; }
+#log-collapsible CollapsibleTitle { color: #382D24; text-style: bold; }
 #backend-log {
     height: 12; background: #1a1408; color: #cfc7ac;
-    scrollbar-color: #007878; scrollbar-background: #2a2418; scrollbar-size: 1 1;
+    scrollbar-color: #534D3D; scrollbar-background: #2a2418; scrollbar-size: 1 1;
 }
 
 /* ── SETUP ── */
@@ -1355,7 +1377,7 @@ Tab  {
     text-align: center;
     margin: 0;
 }
-Tab.-active { color: #007878; text-style: bold; }
+Tab.-active { color: #382D24; text-style: bold underline; }
 /* no right padding — the scrollbar hugs the panel border */
 TabPane { background: #e8dfc8; padding: 0 0 0 1; }
 .form-scroll {
@@ -1363,21 +1385,21 @@ TabPane { background: #e8dfc8; padding: 0 0 0 1; }
     /* clip a too-wide row on the right (the short value) rather than growing a
        horizontal scrollbar or squeezing the label out of view */
     overflow-x: hidden;
-    scrollbar-color: #007878; scrollbar-background: #c8b898;
+    scrollbar-color: #534D3D; scrollbar-background: #c8b898;
     scrollbar-size: 1 1;
 }
 /* content↔scrollbar gap goes on each row type's right margin — a broad margin
    rule would override the vertical margins (margin is one Spacing per rule) */
 .section-hdr {
-    color: #007878; text-style: bold;
-    border-bottom: solid #008888; margin: 1 2 0 0;
+    color: #382D24; text-style: bold;
+    border-bottom: solid #534D3D; margin: 1 2 0 0;
 }
 .field-hint { color: #6a5a48; margin: 0 2 0 0; }
 .flag-cat   { color: #8a7a60; text-style: bold; margin: 1 0 0 1; height: 1; }
 /* Clickable Advanced header: same look as a plain category header, plus a
    ▶/▼ arrow and a hover tint so it reads as interactive. */
-.flag-cat-toggle { color: #007878; }
-.flag-cat-toggle:hover { color: #7a1818; background: #ddd4b8; }
+.flag-cat-toggle { color: #382D24; }
+.flag-cat-toggle:hover { color: #130C06; background: #C2B8AC; }
 .vram-line  { color: #1a1408; margin: 0 2 1 0; }
 
 /* sliders */
@@ -1386,33 +1408,33 @@ TabPane { background: #e8dfc8; padding: 0 0 0 1; }
 .ps-label { width: 1fr; color: #1a1408; }
 .ps-value {
     width: 12; height: 1; border: none;
-    background: #f0e8d0; color: #007878; text-style: bold;
+    background: #f0e8d0; color: #382D24; text-style: bold;
     padding: 0 1;
 }
 .ps-value:focus { background: #fff8e0; border: none; }
 .ps-bar { height: 1; margin: 0 0 1 0; }
-.ps-bar:focus { background: #ddd4b8; }
+.ps-bar:focus { background: #C2B8AC; }
 
-Input { background: #f0e8d0; color: #007878; border: solid #008888; height: 3; }
-Input:focus { border: solid #007878; }
-Input > .input--cursor { background: #007878; color: #f0e8d0; }
-Input > .input--selection { background: #00a0a0; color: #f0e8d0; }
+Input { background: #f0e8d0; color: #382D24; border: solid #534D3D; height: 3; }
+Input:focus { border: solid #C7A274; }
+Input > .input--cursor { background: #534D3D; color: #f0e8d0; }
+Input > .input--selection { background: #C7A274; color: #f0e8d0; }
 Select { background: #e8dfc8; }
 Select SelectCurrent {
-    background: #f0e8d0; color: #007878; border: solid #008888;
+    background: #f0e8d0; color: #382D24; border: solid #534D3D;
 }
-Select SelectCurrent Static { color: #007878; background: #f0e8d0; }
-Select:focus SelectCurrent { border: solid #007878; }
+Select SelectCurrent Static { color: #382D24; background: #f0e8d0; }
+Select:focus SelectCurrent { border: solid #382D24; }
 .form-scroll > Select { margin: 0 2 0 0; }
 SelectOverlay {
-    background: #f0e8d0; color: #1a1408; border: solid #008888;
-    scrollbar-color: #007878; scrollbar-background: #c8b898;
+    background: #f0e8d0; color: #1a1408; border: solid #534D3D;
+    scrollbar-color: #534D3D; scrollbar-background: #c8b898;
 }
-SelectOverlay > .option-list--option-highlighted { background: #007878; color: #f0e8d0; }
+SelectOverlay > .option-list--option-highlighted { background: #534D3D; color: #f0e8d0; }
 Collapsible {
-    background: #e8dfc8; border: solid #008888; margin: 0 2 1 0; padding: 0;
+    background: #e8dfc8; border: solid #534D3D; margin: 0 2 1 0; padding: 0;
 }
-CollapsibleTitle { color: #007878; text-style: bold; }
+CollapsibleTitle { color: #382D24; text-style: bold; }
 /* Generic hidden — same escape hatch used for the models-search input,
    generalised so the command-preview edit UI can toggle in and out. */
 .hidden { display: none; }
@@ -1420,7 +1442,7 @@ CollapsibleTitle { color: #007878; text-style: bold; }
    only when they contain a taller sibling (Input, Select); vertical
    `margin-top: 1` centres the chip against the sibling's content line. */
 Button {
-    background: #007878; color: #f0e8d0;
+    background: #534D3D; color: #f0e8d0;
     border: none; height: 1;
     min-width: 8; padding: 0 2;
     text-style: bold; margin: 0 1 0 0;
@@ -1441,6 +1463,9 @@ Button.mini  { min-width: 6; padding: 0 2; }
 .mmproj-row Button { margin: 1 0 0 0; }
 /* Load-config: Select spans the full width; save-delete pair sits on
    its own row so nothing gets squished in a narrow terminal. */
+/* Top margin separates this block from the flag list / Advanced fold above,
+   which otherwise ran straight into the "Load config" label. */
+.cfg-label    { color: #6a5a48; margin: 1 2 0 0; }
 .cfg-row-sel  { height: 3; margin: 0 2 0 0; }
 .cfg-row-sel Select { width: 1fr; }
 .cfg-row-act  { height: 3; margin: 0 2 1 0; }
@@ -1451,14 +1476,14 @@ Button.mini  { min-width: 6; padding: 0 2; }
 .cmd-edit-row { height: 3; margin: 1 0 0 0; }
 .cmd-edit-row Static { width: 1fr; color: #6a5a48; padding: 1 0 0 0; }
 .cmd-edit-row Button { margin: 1 0 0 0; }
-#statusline { height: 1; background: #c8b898; color: #007878; padding: 0 2; }
+#statusline { height: 1; background: #c8b898; color: #382D24; padding: 0 2; }
 
 /* picker modal */
 PickerScreen { align: center middle; }
 #picker-box {
     width: 96; height: 34;
-    border: double #008888;
-    border-title-color: #007878;
+    border: double #534D3D;
+    border-title-color: #382D24;
     border-title-style: bold;
     background: #e8dfc8; padding: 1;
 }
@@ -1467,11 +1492,11 @@ PickerScreen { align: center middle; }
 #picker-root { height: 1; content-align: left middle; color: #6a5a48; padding: 0 1; }
 #picker-tree {
     height: 1fr; background: #e8dfc8; color: #1a1408;
-    scrollbar-color: #007878; scrollbar-background: #c8b898;
+    scrollbar-color: #534D3D; scrollbar-background: #c8b898;
     scrollbar-size: 1 1;
 }
-#picker-tree > .tree--cursor { background: #007878; color: #f0e0d0; }
-#picker-current { height: 1; color: #007878; text-style: bold; }
+#picker-tree > .tree--cursor { background: #534D3D; color: #f0e0d0; }
+#picker-current { height: 1; color: #382D24; text-style: bold; }
 """
 
 
@@ -1498,7 +1523,7 @@ class _ColumnSplitter(Widget):
         content-align: center middle;
     }
     _ColumnSplitter:hover {
-        background: #007878;
+        background: #534D3D;
         color: #f0e8d0;
     }
     """
@@ -2046,7 +2071,7 @@ class AllmaTUI(App):
         if self.selected is not m:
             return
         info = self._detect_cache.get(self._detect_path(m), {})
-        a, d = "#007878", "#6a5a48"
+        a, d = "#382D24", "#6a5a48"
 
         def row(k, v):
             return f"[{d}]{k:<12}[/][{a}]{v}[/]"
@@ -2195,9 +2220,13 @@ class AllmaTUI(App):
         # PROFILES tab (with its own dropdown + Load button) because sampling
         # is a per-request concern. What lives here is the boot-time cfg
         # you want to reuse: "long-context", "code mode", "fast test", etc.
+        # The first real entry restores the on-disk .allm. Without it, applying
+        # a saved snapshot was a one-way door — the form had no path back to
+        # what the config file actually says.
         configs = sorted(_load_tui_presets().get(m["key"], {}).keys())
-        cfg_opts = [("(load config)", "")] + [(c, c) for c in configs]
-        widgets.append(Static("Load config", classes="field-hint"))
+        cfg_opts = ([("(load config)", ""), ("↺ config on disk (.allm)", _DISK_CFG)]
+                    + [(c, c) for c in configs])
+        widgets.append(Static("Load config", classes="cfg-label"))
         # Select takes the whole width — squeezing it into a 4-way row was
         # producing an unreadable "(loa\nd" wrap in narrow terminals.
         widgets.append(Horizontal(
@@ -2382,7 +2411,7 @@ class AllmaTUI(App):
             else:
                 line = f"{line} {tok}" if line else tok
         wrapped.append(line)
-        preview.update(f"[#007878]{rescape(chr(10).join(wrapped))}[/]")
+        preview.update(f"[#382D24]{rescape(chr(10).join(wrapped))}[/]")
 
     def _update_vram_line(self, m: dict) -> None:
         try:
@@ -2792,6 +2821,10 @@ class AllmaTUI(App):
         if not name:
             self.notify("Pick a config to delete", severity="warning")
             return
+        if name == _DISK_CFG:
+            self.notify("That's the .allm file — delete it from disk instead",
+                        severity="warning")
+            return
         store = _load_tui_presets()
         if name in store.get(m["key"], {}):
             del store[m["key"]][name]
@@ -2802,9 +2835,15 @@ class AllmaTUI(App):
         self.call_after_refresh(lambda: self._rebuild_load_form_selecting(m, ""))
 
     def _apply_load_config(self, m: dict, name: str) -> None:
+        if name == _DISK_CFG:
+            self._restore_disk_config(m)
+            return
         snap = _load_tui_presets().get(m["key"], {}).get(name)
         if not snap:
             return
+        # Remember the pristine .allm the first time we diverge from it, so
+        # the "config on disk" entry can bring the form back.
+        m.setdefault("_disk_cfg", dict(m["cfg"]))
         # merge into a shallow copy of cfg and rebuild — reuses the whole
         # widget-construction path (sliders, flags, custom leftovers) so we
         # don't need a fragile inverse of _load_form_values.
@@ -2812,6 +2851,31 @@ class AllmaTUI(App):
         merged.update(snap)
         m["cfg"] = merged
         self.call_after_refresh(lambda: self._rebuild_load_form_selecting(m, name))
+
+    def _restore_disk_config(self, m: dict) -> None:
+        """Re-read this model's .allm and rebuild the form from it.
+
+        Goes back to the file rather than to `_disk_cfg` when it can, so an
+        edit made outside the TUI (`allma edit`, a text editor) is picked up
+        too. Falls back to the stashed copy if the re-read yields nothing.
+        """
+        fresh = None
+        try:
+            from core.config import CONFIG_DIR
+            from configs.allm_parser import load_models_from_configs
+            bases, _ = load_models_from_configs(CONFIG_DIR)
+            fresh = bases.get(m["key"])
+        except Exception:
+            fresh = None
+        if fresh is None:
+            fresh = m.get("_disk_cfg")
+        if fresh is None:
+            self.notify("Already showing the on-disk config", severity="information")
+            return
+        m["cfg"] = dict(fresh)
+        m.pop("_disk_cfg", None)
+        self.notify("Restored the config from disk")
+        self.call_after_refresh(lambda: self._rebuild_load_form_selecting(m, ""))
 
     def _rebuild_load_form_selecting(self, m: dict, name: str) -> None:
         async def _go():
@@ -2870,6 +2934,15 @@ class AllmaTUI(App):
             for key, flag in promo.items():
                 if key in values:
                     lines.append(f"{flag} {values[key]}")
+        # Chat template. Neither promo map carries it and there was no explicit
+        # line for it either, so picking a template in the form was collected by
+        # _load_form_values and then silently dropped on save — the selection
+        # never reached disk. Written with the parser's canonical key for both
+        # backends; process.py turns it into --chat-template-file (llama.cpp)
+        # or --chat-template (vLLM) when the backend is spawned.
+        ctf = values.get("chat_template_file") or m["cfg"].get("chat_template_file")
+        if ctf:
+            lines.append(f"chat-template-file {ctf}")
         # extra_args: emit as bare flag lines (dashes preserved, JSON verbatim)
         i = 0
         extra = [str(a) for a in extra]
